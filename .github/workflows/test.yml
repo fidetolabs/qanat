@@ -1,0 +1,46 @@
+name: test
+on:
+  push: { branches: [main] }
+  pull_request:
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python: ["3.10", "3.12"]
+
+    # Every other test in this suite uses a DuckDB file, and that hid four bugs
+    # in the Postgres store -- a DEFAULT in ALTER TABLE, reader cursors landing
+    # on the wrong schema, as-of views blocking the table they shadow, and an
+    # empty result rebuilding a table with degenerate types. None could show up
+    # against a file. A server costs about five seconds here.
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: qanat
+          POSTGRES_PASSWORD: qanat
+          POSTGRES_DB: qanat
+        ports: ["5433:5432"]
+        options: >-
+          --health-cmd "pg_isready -U qanat -d qanat"
+          --health-interval 3s --health-timeout 3s --health-retries 20
+
+    steps:
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v7
+        with:
+          python-version: "${{ matrix.python }}"
+          enable-cache: true
+      - run: uv sync --frozen --extra dev
+      - run: uv run ruff check src tests
+      - run: uv run pytest -q
+        env:
+          QANAT_TEST_PG: postgresql://qanat:qanat@127.0.0.1:5433/qanat
+
+      # tests/test_postgres.py skips itself when it cannot reach a server, which
+      # would make a broken service look like a pass
+      - name: the Postgres tests must have actually run
+        run: uv run pytest tests/test_postgres.py -q --no-header -p no:cacheprovider | tail -1 | grep -qE "[0-9]+ passed"
+        env:
+          QANAT_TEST_PG: postgresql://qanat:qanat@127.0.0.1:5433/qanat

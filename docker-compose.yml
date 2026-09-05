@@ -1,0 +1,37 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: qanat
+      POSTGRES_PASSWORD: qanat
+      POSTGRES_DB: qanat
+    ports:
+      # Host 5432 is often taken by a local Postgres install — default to 5433.
+      - "${POSTGRES_HOST_PORT:-5433}:5432"
+    volumes:
+      - qanat_pg:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U qanat -d qanat"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+
+  qanat:
+    build: .
+    ports:
+      - "${QANAT_HOST_PORT:-8420}:8420"
+    environment:
+      QANAT_HOST: 0.0.0.0
+      QANAT_PORT: 8420
+      QANAT_STORE: postgresql://qanat:qanat@postgres:5432/qanat
+      QANAT_RESET: ${QANAT_RESET:-0}
+    volumes:
+      - qanat_project:/project
+    working_dir: /project
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+volumes:
+  qanat_pg:
+  qanat_project:

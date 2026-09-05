@@ -1,0 +1,9 @@
+symbol,name,sector,from,to
+AAPL,Apple,TECH,,
+MSFT,Microsoft,TECH,,
+NVDA,Nvidia,SEMI,,
+AMZN,Amazon,RETAIL,,
+META,Meta,MEDIA,,
+JPM,JPMorgan,BANK,,
+XOM,Exxon,ENERGY,,
+SPY,S&P 500 ETF,INDEX,,

@@ -1,0 +1,57 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "qanat-fdtl"
+version = "0.1.0"
+description = "Agent-native workflow engine for building and backtesting alphas as DAGs."
+readme = "README.md"
+license = { file = "LICENSE" }
+requires-python = ">=3.10"
+authors = [{ name = "fidetolabs", email = "dev@fidetolabs.com" }]
+keywords = ["backtesting", "alpha-research", "quantitative-finance", "feature-engineering", "dag", "duckdb"]
+classifiers = [
+  "Development Status :: 4 - Beta",
+  "Intended Audience :: Financial and Insurance Industry",
+  "License :: OSI Approved :: MIT License",
+  "Programming Language :: Python :: 3.10",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Topic :: Office/Business :: Financial :: Investment",
+]
+dependencies = [
+  "duckdb>=1.0",
+  "numpy>=1.24",
+  "pandas>=2.0",
+  "pydantic>=2.6",
+  "pyyaml>=6.0",
+  "croniter>=2.0",
+  "httpx>=0.27",
+  "fastapi>=0.110",
+  "uvicorn>=0.29",
+]
+
+[project.optional-dependencies]
+sql = ["sqlalchemy>=2.0"]
+dev = ["pytest>=8.0", "ruff>=0.4"]
+
+[project.scripts]
+qanat = "qanat.cli:main"
+
+[project.urls]
+Homepage = "https://github.com/fidetolabs/qanat"
+Source = "https://github.com/fidetolabs/qanat"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/qanat"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.uv]
+package = true

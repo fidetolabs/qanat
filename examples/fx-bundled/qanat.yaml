@@ -1,0 +1,78 @@
+# A real dataset, in the repo, needing nothing from the network.
+#
+# The European Central Bank has published one reference rate per currency per
+# business day since 1999. `data/ecb_usd_1999_2026.csv.gz` holds 27 years of them,
+# 126 KB, reusable with attribution -- so this project runs on a plane, in CI, and
+# behind a corporate proxy, and every number in it actually happened.
+#
+# It is `examples/fx-real` with the source swapped and nothing else touched. Same
+# stages, same steps, same backtest block. That is the claim the README makes about
+# pointing `sources:` at a real feed, written out as two projects.
+#
+#   qanat run
+#   qanat backtest --from 1999-01-04 --to 2026-09-04 --rebalance 20d --split 2015-01-01
+#
+project: fx_bundled
+store: ./data/qanat.duckdb
+
+universes:
+  - id: g6
+    index: G6 currencies vs USD
+    symbols: ./universes/g6.csv
+
+stages:
+  - id: raw
+    kind: raw
+    description: the ECB reference rates exactly as the API returned them
+  - id: normalized
+    kind: features
+    description: one row per currency per day, priced in USD
+  - id: features
+    kind: features
+    description: momentum and realised volatility
+  - id: weights
+    kind: weights
+    description: one table, one portfolio
+
+sources:
+  - id: ecb
+    to: [raw.fx_wide]
+    connector: csv
+    mode: replace
+    key: [date]
+    options:
+      # 27 years of real daily rates, in the repo. No key, no account, no network.
+      path: ./data/ecb_usd_1999_2026.csv.gz
+
+steps:
+  - id: normalize
+    from: [raw.fx_wide]
+    to:   [normalized.fx]
+    script: steps/normalize.sql
+
+  - id: momentum
+    from: [normalized.fx]
+    to:   [features.momentum]
+    script: steps/momentum.sql
+    options:
+      lookback: 60
+
+  - id: portfolio
+    from: [features.momentum]
+    to:   [weights.target]
+    script: steps/portfolio.py
+    universe: g6
+    options:
+      long_n: 2
+      short_n: 2
+
+backtest:
+  prices: normalized.fx
+  price_column: close
+  symbol_column: symbol
+  date_column: date
+  fee_bps: 1                   # FX is cheap to trade, but not free
+  slippage_bps: 2
+  rebalance: 20d
+  purge: 0d
+  embargo: 0d

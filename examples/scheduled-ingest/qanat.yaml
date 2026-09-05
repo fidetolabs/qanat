@@ -1,0 +1,92 @@
+# Live ingest demo — REST feed on :8765 (scripts/demo-feed.py) + synthetic news.
+# Run: sh scripts/demo-run.sh
+project: scheduled-ingest
+store: ./data/qanat.duckdb
+
+universes:
+  - id: demo8
+    index: DEMO 8
+    symbols: ./universes/demo8.csv
+
+stages:
+  - id: raw
+    kind: raw
+    description: landed exactly as it arrived, never edited
+  - id: normalized
+    kind: features
+    description: typed, deduplicated, one key set
+  - id: features
+    kind: features
+    description: operator outputs
+  - id: weights
+    kind: weights
+    description: target weights per symbol
+
+sources:
+  # One-shot bootstrap — demo-run calls: qanat run bars_seed
+  - id: bars_seed
+    to: [raw.daily_prices]
+    connector: rest
+    mode: replace
+    options:
+      url: http://127.0.0.1:8765/v1/bars/history
+      records: data
+      rename: { t: ts, s: symbol, o: open, h: high, l: low, c: close, v: volume }
+
+  # Live ticks from the mock feed — append each poll
+  - id: daily_prices
+    to: [raw.daily_prices]
+    connector: rest
+    mode: append
+    schedule: "* * * * *"
+    options:
+      url: http://127.0.0.1:8765/v1/bars/live
+      records: data
+      rename: { t: ts, s: symbol, o: open, h: high, l: low, c: close, v: volume }
+
+  - id: news
+    to: [raw.news]
+    connector: synthetic
+    mode: replace
+    schedule: "*/5 * * * *"
+    options:
+      series: news
+      from_universe: ./universes/demo8.csv
+
+steps:
+  - id: normalize
+    from: [raw.daily_prices]
+    to:   [normalized.prices]
+    script: steps/normalize.sql
+    schedule: "* * * * *"
+
+  - id: momentum
+    from: [normalized.prices]
+    to:   [features.momentum]
+    script: steps/momentum.py
+    schedule: "* * * * *"
+    options:
+      lookback: 20
+
+  - id: risk
+    from: [normalized.prices]
+    to:   [features.risk]
+    script: steps/risk.sql
+    schedule: "* * * * *"
+    options:
+      window: 60
+
+  - id: tone
+    from: [raw.news]
+    to:   [features.tone]
+    script: steps/tone.sql
+    schedule: "*/5 * * * *"
+
+  - id: portfolio
+    from: [features.momentum, features.risk, features.tone]
+    to:   [weights.target]
+    script: steps/portfolio.py
+    universe: demo8
+    schedule: "* * * * *"
+    options:
+      top_n: 4

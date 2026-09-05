@@ -1,0 +1,103 @@
+# Publish to PyPI when a version tag is pushed.
+#
+# No API token anywhere. PyPI's trusted publishing verifies that the upload came
+# from this workflow, in this repository, and mints a token that lives for the
+# length of one job -- so there is nothing on a laptop to leak, and nothing to
+# rotate.
+#
+# Set it up once. Until the first release there is no project page to configure,
+# so it goes in as a *pending* publisher at pypi.org/manage/account/publishing/:
+#
+#     PyPI project name   qanat-fdtl        (the distribution, not the command)
+#     Owner               fidetolabs
+#     Repository          qanat
+#     Workflow            release.yml
+#     Environment         pypi
+#
+# After the first upload the same settings live at
+# pypi.org/manage/project/qanat-fdtl/settings/publishing/.
+#
+# To release:
+#     git tag v0.1.0 && git push origin v0.1.0
+#
+# The tag must match the version in pyproject.toml -- the job checks, and stops
+# if they disagree, because a version published under the wrong tag cannot be
+# taken back.
+name: release
+on:
+  push:
+    tags: ["v*"]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    # the same server the test workflow uses: without it tests/test_postgres.py
+    # skips itself, and the last gate before a release would be the weaker one
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: qanat
+          POSTGRES_PASSWORD: qanat
+          POSTGRES_DB: qanat
+        ports: ["5433:5432"]
+        options: >-
+          --health-cmd "pg_isready -U qanat -d qanat"
+          --health-interval 3s --health-timeout 3s --health-retries 20
+
+    steps:
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v7
+        with:
+          python-version: "3.12"
+          enable-cache: true
+
+      - name: the tag and pyproject must agree
+        run: |
+          tag="${GITHUB_REF_NAME#v}"
+          # read it with grep, not tomllib: tomllib is 3.11+, and this project
+          # supports 3.10, so the check must not be the thing that needs a newer one
+          got=$(grep -m1 '^version = ' pyproject.toml | sed 's/.*"\(.*\)".*/\1/')
+          echo "tag $tag · pyproject $got"
+          [ "$tag" = "$got" ] || { echo "::error::tag v$tag does not match pyproject $got"; exit 1; }
+
+      # a release is not the place to find out the tests fail
+      - run: uv sync --frozen --extra dev
+      - run: uv run ruff check src tests
+      - run: uv run pytest -q
+        env:
+          QANAT_TEST_PG: postgresql://qanat:qanat@127.0.0.1:5433/qanat
+
+      - run: uv build
+      - name: the wheel must carry the console
+        run: |
+          uv run python - <<'PY'
+          import glob, zipfile
+          names = zipfile.ZipFile(sorted(glob.glob("dist/*.whl"))[-1]).namelist()
+          want = {"index.html", "dag.js", "console.js", "backtests.js", "alphaedit.js", "theme.css"}
+          have = {n.rsplit("/", 1)[-1] for n in names if "/console/" in n}
+          missing = want - have
+          assert not missing, f"the wheel is missing {missing} -- it would install a blank console"
+          print(f"console assets in the wheel: {len(have)}")
+          PY
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: dist
+          path: dist/
+
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    # the environment is what PyPI checks against, so it has to match the name
+    # given in the trusted-publisher settings
+    environment: pypi
+    permissions:
+      id-token: write   # this is what mints the short-lived token
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          name: dist
+          path: dist/
+      - uses: pypa/gh-action-pypi-publish@release/v1

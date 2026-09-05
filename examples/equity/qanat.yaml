@@ -1,0 +1,119 @@
+project: equity
+store: ./data/qanat.duckdb
+universes:
+- id: demo8
+  index: DEMO 8
+  symbols: ./universes/demo8.csv
+stages:
+- id: raw
+  kind: raw
+  description: landed exactly as it arrived, never edited
+- id: normalized
+  kind: features
+  description: typed, deduplicated, one key set
+- id: features
+  kind: features
+  description: operator outputs -- a feature step may read another feature step
+- id: weights
+  kind: weights
+  description: one table, one portfolio -- a target weight per symbol
+- id: pnl
+  kind: pnl
+  description: what each alpha earned, per rebalance. Written by `qanat backtest`
+sources:
+- id: daily_prices
+  to:
+  - raw.daily_prices
+  connector: synthetic
+  schedule: '*/2 * * * *'
+  mode: replace
+  options:
+    series: prices
+    from_universe: ./universes/demo8.csv
+    days: 420
+- id: news
+  to:
+  - raw.news
+  connector: synthetic
+  schedule: '*/5 * * * *'
+  mode: replace
+  options:
+    series: news
+    from_universe: ./universes/demo8.csv
+steps:
+- id: normalize
+  from:
+  - raw.daily_prices
+  to:
+  - normalized.prices
+  script: steps/normalize.sql
+  schedule: '*/2 * * * *'
+- id: momentum
+  from:
+  - normalized.prices
+  to:
+  - features.momentum
+  script: steps/momentum.py
+  schedule: '*/3 * * * *'
+  options:
+    lookback: 20
+- id: tone
+  from:
+  - raw.news
+  to:
+  - features.tone
+  script: steps/tone.sql
+  schedule: '*/5 * * * *'
+- id: alpha_momentum
+  from:
+  - normalized.prices
+  to:
+  - weights.momentum
+  script: steps/alpha_momentum.py
+  universe: demo8
+  options:
+    lookback: 60
+    top_n: 4
+    reads: normalized.prices
+- id: alpha_low_vol
+  from:
+  - normalized.prices
+  to:
+  - weights.low_vol
+  script: steps/alpha_low_vol.py
+  universe: demo8
+  options:
+    window: 60
+    top_n: 4
+    reads: normalized.prices
+- id: alpha_neutral_momentum
+  from:
+  - normalized.prices
+  to:
+  - weights.neutral_momentum
+  script: steps/alpha_neutral_momentum.py
+  universe: demo8
+  options:
+    lookback: 60
+    reads: normalized.prices
+- id: risk
+  from:
+  - normalized.prices
+  to:
+  - features.risk
+  script: steps/risk.sql
+  schedule: '*/3 * * * *'
+  options:
+    window: 60
+backtest:
+  prices: normalized.prices
+  price_column: close
+  symbol_column: symbol
+  date_column: date
+  fee_bps: 5.0
+  slippage_bps: 10.0
+  rebalance: 5d
+  purge: 0d
+  embargo: 0d
+  decay: 0
+  split: ''

@@ -1,0 +1,79 @@
+# A real dataset, and no key to get it.
+#
+# The European Central Bank publishes one reference rate per currency per business
+# day, and api.frankfurter.dev serves it without an account. So this project is the
+# same shape as `examples/equity` -- sources, stages, steps, one portfolio -- except
+# that every number in it actually happened.
+#
+#   qanat run          land the rates and build the portfolio
+#   qanat backtest --from 2020-01-01 --to 2026-01-01 --rebalance 20d
+project: fx_real
+store: ./data/qanat.duckdb
+
+universes:
+  - id: g6
+    index: G6 currencies vs USD
+    symbols: ./universes/g6.csv
+
+stages:
+  - id: raw
+    kind: raw
+    description: the ECB reference rates exactly as the API returned them
+  - id: normalized
+    kind: features
+    description: one row per currency per day, priced in USD
+  - id: features
+    kind: features
+    description: momentum and realised volatility
+  - id: weights
+    kind: weights
+    description: one table, one portfolio
+
+sources:
+  - id: ecb
+    to: [raw.fx_wide]
+    connector: rest
+    mode: replace
+    schedule: "17 16 * * 1-5"      # after the ECB publishes, on business days
+    options:
+      # An open-ended range: from this date to whatever the latest published day is.
+      url: https://api.frankfurter.dev/v1/2015-01-02..
+      params:
+        base: USD
+        symbols: EUR,GBP,JPY,CHF,AUD,CAD
+      records: rates               # {"2015-01-02": {"EUR": 0.82, ...}, ...}
+      orient: index                # the date key becomes a column
+      index_column: date
+
+steps:
+  - id: normalize
+    from: [raw.fx_wide]
+    to:   [normalized.fx]
+    script: steps/normalize.sql
+
+  - id: momentum
+    from: [normalized.fx]
+    to:   [features.momentum]
+    script: steps/momentum.sql
+    options:
+      lookback: 60
+
+  - id: portfolio
+    from: [features.momentum]
+    to:   [weights.target]
+    script: steps/portfolio.py
+    universe: g6
+    options:
+      long_n: 2
+      short_n: 2
+
+backtest:
+  prices: normalized.fx
+  price_column: close
+  symbol_column: symbol
+  date_column: date
+  fee_bps: 1                   # FX is cheap to trade, but not free
+  slippage_bps: 2
+  rebalance: 20d
+  purge: 0d
+  embargo: 0d

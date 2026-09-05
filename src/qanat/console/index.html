@@ -1,0 +1,112 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Qanat</title>
+<link rel="icon" href="/static/favicon.svg">
+<link rel="stylesheet" href="/static/theme.css">
+</head>
+<body>
+
+<div class="topbar">
+  <span class="brand"><b>Qanat</b> <span class="faint" id="project">—</span></span>
+  <div class="spacer"></div>
+  <div class="statusline">
+    <span><span class="led" id="led"></span><span id="conn">connecting</span></span>
+    <span title="jobs whose script or settings changed since they last ran successfully">drift <b id="s-drift">—</b></span>
+    <button type="button" class="fold" id="fold-rail" title="hide the strategy book">book</button>
+    <button type="button" class="fold" id="fold-graph" title="hide the pipeline">graph</button>
+    <button type="button" class="btn-head go" id="btn-run" title="Run a backtest">run backtest</button>
+    <button type="button" class="btn-head" id="btn-bt" title="Backtest results">results</button>
+  </div>
+</div>
+
+<div class="shell">
+
+  <aside class="rail">
+    <div class="kicker">Strategy book</div>
+    <div id="book-stats"></div>
+    <div id="book" class="grow"></div>
+  </aside>
+
+  <main class="stage">
+    <div class="view">
+      <canvas id="dagcv"></canvas>
+      <div id="down-banner" class="downbanner">
+        <b>qanat is not answering on this address.</b> The console keeps the last thing it saw, so
+        what is on screen may be out of date. Start it again with
+        <code>qanat serve</code> and this clears itself.
+      </div>
+      <button class="srcadd" type="button" id="b-add-src">＋ data source</button>
+      <div class="modes">
+        <button class="mb" type="button" id="b-fit">fit</button>
+      </div>
+      <div class="legend">
+        <span class="lg"><i class="k" style="color:#a2e65d;border-color:#a2e65d55">SOURCE</i>as it arrived</span>
+        <span class="lg"><i class="k" style="color:#7fc4b4;border-color:#7fc4b455">FEATURE</i>processed for a model</span>
+        <span class="lg"><i class="k" style="color:#e8c069;border-color:#e8c06955">WEIGHT</i>the portfolio</span>
+        <span class="lg"><i class="k" style="color:#c2b6d8;border-color:#c2b6d855">PNL</i>what it earned</span>
+        <span class="sp"></span>
+        <span class="lg"><i class="d" style="background:#8fce6a"></i>written</span>
+        <span class="lg"><i class="d" style="background:#a2e65d"></i>filling now</span>
+        <span class="lg"><i class="d" style="background:#c1503f"></i>failed</span>
+        <span class="lg"><i class="d" style="background:#49453f"></i>empty</span>
+      </div>
+      <div class="hint">
+        <b>every box is a table, every arrow is the step that makes it</b> · click a table ·
+        <b>drag</b> to pan · <b>scroll</b> to zoom · <b>double-click</b> to fit
+      </div>
+    </div>
+
+    <div class="btwrap" id="btwrap" data-open="0">
+      <div class="grip" id="bt-grip" title="drag to give the pipeline more or less room"></div>
+      <div class="panel-h bt-bar-h" id="bt-h" title="what the alpha earned, after fees and slippage">
+        <h3>Results <span class="chev" id="bt-chev">▸</span> <span id="bt-title" class="mono faint">no backtest yet</span></h3>
+        <span class="r mono" id="bt-inline-sum">—</span>
+      </div>
+      <div class="bt-body">
+        <div class="bt-main" id="bt-main"><div id="bt-detail"></div></div>
+      </div>
+    </div>
+
+    <div class="logwrap">
+      <div class="panel-h"><h3>Run log</h3>
+        <span class="r" id="log-note">newest first · every line was written by a job that ran</span></div>
+      <div id="log"></div>
+    </div>
+  </main>
+
+  <aside class="rail rail-r" id="detail">
+    <div class="selhead">
+      <h2 id="sel-head">—</h2>
+      <button type="button" class="btn sm close" id="sel-close" title="close (esc)">close</button>
+      <div class="sub" id="sel-sub">—</div>
+    </div>
+    <div id="sel-body" class="grow"></div>
+  </aside>
+</div>
+
+<div id="runner" class="editor" hidden>
+  <div class="editor-back" onclick="closeRunner()"></div>
+  <div class="editor-panel runner-panel">
+    <div class="editor-top">
+      <h2>Run a backtest</h2>
+      <button type="button" class="btn sm" onclick="closeRunner()">close</button>
+    </div>
+    <div id="runner-body"></div>
+  </div>
+</div>
+
+
+<script src="/static/dag.js"></script>
+<script src="/static/console.js"></script>
+<script src="/static/alphaedit.js"></script>
+<script src="/static/backtests.js"></script>
+<script>
+if (new URLSearchParams(location.search).get('view') === 'backtests') {
+  document.addEventListener('DOMContentLoaded', function () { openBacktests(); });
+}
+</script>
+</body>
+</html>

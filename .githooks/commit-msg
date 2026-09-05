@@ -1,0 +1,6 @@
+#!/bin/sh
+# Strip AI attribution trailers from commit messages.
+msg_file="$1"
+tmp=$(mktemp)
+grep -viE '^(co-authored-by:.*(claude|cursor|anthropic|composer)|claude-session:|cursor-session:)' "$msg_file" > "$tmp"
+mv "$tmp" "$msg_file"

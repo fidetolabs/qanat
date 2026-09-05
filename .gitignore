@@ -1,0 +1,27 @@
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+*.egg-info/
+dist/
+build/
+.pytest_cache/
+.ruff_cache/
+.DS_Store
+data/
+*.duckdb
+*.duckdb.wal
+# `data/` above keeps generated stores out. The one dataset qanat ships is not
+# generated, and a clone without it cannot run examples/fx-bundled at all.
+!examples/fx-bundled/data/
+!examples/fx-bundled/data/*.csv.gz
+.env
+
+# Local IDE / agent config (machine-specific)
+.claude/
+.cursor/
+
+# Demo video tooling (not part of the product)
+videos/
+node_modules/
+package-lock.json
