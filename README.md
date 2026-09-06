@@ -39,7 +39,7 @@ You point sources at staged tables and write each step as `.sql` or `.py`. Qanat
 graph, runs the steps in order, and serves a console where you watch the tables fill.
 
 <p align="center">
-  <img src="https://raw.githubusercontent.com/fidetolabs/qanat/main/assets/console.jpg" width="900"
+  <img src="https://raw.githubusercontent.com/fidetolabs/qanat/main/assets/console.gif" width="720"
        alt="The Qanat console. Five columns left to right: raw sources, normalized prices, three feature tables, four weights tables (one per alpha), and four PnL tables. Arrows between them are named for the step that does the work. The strategy book on the left lists each alphaset with its net and a sparkline.">
 </p>
 
