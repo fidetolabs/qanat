@@ -39,9 +39,12 @@ from qanat.project_io import dump_project
 from qanat.retention import run_retention
 from qanat.runner import order as run_order
 from qanat.scheduler import Scheduler
-from qanat.store import Store
+from qanat.store import TIME_COLS, Store
 
 CONSOLE = Path(__file__).parent / "console"
+
+#: Column names a price may go by, for the shelf-alpha shape check.
+PRICE_COLS = ("close", "price", "px", "adj_close", "last", "value")
 
 
 class AlphaRequest(BaseModel):
@@ -600,6 +603,44 @@ def create_app(state: AppState) -> FastAPI:
             "stages": [{"id": st.id, "kind": st.kind} for st in state.project.stages],
         }
 
+    def _cannot_price(ref: str, opts: dict[str, Any]) -> str | None:
+        """Why a shelf alpha cannot read this table, or None if it can.
+
+        Every script on the shelf reads one table with a symbol, a date and a
+        price. Nothing used to check that the table named actually has them, so
+        pointing an alpha at a table like a market-wide regime series wrote a
+        step that looked fine, passed `check`, and then died mid-replay on a bare
+        `KeyError: 'date'` with nothing to say which table or which column.
+        """
+        info = state.store.table_info(ref)
+        if info is None:
+            return None                      # not written yet, so nothing to judge
+        have = {c.lower() for c, _ in info.columns}
+        want_sym = str(opts.get("symbol_column", "symbol")).lower()
+        want_date = str(opts.get("date_column", "")).lower()
+        want_px = str(opts.get("price_column", "")).lower()
+
+        missing = []
+        if want_sym not in have:
+            missing.append(f"symbol column ('{want_sym}')")
+        if want_date:
+            if want_date not in have:
+                missing.append(f"date column ('{want_date}')")
+        elif not have & set(TIME_COLS):
+            missing.append("date column ('date')")
+        if want_px:
+            if want_px not in have:
+                missing.append(f"price column ('{want_px}')")
+        elif not have & set(PRICE_COLS):
+            missing.append("price column ('close')")
+        if not missing:
+            return None
+        return (
+            f"'{ref}' cannot drive this alpha: it has no " + ", no ".join(missing) +
+            ". Every alpha on the shelf reads one table with a symbol, a date and a "
+            f"price. {ref} holds: {', '.join(c for c, _ in info.columns)}."
+        )
+
     @app.post("/api/alphas")
     def save_alpha(req: AlphaRequest) -> dict[str, Any]:
         """Add an alpha, or change one. One weights table per alpha, so the name is
@@ -616,6 +657,10 @@ def create_app(state: AppState) -> FastAPI:
                 raise HTTPException(422, f"'{req.name}' is not a usable name")
             if req.reads not in state.project.tables():
                 raise HTTPException(422, f"no table '{req.reads}' to read from")
+            if req.shelf:
+                why = _cannot_price(req.reads, dict(req.options or {}))
+                if why:
+                    raise HTTPException(422, why)
             if req.universe and state.project.universe(req.universe) is None:
                 raise HTTPException(422, f"no universe '{req.universe}'")
 
