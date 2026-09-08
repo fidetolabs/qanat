@@ -474,6 +474,10 @@ table.t.corr td:nth-child(3) { width: 34px; }
 
 /* ---- the run form ---------------------------------------------------------- */
 .runner-panel { width: min(560px, 94vw); }
+/* The form is twelve rows and grows with the alphas, so it has to scroll like
+   #editor-body does. Without this the panel overflows and `run it` sits below
+   the fold with no way to reach it. */
+#runner-body { flex: 1; min-height: 0; overflow-y: auto; }
 .rform { display: grid; gap: 10px; padding: 4px 2px 10px; }
 .rrow { display: grid; grid-template-columns: 190px 1fr; gap: 12px; align-items: start; }
 .rrow label { font-size: 11.5px; color: var(--fg-dim); }
