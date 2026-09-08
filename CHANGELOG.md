@@ -1,5 +1,23 @@
 # Changelog
 
+## 0.1.1 — 2026-09-08
+
+Two console fixes, both found by using it.
+
+**The backtest run form could not be scrolled.** `#editor-body` carries the
+flex/overflow rules that let the alpha editor scroll; `#runner-body` never got
+the matching rule, so the form kept its full content height whatever the window.
+The wheel did nothing and `run it` sat below the fold, out of reach on any
+display under about 1030px.
+
+**An alpha could be pointed at a table that holds no prices.** Every script on
+the shelf reads one table with a symbol, a date and a price, but the console
+offered every table in the project and `save_alpha` checked only that the table
+existed. Wiring one to something like a market-wide regime series saved cleanly,
+passed `check`, then died once per as-of date mid-replay on a bare
+`KeyError: 'date'` naming neither the table nor the column. The save now refuses
+it and says which column is missing and what the table actually holds.
+
 ## 0.1.0 — 2026-09-05
 
 First packaged release. Published to PyPI as

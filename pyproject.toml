@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "qanat-fdtl"
-version = "0.1.0"
+version = "0.1.1"
 description = "Agent-native workflow engine for building and backtesting alphas as DAGs."
 readme = "README.md"
 license = { file = "LICENSE" }
