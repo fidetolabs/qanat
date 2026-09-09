@@ -44,7 +44,7 @@ def _symbols(source: Source, root: Path) -> list[str]:
     return ["AAPL", "MSFT", "NVDA", "AMZN", "META", "JPM", "XOM", "SPY"]
 
 
-def fetch(source: Source, root: Path) -> pd.DataFrame:
+def fetch(source: Source, root: Path, on_warn=None) -> pd.DataFrame:
     o = source.options
     series = o.get("series", "prices")
     if series == "bars":

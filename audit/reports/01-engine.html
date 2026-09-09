@@ -1,0 +1,1476 @@
+<title>Breaking Qanat on Purpose</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,500;9..144,600&family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600&display=swap">
+
+<style>
+  :root {
+    --ground:   #e5e8e9;
+    --surface:  #f3f5f5;
+    --sunken:   #dbe0e1;
+    --ink:      #171d20;
+    --muted:    #5b6669;
+    --faint:    #7d888b;
+    --rule:     #c7cfd0;
+    --accent:   #0f6b70;
+    --crit:     #a8341f;
+    --high:     #8f5c0d;
+    --med:      #35566e;
+    --held:     #3d7a1c;
+    --crit-bg:  #f6e3de;
+    --held-bg:  #e3efd9;
+
+    --f-display: "Fraunces", Georgia, "Times New Roman", serif;
+    --f-body: "IBM Plex Sans", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    --f-mono: "IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+  }
+
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --ground:  #101416;
+      --surface: #171e21;
+      --sunken:  #0b0e10;
+      --ink:     #dfe6e7;
+      --muted:   #8d999c;
+      --faint:   #6d797c;
+      --rule:    #293236;
+      --accent:  #4fc7c9;
+      --crit:    #ef7256;
+      --high:    #e2a13f;
+      --med:     #85aecd;
+      --held:    #a2e65d;
+      --crit-bg: #2b1712;
+      --held-bg: #1a2412;
+    }
+  }
+
+  :root[data-theme="dark"] {
+    --ground:  #101416;
+    --surface: #171e21;
+    --sunken:  #0b0e10;
+    --ink:     #dfe6e7;
+    --muted:   #8d999c;
+    --faint:   #6d797c;
+    --rule:    #293236;
+    --accent:  #4fc7c9;
+    --crit:    #ef7256;
+    --high:    #e2a13f;
+    --med:     #85aecd;
+    --held:    #a2e65d;
+    --crit-bg: #2b1712;
+    --held-bg: #1a2412;
+  }
+
+  * { box-sizing: border-box; }
+
+  body {
+    margin: 0;
+    background: var(--ground);
+    color: var(--ink);
+    font-family: var(--f-body);
+    font-size: 16px;
+    line-height: 1.65;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  .wrap {
+    max-width: 1040px;
+    margin: 0 auto;
+    padding: clamp(2rem, 6vw, 4.5rem) clamp(1.1rem, 4vw, 2.5rem) 6rem;
+    display: flex;
+    flex-direction: column;
+    gap: 4rem;
+  }
+
+  .prose { max-width: 64ch; }
+
+  /* ---------- masthead ---------- */
+  .masthead { display: flex; flex-direction: column; gap: 1.4rem; }
+
+  .eyebrow {
+    font-family: var(--f-mono);
+    font-size: 0.72rem;
+    font-weight: 500;
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    color: var(--accent);
+  }
+
+  h1 {
+    font-family: var(--f-display);
+    font-weight: 600;
+    font-size: clamp(2.4rem, 6.5vw, 3.9rem);
+    line-height: 1.02;
+    letter-spacing: -0.02em;
+    margin: 0;
+    text-wrap: balance;
+  }
+
+  .standfirst {
+    font-size: clamp(1.02rem, 2.2vw, 1.16rem);
+    color: var(--muted);
+    margin: 0;
+    max-width: 58ch;
+  }
+
+  .runmeta {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.2rem 2rem;
+    padding-top: 1.25rem;
+    border-top: 1px solid var(--rule);
+    font-family: var(--f-mono);
+    font-size: 0.78rem;
+    color: var(--faint);
+  }
+  .runmeta b { color: var(--muted); font-weight: 500; }
+
+  /* ---------- section furniture ---------- */
+  section { display: flex; flex-direction: column; gap: 1.5rem; }
+
+  .shead {
+    display: flex;
+    align-items: baseline;
+    gap: 1rem;
+    border-bottom: 1px solid var(--rule);
+    padding-bottom: 0.6rem;
+  }
+  .shead h2 {
+    font-family: var(--f-display);
+    font-weight: 600;
+    font-size: clamp(1.45rem, 3.4vw, 1.9rem);
+    letter-spacing: -0.015em;
+    margin: 0;
+    flex: 1;
+  }
+  .shead .count {
+    font-family: var(--f-mono);
+    font-size: 0.76rem;
+    color: var(--faint);
+    white-space: nowrap;
+  }
+
+  p { margin: 0 0 0.9rem; }
+  p:last-child { margin-bottom: 0; }
+  a { color: var(--accent); }
+
+  code, .mono { font-family: var(--f-mono); font-size: 0.86em; }
+  p code, li code, td code {
+    background: var(--sunken);
+    padding: 0.1em 0.36em;
+    border-radius: 3px;
+    color: var(--ink);
+  }
+
+  /* ---------- scoreboard ---------- */
+  .board {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+    gap: 1px;
+    background: var(--rule);
+    border: 1px solid var(--rule);
+  }
+  .tile {
+    background: var(--surface);
+    padding: 1.15rem 1.25rem;
+    display: flex;
+    flex-direction: column;
+    gap: 0.15rem;
+  }
+  .tile .n {
+    font-family: var(--f-display);
+    font-size: 2.5rem;
+    font-weight: 600;
+    line-height: 1;
+    font-variant-numeric: tabular-nums;
+    letter-spacing: -0.02em;
+  }
+  .tile .l {
+    font-family: var(--f-mono);
+    font-size: 0.7rem;
+    letter-spacing: 0.09em;
+    text-transform: uppercase;
+    color: var(--faint);
+  }
+  .tile.broke .n { color: var(--crit); }
+  .tile.held .n  { color: var(--held); }
+
+  .sevbar {
+    display: flex;
+    height: 10px;
+    border: 1px solid var(--rule);
+    overflow: hidden;
+  }
+  .sevbar span { display: block; }
+  .sevkey {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.4rem 1.5rem;
+    font-family: var(--f-mono);
+    font-size: 0.74rem;
+    color: var(--muted);
+  }
+  .sevkey i { font-style: normal; display: inline-flex; align-items: center; gap: 0.45rem; }
+  .dot { width: 9px; height: 9px; display: inline-block; }
+
+  /* ---------- ledger ---------- */
+  .scroll { overflow-x: auto; border: 1px solid var(--rule); background: var(--surface); }
+  table { border-collapse: collapse; width: 100%; min-width: 640px; font-size: 0.9rem; }
+  thead th {
+    text-align: left;
+    font-family: var(--f-mono);
+    font-size: 0.68rem;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    color: var(--faint);
+    font-weight: 500;
+    padding: 0.75rem 1rem;
+    border-bottom: 1px solid var(--rule);
+    white-space: nowrap;
+  }
+  tbody td {
+    padding: 0.65rem 1rem;
+    border-bottom: 1px solid var(--rule);
+    vertical-align: top;
+  }
+  tbody tr:last-child td { border-bottom: 0; }
+  td.layer { font-family: var(--f-mono); font-size: 0.78rem; color: var(--muted); white-space: nowrap; }
+  td.ref  { font-family: var(--f-mono); font-size: 0.78rem; color: var(--faint); white-space: nowrap; }
+  .group td {
+    background: var(--sunken);
+    font-family: var(--f-mono);
+    font-size: 0.68rem;
+    letter-spacing: 0.11em;
+    text-transform: uppercase;
+    color: var(--muted);
+    padding: 0.45rem 1rem;
+  }
+
+  .verdict {
+    font-family: var(--f-mono);
+    font-size: 0.7rem;
+    font-weight: 500;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    padding: 0.16rem 0.45rem;
+    white-space: nowrap;
+  }
+  .verdict.broke { color: var(--crit); background: var(--crit-bg); }
+  .verdict.ok    { color: var(--held); background: var(--held-bg); }
+
+  /* ---------- findings ---------- */
+  .findings { display: flex; flex-direction: column; gap: 1.5rem; }
+
+  .finding {
+    background: var(--surface);
+    border: 1px solid var(--rule);
+    border-left: 4px solid var(--sev, var(--rule));
+    padding: 1.4rem clamp(1.1rem, 3vw, 1.7rem);
+    display: flex;
+    flex-direction: column;
+    gap: 1.1rem;
+  }
+  .finding.crit { --sev: var(--crit); }
+  .finding.high { --sev: var(--high); }
+  .finding.med  { --sev: var(--med);  }
+  .finding.low  { --sev: var(--faint); }
+
+  .fhead { display: flex; flex-direction: column; gap: 0.55rem; }
+  .ftags { display: flex; flex-wrap: wrap; align-items: center; gap: 0.5rem; }
+  .chip {
+    font-family: var(--f-mono);
+    font-size: 0.68rem;
+    font-weight: 500;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    padding: 0.18rem 0.5rem;
+    border: 1px solid var(--rule);
+    color: var(--muted);
+  }
+  .chip.sev { border-color: transparent; }
+  .finding.crit .chip.sev { background: var(--crit); color: var(--surface); }
+  .finding.high .chip.sev { background: var(--high); color: var(--surface); }
+  .finding.med  .chip.sev { background: var(--med);  color: var(--surface); }
+  .finding.low  .chip.sev { background: var(--faint); color: var(--surface); }
+  .chip.id { color: var(--faint); }
+
+  .finding h3 {
+    font-family: var(--f-display);
+    font-weight: 600;
+    font-size: clamp(1.14rem, 2.6vw, 1.32rem);
+    line-height: 1.25;
+    letter-spacing: -0.01em;
+    margin: 0;
+    text-wrap: balance;
+  }
+
+  /* the four fixed parts of every finding */
+  .part { max-width: 72ch; }
+  .part + .part { margin-top: 1rem; }
+  .label {
+    font-family: var(--f-mono);
+    font-size: 0.68rem;
+    letter-spacing: 0.11em;
+    text-transform: uppercase;
+    color: var(--faint);
+    margin: 0 0 0.35rem;
+  }
+  .part.fix {
+    border-top: 1px solid var(--rule);
+    padding-top: 1rem;
+    margin-top: 1.15rem;
+  }
+  .part.fix .label { color: var(--accent); }
+
+  pre {
+    margin: 0;
+    background: var(--sunken);
+    border: 1px solid var(--rule);
+    padding: 0.85rem 1rem;
+    overflow-x: auto;
+    font-family: var(--f-mono);
+    font-size: 0.79rem;
+    line-height: 1.55;
+    color: var(--ink);
+  }
+  pre .hit { color: var(--crit); font-weight: 500; }
+  pre .dim { color: var(--faint); }
+
+  ul.tight { margin: 0; padding-left: 1.15rem; }
+  ul.tight li { margin-bottom: 0.4rem; }
+  ul.tight li:last-child { margin-bottom: 0; }
+
+  /* ---------- glossary ---------- */
+  .glossary {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+    gap: 1px;
+    background: var(--rule);
+    border: 1px solid var(--rule);
+  }
+  .gterm { background: var(--surface); padding: 1rem 1.15rem; }
+  .gterm dt {
+    font-family: var(--f-mono);
+    font-size: 0.8rem;
+    font-weight: 500;
+    color: var(--accent);
+    margin-bottom: 0.25rem;
+  }
+  .gterm dd { margin: 0; font-size: 0.89rem; color: var(--muted); }
+
+  /* ---------- improvements ---------- */
+  .improve { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 1px; background: var(--rule); border: 1px solid var(--rule); }
+  .imp { background: var(--surface); padding: 1.3rem; display: flex; flex-direction: column; gap: 0.55rem; }
+  .imp h3 {
+    font-family: var(--f-body);
+    font-weight: 600;
+    font-size: 1rem;
+    margin: 0;
+    line-height: 1.3;
+  }
+  .imp p { font-size: 0.9rem; color: var(--muted); margin: 0; }
+  .imp .closes { font-family: var(--f-mono); font-size: 0.72rem; color: var(--accent); }
+
+  .note {
+    background: var(--surface);
+    border: 1px solid var(--rule);
+    border-left: 4px solid var(--accent);
+    padding: 1.2rem 1.4rem;
+    font-size: 0.93rem;
+    color: var(--muted);
+    max-width: 70ch;
+  }
+  .note strong { color: var(--ink); font-weight: 600; }
+
+  ol.steps { margin: 0.6rem 0 0; padding-left: 1.3rem; }
+  ol.steps li { margin-bottom: 0.35rem; }
+
+  .sibling {
+    display: inline-flex; align-items: center; gap: 0.6rem;
+    font-family: var(--f-mono); font-size: 0.78rem;
+    color: var(--accent); text-decoration: none;
+    border: 1px solid var(--rule); padding: 0.5rem 0.8rem;
+    background: var(--surface); align-self: flex-start;
+  }
+  .sibling:hover { border-color: var(--accent); }
+  .sibling .arrow { color: var(--faint); }
+
+  .partlink {
+    background: var(--surface); border: 1px solid var(--rule);
+    border-left: 4px solid var(--accent);
+    padding: 1.4rem clamp(1.1rem, 3vw, 1.7rem);
+    display: flex; flex-direction: column; gap: 0.7rem;
+  }
+  .partlink h3 {
+    font-family: var(--f-display); font-weight: 600;
+    font-size: clamp(1.14rem, 2.6vw, 1.32rem); margin: 0; line-height: 1.25;
+  }
+  .partlink p { max-width: 66ch; font-size: 0.95rem; color: var(--muted); }
+  .partlink a.go {
+    font-family: var(--f-mono); font-size: 0.8rem; color: var(--accent);
+    text-decoration: none; border: 1px solid var(--accent);
+    padding: 0.55rem 0.9rem; align-self: flex-start;
+  }
+  .partlink a.go:hover { background: var(--accent); color: var(--surface); }
+
+  footer {
+    border-top: 1px solid var(--rule);
+    padding-top: 1.2rem;
+    font-family: var(--f-mono);
+    font-size: 0.75rem;
+    color: var(--faint);
+    line-height: 1.7;
+  }
+
+
+  .st { font-family:var(--f-mono); font-size:.66rem; font-weight:500; letter-spacing:.07em;
+        text-transform:uppercase; padding:.18rem .5rem; border:1px solid transparent; }
+  .st.fx { background:var(--held-bg); color:var(--held); }
+  .st.pt { background:var(--high-bg,#f7ebd6); color:var(--high); }
+  .st.op { border-color:var(--rule); color:var(--faint); }
+  .fixbanner { background:var(--surface); border:1px solid var(--rule);
+               border-left:4px solid var(--held); padding:1.3rem clamp(1.1rem,3vw,1.6rem);
+               display:flex; flex-direction:column; gap:.7rem; }
+  .fixbanner h2 { font-family:var(--f-display); font-weight:600; margin:0;
+                  font-size:clamp(1.15rem,2.8vw,1.4rem); }
+  .fixbanner p { max-width:66ch; font-size:.95rem; color:var(--muted); }
+  .fixbanner .tally { display:flex; flex-wrap:wrap; gap:.5rem; }
+
+  @media (prefers-reduced-motion: reduce) {
+    * { animation: none !important; transition: none !important; }
+  }
+</style>
+
+<div class="wrap">
+
+  <header class="masthead">
+    <div class="eyebrow">Chaos run · qanat 0.1.1 · main @ 39d4fe8</div>
+    <h1>Breaking Qanat on Purpose</h1>
+    <p class="standfirst">I broke qanat 25 different ways on purpose: crashes, races, bad input, and bad
+      market data. 20 of them found a problem. Here is what I did, what happened, and what to change.</p>
+    <div style="display:flex; flex-wrap:wrap; gap:.6rem">
+      <a class="sibling" href="https://claude.ai/code/artifact/c7018f9f-c61a-4847-b18f-0d82f7254e4a">
+        Part two · the console <span class="arrow">→</span></a>
+      <a class="sibling" href="https://claude.ai/code/artifact/0c725dfa-416c-4cc0-a5ae-b3e19ccaaaeb">
+        Part three · the workflow <span class="arrow">→</span></a>
+    </div>
+    <div class="runmeta">
+      <span><b>Tests before I started</b> 102 pass, 6 skip</span>
+      <span><b>Test project</b> qanat init --demo</span>
+      <span><b>Store</b> DuckDB file</span>
+      <span><b>Network</b> not used</span>
+    </div>
+  </header>
+
+  <section>
+    <div class="fixbanner">
+      <div class="tally">
+        <span class="st fx">58 fixed</span>
+        <span class="st pt">6 partly fixed</span>
+        <span class="st op">9 still open</span>
+      </div>
+      <h2>Everything below was fixed in v0.1.2, except where a badge says otherwise</h2>
+      <p>Each finding carries its own status. Every fix was checked by re-running the
+        script that found it, and the ones that mattered most are now tests —
+        <code>tests/test_audit_fixes.py</code> holds one case per finding, so each of
+        these mistakes fails loudly if it comes back. The full ledger, with the repro
+        scripts, is in <code>audit/</code>.</p>
+      <p>One finding cannot be closed and is recorded as a limit rather than a fix: a
+        step is arbitrary Python, so it can always read a source file off disk itself
+        and reach data the as-of views hide. The three doors that were qanat's to
+        close are closed.</p>
+    </div>
+  </section>
+
+
+  <section>
+    <div class="shead">
+      <h2>The numbers</h2>
+      <span class="count">25 tests · 15 problems</span>
+    </div>
+
+    <div class="board">
+      <div class="tile"><span class="n">25</span><span class="l">Tests I ran</span></div>
+      <div class="tile broke"><span class="n">20</span><span class="l">Something broke</span></div>
+      <div class="tile held"><span class="n">5</span><span class="l">Nothing broke</span></div>
+      <div class="tile"><span class="n">15</span><span class="l">Problems found</span></div>
+    </div>
+
+    <div class="sevbar" role="img" aria-label="How bad: 2 very bad, 5 bad, 6 medium, 2 small">
+      <span style="background: var(--crit); flex: 2"></span>
+      <span style="background: var(--high); flex: 5"></span>
+      <span style="background: var(--med); flex: 6"></span>
+      <span style="background: var(--faint); flex: 2"></span>
+    </div>
+    <div class="sevkey">
+      <i><span class="dot" style="background: var(--crit)"></span>2 very bad</i>
+      <i><span class="dot" style="background: var(--high)"></span>5 bad</i>
+      <i><span class="dot" style="background: var(--med)"></span>6 medium</i>
+      <i><span class="dot" style="background: var(--faint)"></span>2 small</i>
+    </div>
+
+    <div class="prose">
+      <p>Almost every problem comes from one of two things.</p>
+      <p><strong>One.</strong> A backtest changes the project's real tables while it runs. So if the program
+        crashes, or a second backtest starts, or a timed job wakes up in the middle, your tables are left
+        holding old, cut-off data. Nothing tells you.</p>
+      <p><strong>Two.</strong> <code>qanat check</code> looks at the <em>shape</em> of the file, but not at
+        what is inside it. A table name and a file path are used exactly as written. Both end up somewhere
+        that runs them.</p>
+    </div>
+  </section>
+
+  <section>
+    <div class="shead">
+      <h2>Words I use below</h2>
+      <span class="count">short list</span>
+    </div>
+    <dl class="glossary">
+      <div class="gterm"><dt>replay / backtest</dt><dd>Run the pipeline again over old dates, to see what the
+        alpha would have earned.</dd></div>
+      <div class="gterm"><dt>store</dt><dd>The one database holding every table. A DuckDB file, or Postgres.</dd></div>
+      <div class="gterm"><dt>step</dt><dd>One <code>.sql</code> or <code>.py</code> script that reads tables
+        and writes tables.</dd></div>
+      <div class="gterm"><dt>as-of date</dt><dd>The day a replay is pretending it is right now.</dd></div>
+      <div class="gterm"><dt>scheduler</dt><dd>The part of <code>qanat serve</code> that runs jobs on a
+        clock.</dd></div>
+      <div class="gterm"><dt>SIGKILL</dt><dd>Killing a program with no warning. Like pulling the power
+        cable.</dd></div>
+    </dl>
+  </section>
+
+  <section>
+    <div class="shead">
+      <h2>All 25 tests</h2>
+      <span class="count">in the order I ran them</span>
+    </div>
+
+    <div class="scroll">
+      <table>
+        <thead>
+          <tr>
+            <th>What I did</th>
+            <th>Where</th>
+            <th>Result</th>
+            <th>Problem</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr class="group"><td colspan="4">Crashes</td></tr>
+          <tr><td>Killed the program 3 seconds into a replay</td><td class="layer">backtest, store</td><td><span class="verdict broke">broke</span></td><td class="ref">F-03<br><span class="st fx">fixed in 0.1.2</span></td></tr>
+          <tr><td>Cut <code>qanat.yaml</code> in half while it was being saved</td><td class="layer">project_io</td><td><span class="verdict broke">broke</span></td><td class="ref">F-06<br><span class="st fx">fixed in 0.1.2</span></td></tr>
+          <tr><td>A step that calls <code>sys.exit(3)</code></td><td class="layer">runner</td><td><span class="verdict broke">broke</span></td><td class="ref">F-09<br><span class="st fx">fixed in 0.1.2</span></td></tr>
+          <tr><td>A step that raises <code>KeyboardInterrupt</code></td><td class="layer">runner</td><td><span class="verdict broke">broke</span></td><td class="ref">F-09<br><span class="st fx">fixed in 0.1.2</span></td></tr>
+          <tr><td>A step that raises <code>MemoryError</code> or <code>RecursionError</code></td><td class="layer">runner</td><td><span class="verdict ok">fine</span></td><td class="ref">—</td></tr>
+
+          <tr class="group"><td colspan="4">Two things at the same time</td></tr>
+          <tr><td>Counted rows while a replay was running</td><td class="layer">store, api</td><td><span class="verdict broke">broke</span></td><td class="ref">F-04<br><span class="st pt">partly fixed</span></td></tr>
+          <tr><td>Ran a timed job while a replay was running</td><td class="layer">scheduler, store</td><td><span class="verdict broke">broke</span></td><td class="ref">F-04<br><span class="st pt">partly fixed</span></td></tr>
+          <tr><td>Started two replays on one store</td><td class="layer">backtest, api</td><td><span class="verdict broke">broke</span></td><td class="ref">F-05<br><span class="st fx">fixed in 0.1.2</span></td></tr>
+          <tr><td>Two threads saving <code>qanat.yaml</code></td><td class="layer">project_io</td><td><span class="verdict broke">broke</span></td><td class="ref">F-06<br><span class="st fx">fixed in 0.1.2</span></td></tr>
+          <tr><td>Read the project 400 times while it was being saved</td><td class="layer">project</td><td><span class="verdict broke">broke</span></td><td class="ref">F-06<br><span class="st fx">fixed in 0.1.2</span></td></tr>
+          <tr><td>200 threads writing a run row at once</td><td class="layer">store</td><td><span class="verdict ok">fine</span></td><td class="ref">—</td></tr>
+
+          <tr class="group"><td colspan="4">Bad input</td></tr>
+          <tr><td>A table name that contains SQL</td><td class="layer">models, store</td><td><span class="verdict broke">broke</span></td><td class="ref">F-01<br><span class="st fx">fixed in 0.1.2</span></td></tr>
+          <tr><td>Ran <code>qanat check</code> on that same project</td><td class="layer">project</td><td><span class="verdict broke">broke</span></td><td class="ref">F-01<br><span class="st fx">fixed in 0.1.2</span></td></tr>
+          <tr><td><code>script: ../OUTSIDE/pwned.py</code> from the console</td><td class="layer">editor, api</td><td><span class="verdict broke">broke</span></td><td class="ref">F-02<br><span class="st fx">fixed in 0.1.2</span></td></tr>
+          <tr><td><code>script: /tmp/abs.py</code> from the console</td><td class="layer">editor, api</td><td><span class="verdict broke">broke</span></td><td class="ref">F-02<br><span class="st fx">fixed in 0.1.2</span></td></tr>
+          <tr><td>One bad edit, then normal edits after it</td><td class="layer">editor, api</td><td><span class="verdict broke">broke</span></td><td class="ref">F-07<br><span class="st fx">fixed in 0.1.2</span></td></tr>
+          <tr><td>SQL inside the <code>/api/table</code> URL</td><td class="layer">api</td><td><span class="verdict ok">fine</span></td><td class="ref">—</td></tr>
+          <tr><td>Moved <code>store:</code> outside the project folder</td><td class="layer">editor</td><td><span class="verdict broke">broke</span></td><td class="ref">F-15<br><span class="st op">still open</span></td></tr>
+
+          <tr class="group"><td colspan="4">Too much work</td></tr>
+          <tr><td>One year of dates with <code>rebalance: 1s</code></td><td class="layer">backtest</td><td><span class="verdict broke">broke</span></td><td class="ref">F-12<br><span class="st fx">fixed in 0.1.2</span></td></tr>
+          <tr><td>A step that never finishes, started 6 times</td><td class="layer">scheduler</td><td><span class="verdict broke">broke</span></td><td class="ref">F-13<br><span class="st op">still open</span></td></tr>
+
+          <tr class="group"><td colspan="4">Bad data</td></tr>
+          <tr><td>A zero price and a negative price</td><td class="layer">backtest</td><td><span class="verdict broke">broke</span></td><td class="ref">F-08<br><span class="st op">still open</span></td></tr>
+          <tr><td>An alpha writing <code>NaN</code> and <code>inf</code> weights</td><td class="layer">runner, api</td><td><span class="verdict ok">fine</span></td><td class="ref">—</td></tr>
+          <tr><td>Retention set to <code>1s</code> on a <code>raw</code> table</td><td class="layer">retention</td><td><span class="verdict broke">broke</span></td><td class="ref">F-10<br><span class="st fx">fixed in 0.1.2</span></td></tr>
+          <tr><td>Two steps in one stage reading each other</td><td class="layer">project, runner</td><td><span class="verdict broke">broke</span></td><td class="ref">F-11<br><span class="st fx">fixed in 0.1.2</span></td></tr>
+          <tr><td>A replayed step writing a table with no date column</td><td class="layer">runner</td><td><span class="verdict broke">broke</span></td><td class="ref">F-14<br><span class="st op">still open</span></td></tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <section>
+    <div class="shead">
+      <h2>The 15 problems</h2>
+      <span class="count">worst first</span>
+    </div>
+
+    <div class="prose">
+      <p>Each one has the same four parts: what I did, what happened, why it matters, and how to fix it.</p>
+    </div>
+
+    <div class="findings">
+
+      <!-- F-01 -->
+      <article class="finding crit">
+        <div class="fhead">
+          <div class="ftags">
+            <span class="chip sev">Very bad</span>
+            <span class="chip id">F-01</span>
+            <span class="st fx">fixed in 0.1.2</span>
+            <span class="chip">models.py · store.py</span>
+          </div>
+          <h3>A table name can be SQL, and <code>qanat check</code> says it is fine</h3>
+        </div>
+
+        <div class="part">
+          <p class="label">What I did</p>
+          <p>I put SQL code inside a table name in <code>qanat.yaml</code>, then ran the step.</p>
+<pre>to: ['features.z" AS SELECT 1 AS q; DROP TABLE features__momentum; CREATE OR REPLACE TABLE "zzz']</pre>
+        </div>
+
+        <div class="part">
+          <p class="label">What happened</p>
+<pre>$ qanat check
+  <span class="hit">✓ demo: 5 stages, 12 tables, 12 jobs · contract holds</span>
+
+$ qanat run inj
+  run status: failed | ParserException: syntax error at or near "SELECT"
+  <span class="hit">features.momentum survived: False</span></pre>
+          <p>The check passed. The step then deleted a real table. The console only shows a red job and a
+            confusing SQL error. It never says a table was deleted.</p>
+        </div>
+
+        <div class="part">
+          <p class="label">Why it matters</p>
+          <p>The code that checks a table name (<code>_qualified()</code>) only counts the dots. It never looks
+            at the rest of the name. That name goes straight into SQL in <code>store.py</code>.</p>
+          <p>The console API accepts this name with <code>200 OK</code>. So does the MCP tool
+            <code>save_step</code>. That is the real risk: qanat is built so an <em>agent</em> writes these
+            files. A model does not need bad intent to write a strange name.</p>
+        </div>
+
+        <div class="part fix">
+          <p class="label">How to fix it</p>
+          <ul class="tight">
+            <li>Check the table name with the same rule <code>Stage.id</code> already uses:
+              <code>^[a-z][a-z0-9_]*$</code>. Put it in <code>_qualified()</code>, so it covers sources,
+              steps, <code>when:</code>, <code>retention:</code> and <code>time_columns:</code> together.</li>
+            <li>Also double any <code>"</code> inside <code>Store._q()</code>, as a second wall.</li>
+            <li>Add a test that gives <code>validate()</code> a bad name and expects an error.</li>
+          </ul>
+        </div>
+      </article>
+
+      <!-- F-02 -->
+      <article class="finding crit">
+        <div class="fhead">
+          <div class="ftags">
+            <span class="chip sev">Very bad</span>
+            <span class="chip id">F-02</span>
+            <span class="st fx">fixed in 0.1.2</span>
+            <span class="chip">editor.py · api.py · mcp.py</span>
+          </div>
+          <h3>A step's <code>script:</code> can point outside the project, and then it is run</h3>
+        </div>
+
+        <div class="part">
+          <p class="label">What I did</p>
+          <p>I made a step whose script path goes up and out of the project folder. Then I tried an absolute
+            path too.</p>
+        </div>
+
+        <div class="part">
+          <p class="label">What happened</p>
+<pre>POST /api/steps  {"script":"../OUTSIDE/pwned.py", ...}
+  <span class="hit">[200] {"ok":true}</span>
+  file written outside the project: <span class="hit">True</span>
+
+POST /api/steps  {"script":"/tmp/qanat_abs_pwned.py", ...}
+  [400] step 'evil2' reads 'raw.bars', which nothing produces
+  file written anyway: <span class="hit">True</span></pre>
+        </div>
+
+        <div class="part">
+          <p class="label">Why it matters</p>
+          <p>Two problems in one call.</p>
+          <p>First, <code>save_step()</code> does <code>root / step.script</code> and never checks that the
+            result stays inside the project. So the console can write a <code>.py</code> file anywhere on
+            the disk. Later, <code>_load_module()</code> imports and runs that file.</p>
+          <p>Second, the file is written <em>before</em> the check runs. So even a request that fails with
+            <code>400</code> still leaves a file behind.</p>
+          <p>How far can someone reach? <code>qanat serve</code> uses <code>--host 127.0.0.1</code> by
+            default, which is the right choice and keeps this on your own machine. But no write endpoint asks
+            for a password, and <code>docker-compose.yml</code> sets <code>QANAT_HOST: 0.0.0.0</code> and
+            opens port <code>8420</code>. In Docker, anyone who can reach the port gets the editor.</p>
+        </div>
+
+        <div class="part fix">
+          <p class="label">How to fix it</p>
+          <ul class="tight">
+            <li>In <code>validate()</code>, require <code>(root / step.script).resolve()</code> to sit inside
+              <code>root.resolve()</code>. Refuse absolute paths.</li>
+            <li>In <code>save_step()</code>, write the stub file only <em>after</em>
+              <code>apply_and_save()</code> succeeds.</li>
+            <li>Make <code>qanat serve</code> refuse a non-local <code>--host</code> unless you pass
+              <code>--token</code>. Let the Docker entrypoint create one.</li>
+          </ul>
+        </div>
+      </article>
+
+      <!-- F-03 -->
+      <article class="finding high">
+        <div class="fhead">
+          <div class="ftags">
+            <span class="chip sev">Bad</span>
+            <span class="chip id">F-03</span>
+            <span class="st fx">fixed in 0.1.2</span>
+            <span class="chip">backtest.py · store.py</span>
+          </div>
+          <h3>If the program dies during a replay, your tables are left empty</h3>
+        </div>
+
+        <div class="part">
+          <p class="label">What I did</p>
+          <p>I started a one-year replay, waited 3 seconds, then killed the process with SIGKILL. Then I
+            opened the store again and counted rows.</p>
+        </div>
+
+        <div class="part">
+          <p class="label">What happened</p>
+<pre>rows before: 3360
+
+AFTER THE CRASH
+  raw.daily_prices         rows=3360
+  <span class="hit">normalized.prices        rows=0</span>
+  <span class="hit">weights.momentum         rows=0</span>
+  leftover pit views: <span class="hit">2</span>
+  backtests still marked 'running': <span class="hit">1</span></pre>
+        </div>
+
+        <div class="part">
+          <p class="label">Why it matters</p>
+          <p>A replay rewrites the real tables at every as-of date. The only thing that puts them back is the
+            <code>finally:</code> block at the end of <code>run_backtest</code>. A SIGKILL, an out-of-memory
+            kill, or a closed laptop never reaches that block.</p>
+          <p>Opening the store again does not notice and does not repair. You come back to an empty pipeline,
+            a backtest that has been "running" for three days, and leftover views. The cure is one plain
+            <code>qanat run</code> — cheap and correct. But nothing tells you that.</p>
+        </div>
+
+        <div class="part fix">
+          <p class="label">How to fix it</p>
+          <ul class="tight">
+            <li>Best: let a replay work on copies in a separate schema, not on the real tables. This also
+              fixes F-04 and most of F-05.</li>
+            <li>Cheaper: write a marker in <code>_qanat_state</code> when <code>open_pit</code> starts, and
+              clear it in <code>close_pit</code>. If <code>Store.__init__</code> sees the marker, mark the
+              derived tables as stale, close the stuck backtest as <code>interrupted</code>, and drop the
+              <code>qanat_pit</code> schema.</li>
+            <li>At startup, close any run still marked <code>running</code>. No process owns it any more.</li>
+          </ul>
+        </div>
+      </article>
+
+      <!-- F-04 -->
+      <article class="finding high">
+        <div class="fhead">
+          <div class="ftags">
+            <span class="chip sev">Bad</span>
+            <span class="chip id">F-04</span>
+            <span class="st pt">partly fixed</span>
+            <span class="chip">store.py · scheduler.py</span>
+          </div>
+          <h3>While a replay runs, the console shows 0 rows and timed jobs read old data</h3>
+        </div>
+
+        <div class="part">
+          <p class="label">What I did</p>
+          <p>I counted rows over and over while a replay ran. Then I started a normal timed job in the middle
+            of one.</p>
+        </div>
+
+        <div class="part">
+          <p class="label">What happened</p>
+<pre>before: normalized.prices = 3360
+during: normalized.prices  -> <span class="hit">[0, 0, 0, 0, 0, 3360, 3360]</span>
+
+search_path before:        (empty)
+search_path DURING replay: <span class="hit">qanat_pit,main</span>
+timed step 'risk' during replay -> status <span class="hit">ok</span>, rows 0</pre>
+        </div>
+
+        <div class="part">
+          <p class="label">Why it matters</p>
+          <p><code>open_pit()</code> changes <code>search_path</code> on the one shared connection, and every
+            pass empties the derived tables. Everything else in the process sees both changes.</p>
+          <p>So for the whole length of a backtest, the console shows an empty pipeline. The api file promises
+            "if a table says 12,043 rows, that is a <code>count(*)</code>" — and it is, of a table the replay
+            just emptied.</p>
+          <p>At the same time, a timed step can start, quietly read the old as-of data, write 0 rows, log
+            <code>ok</code>, and wake up everything after it.</p>
+        </div>
+
+        <div class="part fix">
+          <p class="label">How to fix it</p>
+          <ul class="tight">
+            <li>Replay on copies (see F-03). That removes both halves at once.</li>
+            <li>Until then: make <code>Scheduler.fire()</code> refuse while a replay holds the store, and log
+              "skipped — a replay is running".</li>
+            <li>Set the as-of <code>search_path</code> on a cursor owned by the replay, not on
+              <code>self.con</code>.</li>
+            <li>Add <code>replaying: true</code> to <code>/api/graph</code>, so the console can say the counts
+              are not current.</li>
+          </ul>
+        </div>
+      </article>
+
+      <!-- F-05 -->
+      <article class="finding high">
+        <div class="fhead">
+          <div class="ftags">
+            <span class="chip sev">Bad</span>
+            <span class="chip id">F-05</span>
+            <span class="st fx">fixed in 0.1.2</span>
+            <span class="chip">api.py · scheduler.py</span>
+          </div>
+          <h3>Two replays can run at once, and both give an empty answer</h3>
+        </div>
+
+        <div class="part">
+          <p class="label">What I did</p>
+          <p>I started two replays on the same store at the same time.</p>
+        </div>
+
+        <div class="part">
+          <p class="label">What happened</p>
+<pre>replay-0: periods=<span class="hit">0</span>  net=<span class="hit">None</span>  failures=0
+replay-1: periods=<span class="hit">0</span>  net=<span class="hit">None</span>  failures=0
+<span class="dim">(the same window alone gives 81 periods)</span></pre>
+        </div>
+
+        <div class="part">
+          <p class="label">Why it matters</p>
+          <p><code>POST /api/backtest</code> protects itself with <code>AppState._replay</code> and returns a
+            clean <code>409</code> to a second caller. But <code>Scheduler._score()</code> — the live scoring
+            pass — calls <code>run_backtest</code> directly and takes no lock. With
+            <code>backtest.live: true</code>, which is a normal setting, a timed pass and a console run can
+            overlap.</p>
+          <p>They share one <code>Store.as_of</code>, one set of views, and one <code>progress</code> slot. So
+            each keeps resetting the other's clock. No error is raised and no failure is recorded. They just
+            return nothing — the worst shape a wrong answer can take.</p>
+        </div>
+
+        <div class="part fix">
+          <p class="label">How to fix it</p>
+          <ul class="tight">
+            <li>Move the lock into <code>run_backtest()</code>, or onto the <code>Store</code>, so the API, the
+              scheduler, the CLI and MCP all go through the same door.</li>
+            <li>Key <code>progress</code> by <code>run_id</code> instead of using one slot.</li>
+            <li>Raise <code>BacktestError</code> instead of waiting, so the live pass logs "skipped" and tries
+              again on the next tick.</li>
+          </ul>
+        </div>
+      </article>
+
+      <!-- F-06 -->
+      <article class="finding high">
+        <div class="fhead">
+          <div class="ftags">
+            <span class="chip sev">Bad</span>
+            <span class="chip id">F-06</span>
+            <span class="st fx">fixed in 0.1.2</span>
+            <span class="chip">project_io.py · scheduler.py</span>
+          </div>
+          <h3><code>qanat.yaml</code> is saved unsafely, from two threads, with no backup</h3>
+        </div>
+
+        <div class="part">
+          <p class="label">What I did</p>
+          <p>I had two threads save the project at the same time. Then I read the project 400 times while
+            another thread kept saving it.</p>
+        </div>
+
+        <div class="part">
+          <p class="label">What happened</p>
+<pre>two threads saving at once
+  final name:      demo          <span class="dim">(the console's rename is gone)</span>
+  final live_from: 2025-01-01
+  <span class="hit">-> last writer wins, no lock, no merge</span>
+
+400 reads while another thread saves
+  broken reads: <span class="hit">167</span>  {'ValidationError'}</pre>
+        </div>
+
+        <div class="part">
+          <p class="label">Why it matters</p>
+          <p><code>save_project()</code> is one plain <code>path.write_text(text)</code>. That empties the file
+            first, then writes. There is no temp file, no lock, and no old copy kept.</p>
+          <p>Two parts of <code>qanat serve</code> write this file: the API on every edit, and
+            <code>Scheduler.note_frontier()</code> from the scheduler thread.</p>
+          <p>Almost half of my reads failed. Each of those is something real: <code>state.reload()</code> after
+            an edit, <code>qanat check</code> in a second terminal, or an agent reading the project over MCP.
+            And a crash during the write leaves half a file, with nothing to go back to.</p>
+        </div>
+
+        <div class="part fix">
+          <p class="label">How to fix it</p>
+          <ul class="tight">
+            <li>Write to <code>qanat.yaml.tmp</code> in the same folder, <code>fsync</code>, then
+              <code>os.replace()</code>. That is safe on Linux, macOS and Windows.</li>
+            <li>Keep one <code>RLock</code> in <code>project_io</code> that both <code>save_project</code> and
+              <code>load</code> use.</li>
+            <li>Keep the last good file as <code>qanat.yaml.bak</code>, and let <code>load()</code> say so when
+              the main file will not parse.</li>
+            <li><code>note_frontier()</code> only writes one field. Consider keeping
+              <code>live_from</code> in <code>_qanat_state</code> instead, so the scheduler never touches the
+              file.</li>
+          </ul>
+        </div>
+      </article>
+
+      <!-- F-07 -->
+      <article class="finding high">
+        <div class="fhead">
+          <div class="ftags">
+            <span class="chip sev">Bad</span>
+            <span class="chip id">F-07</span>
+            <span class="st fx">fixed in 0.1.2</span>
+            <span class="chip">editor.py · api.py</span>
+          </div>
+          <h3>One rejected edit breaks the console until you restart it</h3>
+        </div>
+
+        <div class="part">
+          <p class="label">What I did</p>
+          <p>I sent one bad edit (a step reading a table that does not exist). The API said no. Then I did
+            normal work.</p>
+        </div>
+
+        <div class="part">
+          <p class="label">What happened</p>
+<pre>[200] check before                 {"ok":true,"errors":[]}
+[400] bad step                     step 'bogus' reads unknown stage 'nope'
+
+[200] check AFTER                  <span class="hit">{"ok":false,"errors":["step 'bogus' reads unknown stage 'nope'"]}</span>
+[400] a normal, valid edit         step 'bogus' reads unknown stage 'nope'
+[400] deleting an unrelated step   step 'bogus' reads unknown stage 'nope'
+
+does qanat.yaml contain 'bogus'?   <span class="hit">False</span></pre>
+        </div>
+
+        <div class="part">
+          <p class="label">Why it matters</p>
+          <p><code>save_step()</code> calls <code>upsert_step(project, step)</code> first, and checks the
+            project after. When the check fails, the change to the in-memory project stays. The file on disk is
+            still clean, so the console and the file now disagree.</p>
+          <p>After that, the console reports a broken pipeline that does not exist, and <em>every</em> later
+            edit fails with an error about a step you cannot find in the file. The only way out is restarting
+            the server. One typo in a form takes the editor down.</p>
+        </div>
+
+        <div class="part fix">
+          <p class="label">How to fix it</p>
+          <ul class="tight">
+            <li>In <code>apply_and_save()</code>, work on <code>project.model_copy(deep=True)</code>. Change the
+              copy, check the copy, and only keep it after <code>save_project</code> succeeds.</li>
+            <li>Add a test that sends a rejected edit and then a valid one. A test with only one request will
+              never see this.</li>
+          </ul>
+        </div>
+      </article>
+
+      <!-- F-08 -->
+      <article class="finding med">
+        <div class="fhead">
+          <div class="ftags">
+            <span class="chip sev">Medium</span>
+            <span class="chip id">F-08</span>
+            <span class="st op">still open</span>
+            <span class="chip">backtest.py</span>
+          </div>
+          <h3>A price of zero becomes an infinite return, with no warning</h3>
+        </div>
+
+        <div class="part">
+          <p class="label">What I did</p>
+          <p>I set one entry price to <code>0</code>, then to <code>-1</code>, and scored one period.</p>
+        </div>
+
+        <div class="part">
+          <p class="label">What happened</p>
+<pre>entry price 0.0   gross=<span class="hit">inf</span>      net=<span class="hit">inf</span>       notes=[]
+entry price -1.0  gross=<span class="hit">-226.09</span>  net=-226.10  notes=<span class="hit">[]</span></pre>
+        </div>
+
+        <div class="part">
+          <p class="label">Why it matters</p>
+          <p><code>_price_frame()</code> drops empty values and nothing else. Then
+            <code>score_period()</code> computes <code>p1 / p0 - 1</code>. Many real feeds print
+            <code>0</code> for a halt, a delisting, or a bad tick.</p>
+          <p>Both numbers go into <code>totals_of()</code> and into the equity curve. <code>notes</code> stays
+            empty, so the report gives the reader nothing to notice. The negative one is worse than the
+            infinite one: −22,609% for one period still looks like a number, so a bad run reads as a bad alpha
+            instead of bad data.</p>
+        </div>
+
+        <div class="part fix">
+          <p class="label">How to fix it</p>
+          <ul class="tight">
+            <li>In <code>_price_frame()</code>, drop prices that are zero or below, and count them.</li>
+            <li>Put that count in <code>result.notes</code> and in <code>conditions</code>. A line like
+              "312 bad prices dropped from <code>normalized.prices</code>" saves an afternoon.</li>
+            <li>In <code>score_period()</code>, skip a period whose <code>gross</code> is not a finite number,
+              and say why.</li>
+          </ul>
+        </div>
+      </article>
+
+      <!-- F-09 -->
+      <article class="finding med">
+        <div class="fhead">
+          <div class="ftags">
+            <span class="chip sev">Medium</span>
+            <span class="chip id">F-09</span>
+            <span class="st fx">fixed in 0.1.2</span>
+            <span class="chip">runner.py</span>
+          </div>
+          <h3><code>sys.exit()</code> in a step escapes the runner and leaves a job "running"</h3>
+        </div>
+
+        <div class="part">
+          <p class="label">What I did</p>
+          <p>I wrote four steps, each one failing in a different way, and ran them.</p>
+        </div>
+
+        <div class="part">
+          <p class="label">What happened</p>
+<pre>sys.exit(3)         -> <span class="hit">ESCAPED the runner: SystemExit 3</span>
+KeyboardInterrupt   -> <span class="hit">ESCAPED</span>
+MemoryError         -> caught, status=failed   <span class="dim">(correct)</span>
+RecursionError      -> caught, status=failed   <span class="dim">(correct)</span>
+
+runs still marked 'running': <span class="hit">1</span></pre>
+        </div>
+
+        <div class="part">
+          <p class="label">Why it matters</p>
+          <p><code>run_step()</code> catches <code>Exception</code>. But <code>SystemExit</code> and
+            <code>KeyboardInterrupt</code> come from <code>BaseException</code>, so they pass right by
+            <code>store.end_run()</code>.</p>
+          <p>The run row then stays <code>running</code> forever, and the console shows that job spinning
+            forever. This is not a strange input: <code>sys.exit()</code> is common in scripts, and pressing
+            Ctrl-C during <code>qanat run</code> does exactly the same thing.</p>
+        </div>
+
+        <div class="part fix">
+          <p class="label">How to fix it</p>
+          <ul class="tight">
+            <li>Put the body of <code>run_step</code> and <code>run_source</code> in
+              <code>try/finally</code> so <code>end_run</code> always runs. Or catch
+              <code>BaseException</code>, record <code>interrupted</code>, and raise again.</li>
+            <li>Do the same in <code>Scheduler._execute</code>. It already frees the worker slot correctly —
+              only the run row leaks.</li>
+          </ul>
+        </div>
+      </article>
+
+      <!-- F-10 -->
+      <article class="finding med">
+        <div class="fhead">
+          <div class="ftags">
+            <span class="chip sev">Medium</span>
+            <span class="chip id">F-10</span>
+            <span class="st fx">fixed in 0.1.2</span>
+            <span class="chip">retention.py</span>
+          </div>
+          <h3>Retention deletes raw data, which the contract says is never edited</h3>
+        </div>
+
+        <div class="part">
+          <p class="label">What I did</p>
+          <p>I set retention to <code>1s</code> on a <code>raw</code> table and ran it.</p>
+        </div>
+
+        <div class="part">
+          <p class="label">What happened</p>
+<pre>policy '1s' on raw.daily_prices: <span class="hit">3360 -> 8 rows</span> (removed 3352)
+parse_duration('0d') -> 0:00:00   <span class="dim">(accepted)</span></pre>
+        </div>
+
+        <div class="part">
+          <p class="label">Why it matters</p>
+          <p>Rule 1 of the stage contract says: "<em>raw is landed and never edited</em>". Retention is not a
+            step, so the rule does not cover it. It deletes rows with no question and no undo.</p>
+          <p><code>1s</code> and <code>1d</code> are one key apart. <code>PUT /api/retention</code> takes
+            either one, and the scheduler applies it within 60 seconds. Raw is the one thing a replay cannot
+            rebuild, because every other table is computed from it. So this is the only delete in the whole
+            system that you truly cannot undo.</p>
+        </div>
+
+        <div class="part fix">
+          <p class="label">How to fix it</p>
+          <ul class="tight">
+            <li>Refuse retention on a <code>raw</code> stage unless the project sets something like
+              <code>allow_raw_retention: true</code>. Deleting the archive should be a clear choice.</li>
+            <li>Require a sensible minimum, such as 1 hour, and refuse <code>0</code>.</li>
+            <li>Add <code>qanat retention --dry-run</code>. Make
+              <code>POST /api/retention/run</code> return how many rows it <em>would</em> delete, unless you
+              pass <code>confirm=true</code>.</li>
+          </ul>
+        </div>
+      </article>
+
+      <!-- F-11 -->
+      <article class="finding med">
+        <div class="fhead">
+          <div class="ftags">
+            <span class="chip sev">Medium</span>
+            <span class="chip id">F-11</span>
+            <span class="st fx">fixed in 0.1.2</span>
+            <span class="chip">project.py · runner.py</span>
+          </div>
+          <h3>A loop between two steps passes the contract check</h3>
+        </div>
+
+        <div class="part">
+          <p class="label">What I did</p>
+          <p>In one features stage I made <code>mk_a</code> read <code>features.b</code>, and
+            <code>mk_b</code> read <code>features.a</code>. Each one needs the other first.</p>
+        </div>
+
+        <div class="part">
+          <p class="label">What happened</p>
+<pre>check ok?  <span class="hit">True</span>
+errors:    []
+run order: ['mk_a', 'mk_b', 'alpha_x']   <span class="dim"># but mk_a needs mk_b to run first</span></pre>
+        </div>
+
+        <div class="part">
+          <p class="label">Why it matters</p>
+          <p><code>runner.order()</code> has this comment: "<em>a cycle; qanat check is what reports it</em>".
+            But <code>validate()</code> has no loop detection at all. The stage rules catch loops that cross
+            stages. A features stage is allowed to chain, so two steps inside one can point at each other.</p>
+          <p><code>order()</code> gives up and adds the rest in file order. The run then fails at
+            <code>mk_a</code> with <code>LookupError: upstream table(s) not there yet</code>. That is a runtime
+            error about a missing table, for a graph the file should never have been allowed to describe. Two
+            such steps with <code>when:</code> would also wake each other in a loop.</p>
+        </div>
+
+        <div class="part fix">
+          <p class="label">How to fix it</p>
+          <ul class="tight">
+            <li>Sort the graph in <code>validate()</code> and name the loop:
+              "<code>mk_a → mk_b → mk_a</code>".</li>
+            <li>Make <code>order()</code> raise an error on leftover steps, instead of returning an order it
+              knows is wrong.</li>
+            <li>Refuse a <code>when:</code> chain that closes a loop, for the same reason.</li>
+          </ul>
+        </div>
+      </article>
+
+      <!-- F-12 -->
+      <article class="finding med">
+        <div class="fhead">
+          <div class="ftags">
+            <span class="chip sev">Medium</span>
+            <span class="chip id">F-12</span>
+            <span class="st fx">fixed in 0.1.2</span>
+            <span class="chip">backtest.py</span>
+          </div>
+          <h3>Nothing limits how big a replay can be</h3>
+        </div>
+
+        <div class="part">
+          <p class="label">What I did</p>
+          <p>I asked for one year of dates with <code>rebalance: 1s</code>.</p>
+        </div>
+
+        <div class="part">
+          <p class="label">What happened</p>
+<pre>2020-01-01..2020-01-02 every 1s:      86,401 dates in  0.1s, memory 105 MB
+2020-01-01..2021-01-01 every 1s:  <span class="hit">31,622,401 dates</span> in 49.0s, memory <span class="hit">762 MB</span></pre>
+        </div>
+
+        <div class="part">
+          <p class="label">Why it matters</p>
+          <p>That is only the list of dates. After that, every single date runs the whole pipeline again.</p>
+          <p><code>dates()</code> is called before <code>start_backtest()</code>, so there is not even a run row
+            to look at. The request just hangs while holding <code>_replay</code>, and every other backtest
+            gets a <code>409</code> in the meantime.</p>
+          <p><code>rebalance</code> is a free text field in the console form and in the MCP schema. So this is a
+            likely typo, not an attack.</p>
+        </div>
+
+        <div class="part fix">
+          <p class="label">How to fix it</p>
+          <ul class="tight">
+            <li>Count the dates with math first, and refuse above a limit. Say the number:
+              "<em>2020-01-01..2021-01-01 every 1s is 31,622,401 rebalances. Use a bigger gap, or pass
+              <code>--force</code>.</em>"</li>
+            <li>Compare the gap with the price data. A gap smaller than the data itself cannot mean
+              anything.</li>
+            <li>Record the run before the slow work starts, so a long replay is visible and can be stopped.</li>
+          </ul>
+        </div>
+      </article>
+
+      <!-- F-13 -->
+      <article class="finding med">
+        <div class="fhead">
+          <div class="ftags">
+            <span class="chip sev">Medium</span>
+            <span class="chip id">F-13</span>
+            <span class="st op">still open</span>
+            <span class="chip">scheduler.py · api.py</span>
+          </div>
+          <h3>A job has no time limit and no stop button</h3>
+        </div>
+
+        <div class="part">
+          <p class="label">What I did</p>
+          <p>I made a step that sleeps for ten minutes, and started it six times.</p>
+        </div>
+
+        <div class="part">
+          <p class="label">What happened</p>
+<pre>in-flight: {'tone'}
+quiet(2s)? False
+events: 'still running -- this tick was skipped'  x4
+runs still marked 'running': 1</pre>
+        </div>
+
+        <div class="part">
+          <p class="label">Why it matters</p>
+          <p>The skip logic is correct and the log is honest. The missing piece is a way out. The job holds its
+            worker until the process dies.</p>
+          <p>The default is <code>workers: 4</code>. So four slow or stuck jobs stop the whole scheduler, and
+            the only sign is warning messages nobody is reading. A REST source against a slow server can get
+            there by itself: the 30-second httpx timeout covers a full hang, but not a slow trickle.</p>
+        </div>
+
+        <div class="part fix">
+          <p class="label">How to fix it</p>
+          <ul class="tight">
+            <li>Add a per-job <code>timeout:</code> with a project default. When it runs out, end the run as
+              <code>timeout</code> and free the worker.</li>
+            <li>Add <code>DELETE /api/jobs/{id}/run</code> and a stop button on the job panel.</li>
+            <li>Show "3 of 4 workers busy" in the <code>/api/graph</code> health block, so you can see it
+              without reading the log.</li>
+          </ul>
+        </div>
+      </article>
+
+      <!-- F-14 -->
+      <article class="finding low">
+        <div class="fhead">
+          <div class="ftags">
+            <span class="chip sev">Small</span>
+            <span class="chip id">F-14</span>
+            <span class="st op">still open</span>
+            <span class="chip">runner.py</span>
+          </div>
+          <h3>The lookahead check skips any table with no date column</h3>
+        </div>
+
+        <div class="part">
+          <p class="label">What I did</p>
+          <p>I made a replayed step write a table with only <code>symbol</code> and <code>score</code> — no
+            date column at all.</p>
+        </div>
+
+        <div class="part">
+          <p class="label">What happened</p>
+<pre>step written at as_of=2024-01-01 with no date column -> ok
+time column found: <span class="hit">None</span></pre>
+        </div>
+
+        <div class="part">
+          <p class="label">Why it matters</p>
+          <p><code>_check_lookahead()</code> returns early when <code>store.time_column(ref)</code> is
+            <code>None</code>. So a table with no date column is simply not checked.</p>
+          <p>The check is described as catching "a step that built a timestamp itself, or read around the views
+            with raw SQL". But a table with no date column skips the as-of views <em>and</em> the check at the
+            same time — which is exactly what such a step would produce. I call it small because nothing is
+            quietly wrong. It is a promise that is narrower than it sounds.</p>
+        </div>
+
+        <div class="part fix">
+          <p class="label">How to fix it</p>
+          <ul class="tight">
+            <li>Warn in <code>qanat check</code> when a replayed step writes a table with no date column, and
+              point at <code>time_columns:</code> as the answer.</li>
+            <li>Say it in the report's <code>conditions</code>: "3 tables here have no date column and were not
+              lookahead-checked."</li>
+          </ul>
+        </div>
+      </article>
+
+      <!-- F-15 -->
+      <article class="finding low">
+        <div class="fhead">
+          <div class="ftags">
+            <span class="chip sev">Small</span>
+            <span class="chip id">F-15</span>
+            <span class="st op">still open</span>
+            <span class="chip">editor.py</span>
+          </div>
+          <h3><code>store:</code> can be moved anywhere, in one call</h3>
+        </div>
+
+        <div class="part">
+          <p class="label">What I did</p>
+          <p>I sent <code>PUT /api/store</code> with an absolute path outside the project.</p>
+        </div>
+
+        <div class="part">
+          <p class="label">What happened</p>
+<pre>[200] {"store":"/tmp/qanat_elsewhere.duckdb","warnings":[]}</pre>
+        </div>
+
+        <div class="part">
+          <p class="label">Why it matters</p>
+          <p>Same family as F-02, much smaller. It creates a folder, not a file that gets run. In practice the
+            console just loses its data and shows an empty project. Still worth the same path check, and worth
+            a confirmation — moving the store is not a normal settings change.</p>
+        </div>
+
+        <div class="part fix">
+          <p class="label">How to fix it</p>
+          <ul class="tight">
+            <li>A file store must resolve inside the project folder, or be a clear
+              <code>postgresql://</code> address.</li>
+            <li>Return what the new store holds — "0 tables, 0 rows" — so a mistake is obvious right away.</li>
+          </ul>
+        </div>
+      </article>
+
+    </div>
+  </section>
+
+  <section>
+    <div class="shead">
+      <h2>What did not break</h2>
+      <span class="count">5 tests, nothing wrong</span>
+    </div>
+    <div class="prose">
+      <p>These matter too. They are the parts you do not need to touch.</p>
+    </div>
+    <ul class="tight prose">
+      <li><strong>Run ids.</strong> 200 threads writing a run row together gave 200 different ids and zero
+        errors. Microsecond time is precise enough.</li>
+      <li><strong><code>NaN</code> and <code>inf</code> weights.</strong> I expected a broken console page.
+        <code>_check_weights</code> warns, pandas quietly skips the <code>NaN</code> values, and the report
+        JSON stays valid. Nothing to fix.</li>
+      <li><strong><code>MemoryError</code> and <code>RecursionError</code> in a step.</strong> Both caught,
+        both recorded as <code>failed</code>, and the loop keeps going.</li>
+      <li><strong>SQL inside the <code>/api/table</code> URL.</strong> The table must exist before the query is
+        built, and <code>order</code> is matched against the real column list. Blocked at both doors.</li>
+      <li><strong>The "database is busy" message.</strong> <code>StoreBusy</code> lists four clear ways out. It
+        is the best error message in the codebase.</li>
+    </ul>
+  </section>
+
+  <section>
+    <div class="shead">
+      <h2>Ideas beyond the fixes</h2>
+      <span class="count">8 features</span>
+    </div>
+
+    <div class="improve">
+      <div class="imp">
+        <h3>Replay on copies</h3>
+        <p>The most valuable change here. Let a replay work on copies in its own schema, not on the real
+          tables. Then a replay stops being destructive: no crash damage, no empty console, no timed job
+          reading old data, and two replays stop fighting.</p>
+        <span class="closes">fixes F-03, F-04, most of F-05</span>
+      </div>
+      <div class="imp">
+        <h3><code>qanat doctor</code></h3>
+        <p>One command, also run at startup. It finds stuck "running" rows, leftover views, tables emptied by
+          a dead replay, and a <code>qanat.yaml</code> that will not parse. Report it, then offer to repair
+          it.</p>
+        <span class="closes">makes F-03 and F-06 recoverable</span>
+      </div>
+      <div class="imp">
+        <h3>One writer for the project file</h3>
+        <p>Safe temp-and-rename, one shared lock, a <code>.bak</code> copy, and a version number on
+          <code>/api/project</code> so an old console tab is refused instead of quietly overwriting somebody
+          else's edit.</p>
+        <span class="closes">fixes F-06</span>
+      </div>
+      <div class="imp">
+        <h3>Job control</h3>
+        <p>Time limits per job, a stop endpoint, a stop button in the console, and worker use in the health
+          block. Right now a stuck job is invisible unless you read the event log.</p>
+        <span class="closes">fixes F-13</span>
+      </div>
+      <div class="imp">
+        <h3>Make <code>check</code> look inside</h3>
+        <p>It checks shape well and content not at all. Add: table name pattern, script path inside the
+          project, loop detection, tables with no date column, retention on raw. Each one is a few lines, and
+          each one is a whole group of bugs that reach runtime today.</p>
+        <span class="closes">fixes F-01, F-02, F-10, F-11, F-14</span>
+      </div>
+      <div class="imp">
+        <h3>Data quality in the report</h3>
+        <p>End every replay with a short data block: bad prices dropped, symbols with no price, dates skipped
+          and why. A backtest that quietly swallows bad ticks is the exact failure this tool exists to
+          stop.</p>
+        <span class="closes">fixes F-08</span>
+      </div>
+      <div class="imp">
+        <h3>Limits on a replay</h3>
+        <p>Count the dates before building them, and refuse a silly grid with the number in the message. Save
+          the run before the slow work, so it can be watched and stopped.</p>
+        <span class="closes">fixes F-12</span>
+      </div>
+      <div class="imp">
+        <h3>A token when the console is not local</h3>
+        <p>Local by default is right. Refuse a non-local <code>--host</code> without <code>--token</code>, and
+          let the Docker entrypoint create one. Today the compose file opens an editor that can write and run
+          files, with no password.</p>
+        <span class="closes">helps F-02, F-15</span>
+      </div>
+    </div>
+
+    <div class="note">
+      <strong>Order I would fix them in.</strong>
+      <ol class="steps">
+        <li>F-01 and F-02. Both are input checks in <code>validate()</code> and <code>save_step()</code>.
+          About an afternoon. These two let a bad string become a running one.</li>
+        <li>F-07. Three lines: check a deep copy. It removes a whole group of console outages.</li>
+        <li>Replay on copies. This is the real design change, and it pays for F-03, F-04 and F-05 at once.</li>
+      </ol>
+    </div>
+  </section>
+
+  <section>
+    <div class="shead">
+      <h2>The other two parts</h2>
+      <span class="count">separate runs</span>
+    </div>
+    <div class="partlink">
+      <h3>Part two · Clicking Every Button in Qanat</h3>
+      <p>Everything above is the engine. The console is its own surface, so I drove it in a real browser:
+        every button, the run form, the pipeline graph, the tab order, and what the page does when the server
+        hangs and when it dies.</p>
+      <p>Twenty more problems. The one that connects to this report: I typed <code>-500</code> into the
+        commission box, and the form let me. The alpha then showed <strong>+145.64%</strong> in the strategy
+        book. The backend does refuse a negative fee in <code>qanat.yaml</code> — but not in the per-run
+        override the form sends.</p>
+      <a class="go" href="https://claude.ai/code/artifact/c7018f9f-c61a-4847-b18f-0d82f7254e4a">Read part two →</a>
+    </div>
+    <div class="partlink">
+      <h3>Part three · Does the Backtest Tell the Truth?</h3>
+      <p>The real job: connect a data source, build a graph, write an alpha, backtest it — tested against
+        price data whose correct answer I worked out first. The money arithmetic matches to thirteen decimal
+        places. But an alpha can still reach the future four different ways, and a loop between two steps
+        multiplies your features by ten on every run while <code>qanat check</code> says the project is
+        fine.</p>
+      <a class="go" href="https://claude.ai/code/artifact/0c725dfa-416c-4cc0-a5ae-b3e19ccaaaeb">Read part three →</a>
+    </div>
+  </section>
+
+  <footer>
+    Every result above was reproduced on qanat 0.1.1, on a fresh <code>qanat init --demo</code> project.<br>
+    The test suite was green before and after. No test used the network.
+  </footer>
+
+</div>

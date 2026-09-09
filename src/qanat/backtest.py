@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import threading
 from collections.abc import Sequence
 from dataclasses import asdict, dataclass, field
 from datetime import timedelta
@@ -37,6 +38,14 @@ from qanat.store import Store
 
 class BacktestError(Exception):
     pass
+
+
+#: One replay per store, whoever asks. The API endpoint had a lock of its own, but
+#: the scheduler's live pass called `run_backtest` directly and took nothing -- so
+#: with `backtest.live: true` a console run and a timed pass could overlap. They
+#: share one as-of clock and one set of views, so each kept resetting the other:
+#: both came back with zero periods, no exception and no recorded failure.
+_REPLAY = threading.Lock()
 
 
 @dataclass
@@ -87,14 +96,31 @@ class BacktestResult:
 
 
 # ----------------------------------------------------------------------- dates
-def dates(frm: str, to: str, every: str) -> list[str]:
+#: How many as-of dates one replay may walk. Each one runs the whole upstream
+#: pipeline, so this is a count of pipeline passes, not of rows. A year at
+#: `rebalance: 1s` is 31.6M of them -- 49 seconds and 762 MB just to build the list,
+#: before a single step ran.
+MAX_STOPS = 20_000
+
+
+def dates(frm: str, to: str, every: str, limit: int | None = MAX_STOPS) -> list[str]:
     """The as-of dates a replay stops at, first to last, both ends included."""
-    step = parse_duration(every)
+    try:
+        step = parse_duration(every, "rebalance")
+    except ValueError as exc:
+        raise BacktestError(str(exc)) from exc
     if step <= timedelta(0):
         raise BacktestError(f"rebalance must be a positive duration, got {every!r}")
     start, end = pd.Timestamp(frm), pd.Timestamp(to)
     if end < start:
         raise BacktestError(f"'to' ({to}) is before 'from' ({frm})")
+    # Count first. Building the list to find out how big it is was the expensive part.
+    n = int((end - start) / step) + 1
+    if limit is not None and n > limit:
+        raise BacktestError(
+            f"{frm}..{to} every {every} is {n:,} rebalances, and each one replays the "
+            f"whole pipeline. The limit is {limit:,} -- widen the gap, or shorten the window"
+        )
     out, cur = [], start
     while cur <= end:
         out.append(str(cur))
@@ -143,9 +169,31 @@ def live_window(store: Store, project: Project) -> tuple[str, str] | None:
     return (first, latest)
 
 
+def data_fingerprint(store: Store, project: Project) -> dict[str, list]:
+    """Enough of the input data to notice when it moves: rows and newest row, per
+    landed table.
+
+    Without this the digest covered the code and the config and nothing else, so
+    editing the numbers inside a source file left it unchanged -- and `compare` then
+    told the reader "same inputs and same window, so any difference here is the
+    engine", which sent them to debug a bug that was not there.
+    """
+    out: dict[str, list] = {}
+    for src in project.sources:
+        info = store.table_info(src.ref)
+        if info is None:
+            continue
+        try:
+            newest = store.max_time(src.ref)
+        except Exception:  # noqa: BLE001 -- a table with an odd clock still has a row count
+            newest = None
+        out[src.ref] = [info.rows, str(newest)]
+    return out
+
+
 def digest_of(project: Project, root: Path, frm: str, to: str, every: str, seed: int,
               decay: int = 0, universe: str | None = None, split: str = "",
-              alpha: str = "") -> str:
+              alpha: str = "", data: dict | None = None) -> str:
     """What this run was computed from. Two runs with the same digest are the
     same question, so a different answer means something moved underneath."""
     from qanat.plan import job_spec
@@ -154,6 +202,7 @@ def digest_of(project: Project, root: Path, frm: str, to: str, every: str, seed:
         "jobs": {j.id: job_spec(j, root) for j in project.jobs},
         "backtest": project.backtest.model_dump() if project.backtest else None,
         "window": [frm, to, every, seed, decay, universe, split, alpha],
+        "data": data or {},
     }
     return hashlib.sha256(json.dumps(spec, sort_keys=True, default=str).encode()).hexdigest()[:16]
 
@@ -229,7 +278,17 @@ def decay_weights(held: dict[str, pd.Series], stops: list[str], n: int) -> dict[
         for k, past in enumerate(window):
             part = past * (weights[k] / total)
             blended = part if blended is None else blended.add(part, fill_value=0.0)
-        out[stop] = blended.dropna()
+        blended = blended.dropna()
+        # Averaging alone shrinks a book whose sides offset: a long/short portfolio
+        # that flips came out at |weights| = 0.33 where the alpha wrote 1.00, so
+        # "less turnover" quietly also meant "a third of the bet". `combine()` has
+        # always renormalised for the same reason; this is the same rule, applied
+        # to the size the newest portfolio asked for.
+        want = float(w.abs().sum())
+        have = float(blended.abs().sum())
+        if have > 0 and want > 0:
+            blended = blended * (want / have)
+        out[stop] = blended
     return out
 
 
@@ -250,7 +309,7 @@ def score_period(
     # so they have to be things a caller can change without editing the file.
     bt = project.backtest
     c = costs or Costs(bt.fee_bps, bt.slippage_bps, bt.embargo)
-    embargo = parse_duration(c.embargo)
+    embargo = parse_duration(c.embargo, "embargo")
     notes: list[str] = []
 
     if w is None or w.empty:
@@ -267,7 +326,12 @@ def score_period(
         notes.append(f"{stop}: entry and exit price fall on the same day, skipped")
         return None, notes
 
-    both = w.index.intersection(p0.index).intersection(p1.index)
+    # Intersect on prices that actually exist. The price frame is a pivot, so a
+    # name that stopped being quoted is still a *column*, full of nulls -- it stayed
+    # in this set, the note below never fired, and its null return contributed zero.
+    # A quarter of a book became non-earning cash while the report said it held four
+    # names. Delisting is the ordinary way that happens.
+    both = w.index.intersection(p0.dropna().index).intersection(p1.dropna().index)
     dropped = sorted(set(w.index) - set(both))
     if dropped:
         notes.append(f"{stop}: no price for {', '.join(dropped[:5])}"
@@ -503,6 +567,42 @@ def run_backtest(
     live: bool = False,
 ) -> BacktestResult:
     """Replay the pipeline across a window and price what it held."""
+    if not _REPLAY.acquire(blocking=False):
+        raise BacktestError(
+            "a replay is already running against this store. They share one as-of "
+            "clock, so a second one would give both of them the wrong answer"
+        )
+    try:
+        return _run_backtest(
+            store, project, root, frm, to, rebalance=rebalance, seed=seed, decay=decay,
+            universe=universe, split=split, alpha=alpha, allocation=allocation,
+            fee_bps=fee_bps, slippage_bps=slippage_bps, purge=purge, embargo=embargo,
+            on_step=on_step, live=live,
+        )
+    finally:
+        _REPLAY.release()
+
+
+def _run_backtest(
+    store: Store,
+    project: Project,
+    root: Path,
+    frm: str,
+    to: str,
+    rebalance: str | None = None,
+    seed: int = 0,
+    decay: int | None = None,
+    universe: str | None = None,
+    split: str | None = None,
+    alpha: str | Sequence[str] | None = None,
+    allocation: dict[str, float] | None = None,
+    fee_bps: float | None = None,
+    slippage_bps: float | None = None,
+    purge: str | None = None,
+    embargo: str | None = None,
+    on_step: Any = None,
+    live: bool = False,
+) -> BacktestResult:
     bt = project.backtest
     if bt is None:
         raise BacktestError(
@@ -588,7 +688,7 @@ def run_backtest(
         embargo or bt.embargo,
     )
     held_for = purge or bt.purge
-    gap = parse_duration(held_for)
+    gap = parse_duration(held_for, "purge")
 
     # Prices are read before the replay starts, and never again. A pass rewrites
     # every derived table from the rows visible at its as-of date, so by the last
@@ -597,9 +697,11 @@ def run_backtest(
     # see the whole history, so it takes its copy first.
     prices = _price_frame(store, project)
 
+    fingerprint = data_fingerprint(store, project)
     digest = digest_of(project, root, frm, to, every, seed, smoothing, universe,
                        cut_at, key + json.dumps(share, sort_keys=True) +
-                       f"|{costs.fee_bps}|{costs.slippage_bps}|{costs.embargo}|{held_for}")
+                       f"|{costs.fee_bps}|{costs.slippage_bps}|{costs.embargo}|{held_for}",
+                       data=fingerprint)
     run_id = store.start_backtest(frm, to, every, seed, digest, alpha=key, live=live)
     result = BacktestResult(run_id, frm, to, every, seed, digest)
     result.conditions = {"alpha": key, "alphas": names, "allocation": share,
@@ -608,7 +710,7 @@ def run_backtest(
                          "universe": universe or "(as declared on the step)",
                          "fee_bps": costs.fee_bps, "slippage_bps": costs.slippage_bps,
                          "purge": held_for, "embargo": costs.embargo,
-                         "jobs_in_run": sorted(needed)}
+                         "jobs_in_run": sorted(needed), "data": fingerprint}
 
     held: dict[str, pd.Series] = {}
     previous = pd.Series(dtype=float)   # the portfolio the last closed period held
@@ -624,6 +726,7 @@ def run_backtest(
         for i, stop in enumerate(stops):
             progress.stop_at(stop, i)
             cut = str(pd.Timestamp(stop) - gap)
+            store.replay_open(cut)
             store.open_pit(cut, project.time_columns)
             try:
                 passes = run_all(
@@ -650,23 +753,42 @@ def run_backtest(
                         f"{ref} needs symbol and weight columns to be a portfolio; "
                         f"it has {', '.join(w.columns)}"
                     )
-                books[name] = (w.set_index(cols["symbol"])[cols["weight"]]
-                               .astype(float).groupby(level=0).last())
+                series = w.set_index(cols["symbol"])[cols["weight"]].astype(float)
+                # Both of these used to be silent, or to reach only the event log --
+                # which is not where anybody reads a result. A run that priced a
+                # 1.3x book reported `ok` with a clean headline and no note.
+                dupes = int(series.index.duplicated().sum())
+                if dupes:
+                    result.notes.append(
+                        f"{stop}: {ref} named {dupes} symbol(s) twice; the last weight won"
+                    )
+                series = series.groupby(level=0).last()
+                size = float(series.abs().sum())
+                if series.size and abs(size - 1.0) > 0.01:
+                    result.notes.append(
+                        f"{stop}: {ref} |weights| sum to {size:.4f}, not 1.0 -- "
+                        f"this period was priced on a book that size"
+                    )
+                books[name] = series
                 single = w
             combined = combine(books, share) if len(picked) > 1 else next(iter(books.values()))
             # what was actually held is what gets saved; the per-alpha rows ride along
             # so the drill-down can still say which alpha wanted which name
-            store.save_bt_weights(
-                run_id, stop,
-                pd.DataFrame({"symbol": combined.index, "weight": combined.to_numpy()})
-                if len(picked) > 1 else single,
-            )
             held[stop] = combined
 
             # Close the period that has been waiting for this stop's price. A period
             # never needs a stop later than the next one, so there is nothing to wait
             # for -- the curve grows one point per pass instead of all at the end.
             smoothed = _smooth(held, stops[:i + 1], smoothing)
+            # What gets recorded is what gets priced. This used to save the alpha's
+            # raw output, so with decay on, the drill-down showed a portfolio that
+            # was never traded -- |weights| 1.0 saved against a 0.34 book priced.
+            priced = smoothed.get(stop, combined)
+            store.save_bt_weights(
+                run_id, stop,
+                single if (len(picked) == 1 and smoothing <= 1)
+                else pd.DataFrame({"symbol": priced.index, "weight": priced.to_numpy()}),
+            )
             if open_stop is not None:
                 period, notes = score_period(
                     prices, smoothed.get(open_stop), previous, open_stop, stop, project, costs
@@ -713,6 +835,7 @@ def run_backtest(
         for r in restored:
             if not r.ok:
                 store.event("error", r.job_id, f"restore after backtest {run_id} failed: {r.error}")
+        store.replay_closed()
 
 
 def period_detail(store: Store, project: Project, run_id: int, as_of: str) -> dict[str, Any]:
@@ -759,7 +882,7 @@ def period_detail(store: Store, project: Project, run_id: int, as_of: str) -> di
 
     bt = project.backtest
     prices = _price_frame(store, project)
-    embargo = parse_duration(bt.embargo)
+    embargo = parse_duration(bt.embargo, "embargo")
     entry = _price_at(prices, pd.Timestamp(key) + embargo)
     exit_ = _price_at(prices, pd.Timestamp(nxt) + embargo)
     if entry is None or exit_ is None:

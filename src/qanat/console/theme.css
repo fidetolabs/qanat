@@ -488,7 +488,61 @@ table.t.corr td:nth-child(3) { width: 34px; }
   background: var(--panel); border: 1px solid var(--line); border-radius: 5px; padding: 5px 8px;
   width: 100%;
 }
-.rrow input:focus, .rrow select:focus { outline: 0; border-color: #a2e65d66; }
+.rrow input:focus, .rrow select:focus { border-color: #a2e65d66; }
+
+/*  There was one :focus rule in this whole file and it removed the outline. Every
+    other control fell back to the UA default on a near-black ground, which is close
+    to invisible -- and the panels that hide with width:0 keep their buttons in the
+    tab order, so a keyboard user was navigating blind. */
+:focus-visible {
+  outline: 2px solid var(--key, #a2e65d);
+  outline-offset: 2px;
+  border-radius: 2px;
+}
+
+/*  Hidden to the eye, still reachable by keyboard and screen reader. */
+.vh {
+  position: absolute; width: 1px; height: 1px;
+  margin: -1px; padding: 0; overflow: hidden;
+  clip: rect(0 0 0 0); clip-path: inset(50%); white-space: nowrap;
+}
+.vh:focus-within {
+  position: fixed; left: 12px; top: 56px; z-index: 60;
+  width: auto; height: auto; margin: 0; padding: 10px 12px;
+  clip: auto; clip-path: none; white-space: normal;
+  background: var(--panel, #121212); border: 1px solid var(--line, #232120);
+  max-height: 60vh; overflow: auto;
+}
+#dag-keys { list-style: none; display: flex; flex-direction: column; gap: 2px; }
+#dag-keys button {
+  background: none; border: 0; color: inherit; font: inherit;
+  cursor: pointer; text-align: left; padding: 2px 4px;
+}
+
+/*  One message area, outside every polled panel. Errors used to be written into a
+    panel that repaints every four seconds, which erased them. */
+.saybox {
+  position: fixed; left: 50%; bottom: 22px; transform: translateX(-50%);
+  z-index: 80; max-width: min(680px, 92vw);
+  padding: 10px 14px; border: 1px solid var(--line, #232120);
+  background: var(--panel, #121212); color: var(--ink, #e8e6e3);
+  font-size: 13px; line-height: 1.5;
+}
+.saybox.bad { border-left: 3px solid #d4593f; }
+.saybox.ok  { border-left: 3px solid var(--key, #a2e65d); }
+.saybox[hidden] { display: none; }
+
+/*  A row that cannot be clicked should not say it can. */
+.lrow { cursor: default; }
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.001ms !important;
+    scroll-behavior: auto !important;
+  }
+}
 .rgo { display: flex; align-items: center; gap: 12px; padding-top: 6px; font-size: 11px; }
 .btn.go { border-color: #a2e65d66; color: var(--key); }
 .btn.go:disabled { opacity: .5; cursor: default; }
@@ -639,4 +693,7 @@ body.server-down .downbanner b { color: var(--red); }
 body.server-down .downbanner code {
   font-family: var(--mono); font-size: 10.5px; color: var(--key);
 }
-body.server-down .bt-empty.bad, body.server-down .warnbox { display: none; }
+/*  This used to hide every warning box while the server was down -- including the
+    one that was a modal's entire content, so "run backtest" opened a blank panel.
+    A panel whose only content is the warning has to keep it. */
+body.server-down .bt-empty.bad { display: none; }

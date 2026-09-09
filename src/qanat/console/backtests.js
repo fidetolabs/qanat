@@ -19,6 +19,21 @@
  * Numbers come from /api/backtests. Nothing here is simulated.
  */
 (function () {
+  //  FastAPI sends {"detail": "..."}; a 422 sends a list of them. Showing the raw
+  //  JSON to a person is the difference between an error and a message.
+  function unwrap(text) {
+    try {
+      var b = JSON.parse(text);
+      if (typeof b.detail === 'string') return b.detail;
+      if (Array.isArray(b.detail)) {
+        return b.detail.map(function (d) {
+          return (d.loc || []).slice(1).join('.') + ': ' + d.msg;
+        }).join('; ');
+      }
+    } catch (e) { /* not JSON */ }
+    return text;
+  }
+
   'use strict';
 
   var PANEL = null, LIST = [], CURRENT = null, TIMER = null, DETAIL = null, VIEW = 'all';
@@ -38,9 +53,42 @@
     });
   }
 
+  //  A fetch with no timeout never fails against a hung server, so the console kept
+  //  saying "connected" and drawing stale numbers indefinitely.
+  function fetchTimeout(path, opts, ms) {
+    var c = new AbortController();
+    var t = setTimeout(function () { c.abort(); }, ms || 8000);
+    return fetch(path, Object.assign({}, opts || {}, { signal: c.signal }))
+      .finally(function () { clearTimeout(t); });
+  }
+
+  function backoff() {
+    return Math.min(2500 * Math.pow(2, Math.max(0, TICK_FAILS - 1)), 30000);
+  }
+
+  //  Errors used to be written into a polled panel, so the next repaint (4s) wiped
+  //  them. This lives outside anything the poll redraws, and announces itself.
+  function say(message, kind) {
+    var box = el('qanat-say');
+    if (!box) {
+      box = document.createElement('div');
+      box.id = 'qanat-say';
+      box.className = 'saybox';
+      box.setAttribute('role', 'alert');
+      document.body.appendChild(box);
+    }
+    if (!message) { box.hidden = true; return; }
+    box.className = 'saybox' + (kind === 'ok' ? ' ok' : ' bad');
+    box.hidden = false;
+    box.textContent = message;
+    clearTimeout(box._t);
+    box._t = setTimeout(function () { box.hidden = true; }, 12000);
+  }
+  window.qanatSay = say;
+
   async function api(path) {
     var r = await fetch(path);
-    if (!r.ok) throw new Error((await r.text()) || r.statusText);
+    if (!r.ok) throw new Error(unwrap(await r.text()) || r.statusText);
     return r.json();
   }
 
@@ -411,7 +459,7 @@
 
     var mine = LIST.filter(function (b) { return !c.alpha || b.alpha === c.alpha; });
     var picker = mine.length > 1
-      ? '<select class="runpick" id="bt-run">' + mine.map(function (b) {
+      ? '<select class="runpick" id="bt-run" aria-label="which run to show">' + mine.map(function (b) {
           return '<option value="' + b.run_id + '"' +
             (String(b.run_id) === String(CURRENT.run_id) ? ' selected' : '') + '>' +
             String(b.from_date).slice(0, 10) + ' → ' + String(b.to_date).slice(0, 10) +
@@ -912,7 +960,7 @@
     try {
       fresh = await api('/api/backtests?limit=40');
     } catch (e) {
-      el('bt-list').innerHTML = '<div class="bt-empty bad">' + esc(e.message) + '</div>';
+      say(e.message);   // #bt-list was removed long ago; this threw and showed nothing
       return;
     }
     // Repaint only when something actually changed. A poll that redraws every four
@@ -1038,7 +1086,8 @@
         '<input type="checkbox" class="f-alpha" value="' + esc(a.id) + '"' +
         (on ? ' checked' : '') + '>' +
         '<span class="apick-name">' + esc(a.id) + '</span>' +
-        '<input type="number" class="f-share" min="0" step="1" value="1" title="share">' +
+        '<input type="number" class="f-share" min="0" step="1" value="1" '
+    + 'title="share" aria-label="share of the money for ' + esc(a.id) + '">' +
         '</label>';
     }).join('') + '</div>';
     body.innerHTML = rerunNote(from, chosen) +
@@ -1065,12 +1114,12 @@
       row('seed', '<input id="f-seed" type="number" value="' +
           (fc.seed != null ? fc.seed : (d.seed || 0)) + '">',
           'same seed, same answer') +
-      row('commission', '<input id="f-fee" type="number" step="0.5" value="' +
+      row('commission', '<input id="f-fee" type="number" min="0" step="0.5" value="' +
           (fc.fee_bps != null ? fc.fee_bps : (c.costs.fee_bps || 0)) +
           '"> <span class="unit">bps</span>',
           'charged on turnover · raise it until the edge dies, and you know how much ' +
           'of the edge is real') +
-      row('slippage', '<input id="f-slip" type="number" step="0.5" value="' +
+      row('slippage', '<input id="f-slip" type="number" min="0" step="0.5" value="' +
           (fc.slippage_bps != null ? fc.slippage_bps : (c.costs.slippage_bps || 0)) +
           '"> <span class="unit">bps</span>',
           'charged on turnover too') +
@@ -1166,8 +1215,13 @@
       '</div>';
   }
 
+  //  The label used to sit beside the control with no `for`, so the association was
+  //  visual only: a screen reader read "edit text, blank" eleven times through the
+  //  run form with no way to tell the seed from the commission.
   function row(label, control, hint) {
-    return '<div class="rrow"><label>' + esc(label) + '<i>' + hint + '</i></label>' +
+    var m = /id="([^"]+)"/.exec(control);
+    var attr = m ? ' for="' + m[1] + '"' : '';
+    return '<div class="rrow"><label' + attr + '>' + esc(label) + '<i>' + hint + '</i></label>' +
       control + '</div>';
   }
 
@@ -1230,7 +1284,7 @@
 
     try {
       var r = await run;
-      if (!r.ok) throw new Error((await r.text()) || r.statusText);
+      if (!r.ok) throw new Error(unwrap(await r.text()) || r.statusText);
       await r.json();
     } catch (e) {
       el('bt-detail').insertAdjacentHTML('afterbegin',
@@ -1293,7 +1347,8 @@
     refresh();
     // the book lives in the left rail now, so it keeps up whether or not the
     // results panel is open
-    setInterval(refresh, 5000);
+    // One refresh timer, started with the panel. A second one here meant every
+    // cycle sent duplicate /api/backtests and /api/alphas, able to interleave.
   });
 
   window.openBacktests = openBacktests;
@@ -1351,13 +1406,26 @@
     if (title) title.textContent = 'run ' + p.run_id;
   }
 
+  var TICK_FAILS = 0;
   async function tick() {
-    var p;
+    //  Every path here has to reschedule. Both early returns used to skip the one
+    //  call at the bottom, so a single 500 or dropped connection stopped live
+    //  progress for the rest of the session -- the graph froze mid-replay and only
+    //  a page reload brought it back.
     try {
-      var r = await fetch('/api/backtest/progress');
-      if (!r.ok) return;
-      p = await r.json();
-    } catch (e) { return; }
+      await tickOnce();
+      TICK_FAILS = 0;
+    } catch (e) {
+      TICK_FAILS++;
+      schedule(backoff());
+    }
+  }
+
+  async function tickOnce() {
+    var p;
+    var r = await fetchTimeout('/api/backtest/progress');
+    if (!r.ok) throw new Error('progress ' + r.status);
+    p = await r.json();
 
     feedGraph(p);
 

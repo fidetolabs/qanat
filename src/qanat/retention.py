@@ -23,12 +23,18 @@ _UNITS = {
 }
 
 
-def parse_duration(text: str) -> timedelta:
-    """Parse '7d', '24h', '30 minutes' into a timedelta."""
+def parse_duration(text: str, field: str = "retention") -> timedelta:
+    """Parse '7d', '24h', '30 minutes' into a timedelta.
+
+    `field` is the name to put in the error. This helper is shared with the backtest
+    for `rebalance`, `purge` and `embargo`, and it used to say "retention must look
+    like '7d'" whichever one you had actually mistyped -- sending the reader to the
+    wrong setting.
+    """
     raw = str(text).strip()
     m = _DURATION.match(raw)
     if not m:
-        raise ValueError(f"retention must look like '7d' or '24h', got {text!r}")
+        raise ValueError(f"{field} must look like '7d' or '24h', got {text!r}")
     n, unit = int(m.group(1)), m.group(2).lower()
     return timedelta(seconds=n * _UNITS[unit])
 
@@ -42,6 +48,11 @@ def time_column(store: Store, ref: str) -> str | None:
         if cand in lower:
             return lower[cand]
     return None
+
+
+#: The shortest policy that is allowed. A retention of "1s" is one keystroke away
+#: from "1d" and empties the table sixty seconds after it is saved.
+MIN_RETENTION = timedelta(hours=1)
 
 
 def apply_retention(store: Store, ref: str, policy: str) -> int:

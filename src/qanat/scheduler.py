@@ -195,7 +195,10 @@ class Scheduler:
             # feeds itself further down the graph would look busy to its own wake.
             with self._lock:
                 self._inflight.discard(job_id)
-            if result is not None and result.ok and result.rows:
+            # On success, not on rows. A step that correctly computes nothing clears
+            # its table, and waking only on rows > 0 meant the steps waiting on it
+            # kept yesterday's answer indefinitely while every job showed green.
+            if result is not None and result.ok:
                 self.wake(result.targets)
 
     def wake(self, written: Sequence[str]) -> list[str]:

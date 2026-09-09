@@ -18,7 +18,7 @@ from qanat.models import Source
 from qanat.sources.rest import expand
 
 
-def fetch(source: Source, root: Path) -> pd.DataFrame:
+def fetch(source: Source, root: Path, on_warn=None) -> pd.DataFrame:
     o = source.options
     dsn = expand(o.get("dsn"))
     query = o.get("query")

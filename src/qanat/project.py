@@ -18,6 +18,7 @@ becoming a pile of tables nobody can explain:
 from __future__ import annotations
 
 import os
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -26,6 +27,9 @@ import yaml
 
 from qanat.context import is_point_in_time
 from qanat.models import Project
+
+#: `${name}` in a .sql step body -- the same pattern the runner substitutes with.
+_VAR = re.compile(r"\$\{([a-zA-Z0-9_]+)\}")
 
 
 class ProjectError(Exception):
@@ -82,8 +86,12 @@ def validate(p: Project, root: Path) -> Report:
     if pnls:
         if last != "pnl":
             r.errors.append(f"the pnl stage must be last, but '{p.stages[-1].id}' is")
-        if weights and p.stage_index(pnls[0].id) < p.stage_index(weights[0].id):
-            r.errors.append("the pnl stage comes after weights -- it is what a replay earned")
+        if weights and p.stage_index(pnls[0].id) != p.stage_index(weights[0].id) + 1:
+            r.errors.append(
+                f"'{pnls[0].id}' must come directly after the weights stage "
+                f"'{weights[0].id}'. Anything between them is a stage an alpha's output "
+                "would have to pass through"
+            )
         for st in p.steps:
             if any(w.startswith(f"{pnls[0].id}.") for w in st.writes):
                 r.errors.append(
@@ -94,6 +102,21 @@ def validate(p: Project, root: Path) -> Report:
         r.errors.append(f"the weights stage must be last, but '{p.stages[-1].id}' is")
 
     producers = p.producers()
+
+    # One table, one producer. `producers()` is a dict, so a second job writing the
+    # same table used to disappear from it silently -- and in the weights stage that
+    # meant one portfolio counted as two alphas, which is the double counting the
+    # whole closure rule exists to prevent.
+    writers: dict[str, list[str]] = {}
+    for j in p.jobs:
+        for ref in j.writes:
+            writers.setdefault(ref, []).append(j.id)
+    for ref, who in sorted(writers.items()):
+        if len(who) > 1:
+            r.errors.append(
+                f"'{ref}' is written by {' and '.join(sorted(who))}. One table has one "
+                "producer, or nothing can say which run made the rows in it"
+            )
 
     if weights:
         wl = weights[0].id
@@ -124,6 +147,12 @@ def validate(p: Project, root: Path) -> Report:
             r.errors.append(f"source '{s.id}' writes to unknown stage '{s.stage}'")
         elif (lay := p.stage(s.stage)) and lay.kind == "weights":
             r.errors.append(f"source '{s.id}' writes into the weights stage -- only a step may")
+        if s.mode == "append" and not s.key and s.schedule:
+            r.warnings.append(
+                f"source '{s.id}' appends on a schedule with no `key:`, so every poll keeps a "
+                f"full copy of whatever the feed answers. Name the columns that identify one "
+                f"row, or set `mode: replace`"
+            )
 
     # ---- steps ----------------------------------------------------------------
     for st in p.steps:
@@ -134,7 +163,16 @@ def validate(p: Project, root: Path) -> Report:
         if not st.writes:
             r.errors.append(f"step '{st.id}' writes nothing")
         script = root / st.script
-        if not script.is_file():
+        try:
+            inside = script.resolve().is_relative_to(root.resolve())
+        except (OSError, ValueError):  # a path that cannot be resolved is not inside
+            inside = False
+        if not inside:
+            r.errors.append(
+                f"step '{st.id}': script '{st.script}' is outside the project. A step runs "
+                "the file it names, so it has to be a path under the project directory"
+            )
+        elif not script.is_file():
             r.errors.append(f"step '{st.id}': script not found at {st.script}")
         elif script.suffix not in (".sql", ".py"):
             r.errors.append(f"step '{st.id}': script must be .sql or .py, got {script.suffix}")
@@ -143,6 +181,16 @@ def validate(p: Project, root: Path) -> Report:
 
         if st.universe and p.universe(st.universe) is None:
             r.errors.append(f"step '{st.id}' uses unknown universe '{st.universe}'")
+        if not st.universe and script.is_file() and script.suffix == ".py":
+            try:
+                if "ctx.universe(" in script.read_text():
+                    r.errors.append(
+                        f"step '{st.id}' calls ctx.universe() but has no `universe:` set. "
+                        f"Every alpha on the shelf does, so this fails on the first run "
+                        f"with 'has no universe set'"
+                    )
+            except OSError:
+                pass
 
         for ref in st.reads:
             lid = ref.split(".")[0]
@@ -207,7 +255,20 @@ def validate(p: Project, root: Path) -> Report:
             if lid not in stage_ids:
                 r.errors.append(f"retention '{ref}' references unknown stage '{lid}'")
             try:
-                parse_duration(policy)
+                from qanat.retention import MIN_RETENTION
+
+                d = parse_duration(policy)
+                if d < MIN_RETENTION:
+                    r.errors.append(
+                        f"retention '{ref}': {policy!r} is shorter than the one-hour floor. "
+                        f"'1s' and '1d' are one keystroke apart and this deletes rows"
+                    )
+                elif (lay := p.stage(lid)) and lay.kind == "raw":
+                    r.warnings.append(
+                        f"retention '{ref}' deletes rows from a raw stage. raw is the record of "
+                        f"what arrived, and it is the one thing a replay cannot rebuild -- every "
+                        f"other table is a function of it"
+                    )
             except ValueError as exc:
                 r.errors.append(f"retention '{ref}': {exc}")
 
@@ -254,6 +315,54 @@ def validate(p: Project, root: Path) -> Report:
                 f"universe '{u.id}' has no membership dates, so every backtest holds "
                 f"today's list across the whole window -- survivorship bias. Add `from` "
                 f"and `to` columns to {u.symbols} to price what was really investable"
+            )
+
+    # ---- the graph has to be a graph ------------------------------------------
+    # `runner.order()` gives up on a cycle and appends what is left in file order,
+    # with a comment saying `qanat check` reports it. It did not. On an empty store
+    # the run fails with a confusing LookupError; on a populated one every step
+    # reports ok and the values grow on every pass, so the answer depends on how
+    # many times the pipeline was run.
+    remaining = list(p.steps)
+    produced = {s.ref for s in p.sources}
+    while True:
+        ready = [s for s in remaining if all(rd in produced for rd in s.reads)]
+        if not ready:
+            break
+        for s in ready:
+            produced.update(s.writes)
+            remaining.remove(s)
+    stuck = [s for s in remaining if all(rd in producers for rd in s.reads)]
+    if stuck:
+        r.errors.append(
+            "these steps depend on each other in a loop, so nothing can run first: "
+            + ", ".join(sorted(s.id for s in stuck))
+        )
+
+    # ---- a ${name} in a .sql step needs an option behind it --------------------
+    # Left unresolved the text stays in the query as a valid string literal that
+    # matches nothing, so a typo in a YAML key empties the table and reports ok.
+    for st in p.steps:
+        f = root / st.script
+        if f.suffix != ".sql" or not f.is_file():
+            continue
+        try:
+            body = f.read_text()
+        except OSError:
+            continue
+        for name in sorted(set(_VAR.findall(body))):
+            if name == "as_of":
+                continue
+            if name not in st.options:
+                r.errors.append(
+                    f"step '{st.id}': {Path(st.script).name} uses ${{{name}}}, which is not in "
+                    f"its options ({', '.join(sorted(st.options)) or 'none set'})"
+                )
+        if "as_of" in st.options:
+            r.warnings.append(
+                f"step '{st.id}' sets an option called 'as_of'. A replay overwrites it with "
+                "the date being replayed, so this step means something different under "
+                "`qanat backtest` than under `qanat run`"
             )
 
     # ---- soft advice ----------------------------------------------------------

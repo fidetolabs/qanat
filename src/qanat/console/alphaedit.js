@@ -9,6 +9,21 @@
  * question. Pick one, change its settings, and the script is yours to edit after.
  */
 (function () {
+  //  FastAPI sends {"detail": "..."}; a 422 sends a list of them. Showing the raw
+  //  JSON to a person is the difference between an error and a message.
+  function unwrap(text) {
+    try {
+      var b = JSON.parse(text);
+      if (typeof b.detail === 'string') return b.detail;
+      if (Array.isArray(b.detail)) {
+        return b.detail.map(function (d) {
+          return (d.loc || []).slice(1).join('.') + ': ' + d.msg;
+        }).join('; ');
+      }
+    } catch (e) { /* not JSON */ }
+    return text;
+  }
+
   'use strict';
 
   var SHELF = null, EDITING = true;
@@ -22,7 +37,7 @@
 
   async function api(path, opts) {
     var r = await fetch(path, opts);
-    if (!r.ok) throw new Error((await r.text()) || r.statusText);
+    if (!r.ok) throw new Error(unwrap(await r.text()) || r.statusText);
     return r.json();
   }
 
@@ -115,8 +130,12 @@
       '<span id="ae-say" class="faint"></span></div>';
   }
 
+  //  See backtests.js: `for` makes the label the control's name, not just text
+  //  sitting next to it.
   function row(label, control, hint) {
-    return '<div class="rrow"><label>' + esc(label) + '<i>' + hint + '</i></label>' +
+    var m = /id="([^"]+)"/.exec(control);
+    var attr = m ? ' for="' + m[1] + '"' : '';
+    return '<div class="rrow"><label' + attr + '>' + esc(label) + '<i>' + hint + '</i></label>' +
       control + '</div>';
   }
 
@@ -152,7 +171,14 @@
     };
     el('ae-save').onclick = function () { save(alpha); };
     var del = el('ae-del');
-    if (del) del.onclick = function () { remove(alpha); };
+    if (del) del.onclick = function () {
+      //  This sits in the same row as `save`. One misclick used to rewrite
+      //  qanat.yaml with no question asked.
+      var name = (alpha && (alpha.name || alpha.alpha)) || 'this alpha';
+      if (!window.confirm('Remove ' + name + ' from the project?\n\n' +
+                          'The script stays on disk, and so does anything it wrote.')) return;
+      remove(alpha);
+    };
   }
 
   async function save(alpha) {
@@ -366,7 +392,12 @@
       b.onclick = function () { window.QANAT.selectTable(b.getAttribute('data-table')); };
     });
     el('sg-save').onclick = function () { saveStage(id, ret); };
-    if (el('sg-del')) el('sg-del').onclick = function () { dropStage(id); };
+    if (el('sg-del')) el('sg-del').onclick = function () {
+      var n = (tables || []).length;
+      if (!window.confirm('Remove the stage "' + id + '"?' +
+            (n ? '\n\nIt holds ' + n + ' table(s).' : ''))) return;
+      dropStage(id);
+    };
   }
 
   async function saveStage(id, ret) {

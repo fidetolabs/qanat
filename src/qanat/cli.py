@@ -277,6 +277,7 @@ def cmd_run(args) -> int:
         return 1
 
     store = Store(project.store_url(root))
+    _repair_after_crash(store, project, root)
     as_of, seed = getattr(args, "as_of", None), getattr(args, "seed", None)
     if as_of:
         store.open_pit(as_of, project.time_columns)
@@ -513,6 +514,7 @@ def cmd_serve(args) -> int:
         return 1
 
     store = Store(project.store_url(root))
+    _repair_after_crash(store, project, root)
     pl = plan_project(project, root, store)
     for ch in pl.changes:
         print(f"  {c('drift', Y)} {ch.target} · {ch.note or (ch.details[0] if ch.details else '')}")
@@ -545,6 +547,28 @@ def cmd_serve(args) -> int:
             sched.stop()
         store.close()
     return 0
+
+
+def _repair_after_crash(store, project, root) -> None:
+    """Rebuild what a replay that never finished left truncated.
+
+    A replay rewrites every derived table at each as-of date and puts them back when
+    it ends. A SIGKILL, an OOM kill or a closed laptop skips that, and the store then
+    opens on tables holding only the rows that existed at some date in the past --
+    with nothing to say so. The raw tables are untouched, so one ordinary pass is the
+    whole cure; it just has to be run.
+    """
+    if not getattr(store, "interrupted_replay", None):
+        return
+    from qanat.runner import run_all
+
+    print(c(f"  a replay was interrupted at as-of {store.interrupted_replay}", Y))
+    print(f"  {D}the tables it rewrote hold only the rows from then. Rebuilding from raw…{X}")
+    failed = [r for r in run_all(store, project, root, sources=False) if not r.ok]
+    for r in failed:
+        print(f"  {c('error', R_)} {r.job_id}: {r.error}")
+    if not failed:
+        print(f"  {c('ok', G)} rebuilt\n")
 
 
 # ---------------------------------------------------------------------- alphas
