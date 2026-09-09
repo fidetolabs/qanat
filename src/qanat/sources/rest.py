@@ -49,24 +49,59 @@ import pandas as pd
 
 from qanat.models import Source
 
-_ENV = re.compile(r"\$\{([A-Z0-9_]+)\}")
+_ENV = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}")
 
 
-def expand(value: Any) -> Any:
+class MissingEnv(ValueError):
+    """A `${VAR}` in the options that the environment does not set."""
+
+
+def expand(value: Any, missing: set[str] | None = None) -> Any:
+    """Replace `${NAME}` from the environment.
+
+    An unset name used to become an empty string, which produced `Illegal header
+    value b'Bearer '`, or a request sent with a blank API key, or the actively wrong
+    "rest needs options.url" when the option was set and the variable was not.
+    Collect the names instead and let the caller say which one is missing.
+    """
     if isinstance(value, str):
-        return _ENV.sub(lambda m: os.environ.get(m.group(1), ""), value)
+        def sub(m: re.Match) -> str:
+            name = m.group(1)
+            if name not in os.environ:
+                if missing is not None:
+                    missing.add(name)
+                return m.group(0)
+            return os.environ[name]
+        return _ENV.sub(sub, value)
     if isinstance(value, dict):
-        return {k: expand(v) for k, v in value.items()}
+        return {k: expand(v, missing) for k, v in value.items()}
     if isinstance(value, list):
-        return [expand(v) for v in value]
+        return [expand(v, missing) for v in value]
     return value
 
 
 def dig(body: Any, path: str | None) -> Any:
+    """Walk a dot path into the body. A numeric step indexes a list.
+
+    The World Bank answers `[{metadata}, [rows]]`, and with a key-only path there
+    was no way to say "the second element", so the body could not be landed at all.
+    """
     if not path:
         return body
     for part in path.split("."):
-        body = body[part]
+        try:
+            if isinstance(body, list):
+                body = body[int(part)]
+            else:
+                body = body[part]
+        except (KeyError, IndexError, TypeError, ValueError):
+            where = (", ".join(map(str, body))[:120] if isinstance(body, dict)
+                     else f"a list of {len(body)}" if isinstance(body, list)
+                     else type(body).__name__)
+            raise KeyError(
+                f"records path '{path}' has no step '{part}'. At that point the body holds: "
+                f"{where}"
+            ) from None
     return body
 
 
@@ -93,21 +128,38 @@ def for_symbol(value: Any, symbol: str) -> Any:
 
 def _body(source: Source, symbol: str | None) -> Any:
     o = source.options
-    url = expand(o.get("url"))
+    missing: set[str] = set()
+    url = expand(o.get("url"), missing)
+    params, headers = expand(o.get("params"), missing), expand(o.get("headers"), missing)
+    if missing:
+        raise MissingEnv(
+            f"source '{source.id}': {', '.join('${' + m + '}' for m in sorted(missing))} "
+            "is not set in the environment"
+        )
     if not url:
         raise ValueError(f"source '{source.id}': rest needs options.url")
-    params, headers = expand(o.get("params")), expand(o.get("headers"))
     if symbol is not None:
         url, params, headers = (for_symbol(x, symbol) for x in (url, params, headers))
-    r = httpx.request(
-        o.get("method", "GET"),
-        url,
-        params=params or None,
-        headers=headers or None,
-        timeout=float(o.get("timeout", 30)),
-    )
+    timeout = float(o.get("timeout", 30))
+    try:
+        r = httpx.request(
+            o.get("method", "GET"), url,
+            params=params or None, headers=headers or None, timeout=timeout,
+        )
+    except httpx.TimeoutException as exc:
+        raise TimeoutError(
+            f"source '{source.id}': {url} did not answer within {timeout:g}s. "
+            "Set options.timeout higher if the endpoint is simply slow"
+        ) from exc
     r.raise_for_status()
-    return r.json()
+    try:
+        return r.json()
+    except ValueError as exc:
+        ct = r.headers.get("content-type", "unknown")
+        raise ValueError(
+            f"source '{source.id}': {url} answered with {ct}, not JSON. "
+            f"It starts: {r.text[:80]!r}"
+        ) from exc
 
 
 def _flatten(body: Any, o: dict[str, Any]) -> pd.DataFrame:
@@ -117,6 +169,13 @@ def _flatten(body: Any, o: dict[str, Any]) -> pd.DataFrame:
         df = pd.DataFrame.from_dict(records, orient="index").sort_index()
         df.index.name = o.get("index_column", "key")
         df = df.reset_index()
+    elif isinstance(records, dict) and not any(
+        isinstance(v, (list, dict)) for v in records.values()
+    ):
+        # one object, not a list of them -- "the current value of one thing", which
+        # is most of the web. pandas refuses a dict of scalars without an index, so
+        # this used to be un-landable with any combination of options.
+        df = pd.DataFrame([records])
     else:
         df = pd.DataFrame(records)
     if rename := o.get("rename"):
@@ -133,15 +192,21 @@ def _envelope(source: Source, body: Any, symbol: str | None) -> pd.DataFrame:
     replay hides rows newer than the as-of date the same way, so a table of bare
     payloads would quietly opt out of both.
     """
-    return pd.DataFrame([{
-        "fetched_at": datetime.now(timezone.utc),
+    df = pd.DataFrame([{
+        # naive UTC, not an aware datetime: an aware one lands as TIMESTAMPTZ and
+        # then renders in the session zone, so every as-of comparison was off by the
+        # machine's offset. Right on a UTC server, nine hours wrong in Seoul.
+        "fetched_at": datetime.now(timezone.utc).replace(tzinfo=None),
         "source_id": source.id,
         "symbol": symbol,
         "payload": json.dumps(body),
     }])
+    # text, even when it is None. Typed from a first poll that carried no symbols,
+    # this column landed as INTEGER and every later poll failed to cast into it.
+    return df.astype({"symbol": "string"})
 
 
-def fetch(source: Source, root: Path) -> pd.DataFrame:
+def fetch(source: Source, root: Path, on_warn=None) -> pd.DataFrame:
     o = source.options
     shape = _envelope if o.get("payload") else None
 
@@ -150,9 +215,16 @@ def fetch(source: Source, root: Path) -> pd.DataFrame:
         body = _body(source, None)
         return shape(source, body, None) if shape else _flatten(body, o)
 
-    frames = []
+    # One symbol failing used to discard every symbol that had already worked, so a
+    # single delisted ticker stalled the feed indefinitely -- every poll landing
+    # nothing until somebody edited the list.
+    frames, failed = [], []
     for sym in syms:
-        body = _body(source, sym)
+        try:
+            body = _body(source, sym)
+        except Exception as exc:  # noqa: BLE001 -- one symbol, not the batch
+            failed.append(f"{sym} ({type(exc).__name__})")
+            continue
         if shape:
             frames.append(shape(source, body, sym))
         else:
@@ -160,6 +232,13 @@ def fetch(source: Source, root: Path) -> pd.DataFrame:
             if "symbol" not in part.columns:
                 part.insert(0, "symbol", sym)
             frames.append(part)
+    if failed and on_warn:
+        on_warn(f"{len(failed)} of {len(syms)} symbol(s) did not answer: "
+                + ", ".join(failed[:5]) + (" …" if len(failed) > 5 else ""))
     if not frames:
+        if failed:
+            raise RuntimeError(
+                f"source '{source.id}': every symbol failed -- " + ", ".join(failed[:5])
+            )
         return pd.DataFrame()
     return pd.concat(frames, ignore_index=True)

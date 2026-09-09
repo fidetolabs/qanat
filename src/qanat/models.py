@@ -17,6 +17,7 @@ because `from` is a keyword. That is the only place a word has two spellings.
 
 from __future__ import annotations
 
+import re
 from collections.abc import Sequence
 from pathlib import Path
 from typing import Any, Literal
@@ -42,9 +43,24 @@ class Base(BaseModel):
 
 
 def _qualified(v: list[str]) -> list[str]:
+    """Both halves of a `stage.table` reference, held to the same name rule.
+
+    The table half used to be taken as written, and it is interpolated into DDL
+    further down. A name carrying a quote is therefore a SQL statement, and one
+    carrying a space or a capital is a table nobody can address again. Neither is
+    something a project should be able to say by accident, and an agent writing
+    this file has no reason to say it on purpose.
+    """
     for ref in v:
-        if ref.count(".") != 1:
+        stage, _, table = ref.partition(".")
+        if ref.count(".") != 1 or not stage or not table:
             raise ValueError(f"a table is written 'stage.table', got {ref!r}")
+        for part, what in ((stage, "stage"), (table, "table")):
+            if not re.match(_NAME, part):
+                raise ValueError(
+                    f"{what} name {part!r} in {ref!r} is not usable. Names are lower case, "
+                    "start with a letter, and hold only letters, digits and underscores"
+                )
     return v
 
 

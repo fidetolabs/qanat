@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -10,6 +11,13 @@ import pandas as pd
 
 from qanat.models import Project, Step
 from qanat.store import Store
+
+#: A schema-qualified reference in a step's SQL. `main.` and `qanat.` are the two
+#: names the store itself uses, and `qanat_pit.` names the as-of views directly.
+#: Any of them steps around the clock a replay puts in front of a step.
+_SCHEMA_QUALIFIED = re.compile(
+    r"\b(?:main|qanat|qanat_pit|information_schema|pg_catalog)\s*\.\s*\w+", re.IGNORECASE
+)
 
 #: what a universe file may call the day a symbol joined and the day it left
 JOINED = ("from", "from_date", "start", "start_date", "added", "since")
@@ -89,7 +97,24 @@ class Context:
         return self.store.read(ref, limit, as_of=self.as_of)
 
     def sql(self, query: str) -> pd.DataFrame:
-        """Run SQL over the store. Tables are named `stage__table`."""
+        """Run SQL over the store. Tables are named `stage__table`.
+
+        A bare name resolves through the as-of views while a replay is open, so this
+        reads the past like everything else. Naming a schema stepped around them --
+        `main.raw__bars` reached the whole history, and since a replay never
+        re-polls a source, the raw tables are the one place that history survives.
+        The alpha that did it earned 1292% against an honest 3.40%, and reported no
+        failure, warning or note.
+        """
+        if self.as_of is not None:
+            bad = _SCHEMA_QUALIFIED.search(query)
+            if bad:
+                raise ValueError(
+                    f"step '{self.step.id}': this query names the schema "
+                    f"('{bad.group(0).strip()}'), which reads around the as-of views and "
+                    f"would see data from after {self.as_of}. Write the table name on its "
+                    "own -- during a replay it resolves to the rows that existed then."
+                )
         return self.store.query(query)
 
     def universe(self, bid: str | None = None, as_of: str | None = None) -> pd.DataFrame:

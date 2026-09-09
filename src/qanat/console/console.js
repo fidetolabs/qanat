@@ -9,6 +9,21 @@
  *   * nothing moves unless a job ran. There is no idle animation to mistake for work
  */
 (function () {
+  //  FastAPI sends {"detail": "..."}; a 422 sends a list of them. Showing the raw
+  //  JSON to a person is the difference between an error and a message.
+  function unwrap(text) {
+    try {
+      var b = JSON.parse(text);
+      if (typeof b.detail === 'string') return b.detail;
+      if (Array.isArray(b.detail)) {
+        return b.detail.map(function (d) {
+          return (d.loc || []).slice(1).join('.') + ': ' + d.msg;
+        }).join('; ');
+      }
+    } catch (e) { /* not JSON */ }
+    return text;
+  }
+
   'use strict';
 
   var DAG = null, GRAPH = null, SEL = null, TABLE = null, TICK = null;
@@ -28,6 +43,15 @@
 
   var DOWN = false;   // the server stopped answering
 
+  //  No timeout meant a hung server never failed: the console kept saying
+  //  "connected" and drawing the last numbers it saw, indefinitely.
+  function fetchTimeout(path, opts, ms) {
+    var c = new AbortController();
+    var t = setTimeout(function () { c.abort(); }, ms || 8000);
+    return fetch(path, Object.assign({}, opts || {}, { signal: c.signal }))
+      .finally(function () { clearTimeout(t); });
+  }
+
   async function api(path) {
     var r;
     try {
@@ -40,7 +64,7 @@
       throw new Error('qanat is not answering on this address. Is `qanat serve` ' +
                       'still running?');
     }
-    if (!r.ok) throw new Error((await r.text()) || r.statusText);
+    if (!r.ok) throw new Error(unwrap(await r.text()) || r.statusText);
     if (DOWN) serverBack();
     return r.json();
   }
@@ -400,10 +424,30 @@
   }
 
   // ------------------------------------------------------------------- poll
+  //  One focusable control per table, kept beside the canvas. The canvas carries
+  //  the picture; this carries the same action for anybody not using a mouse.
+  var KEY_SIG = '';
+  function paintKeyList() {
+    var host = el('dag-keys');
+    if (!host || !GRAPH || !GRAPH.tables) return;
+    var sig = GRAPH.tables.map(function (x) { return x.ref + ':' + x.rows; }).join('|');
+    if (sig === KEY_SIG) return;
+    KEY_SIG = sig;
+    host.innerHTML = GRAPH.tables.map(function (x) {
+      return '<li><button type="button" data-ref="' + esc(x.ref) + '">' +
+             esc(x.ref) + ' · ' + (x.rows || 0).toLocaleString() + ' rows · ' +
+             esc(x.status || 'idle') + '</button></li>';
+    }).join('');
+    Array.prototype.forEach.call(host.querySelectorAll('button'), function (b) {
+      b.onclick = function () { selectNode(b.getAttribute('data-ref'), null); };
+    });
+  }
+
   async function poll() {
     var led = el('led'), conn = el('conn');
     try {
       GRAPH = await api('/api/graph');
+      paintKeyList();
     } catch (e) {
       led.className = 'led off';
       conn.textContent = 'disconnected';
@@ -420,6 +464,7 @@
   function start() {
     DAG = window.QanatDag.mount(el('dagcv'));
     DAG.onSelect = selectNode;
+    paintKeyList();
     window.QANAT = {
       dag: DAG, poll: poll, selectTable: selectTable, closeDetail: closeDetail,
       // the book calls this when an alpha is picked: the graph becomes that alpha
@@ -465,7 +510,18 @@
       };
     });
     document.addEventListener('keydown', function (e) {
-      if (e.key === 'Escape') { closeDetail(); paintSelection(); }
+      if (e.key !== 'Escape') return;
+      //  This used to close the detail rail unconditionally -- so pressing Escape
+      //  over the run form closed the panel *behind* it and left the form up,
+      //  while #sel-close advertises title="close (esc)".
+      var runner = el('runner');
+      if (runner && !runner.hidden) {
+        if (window.closeRunner) window.closeRunner();
+        return;
+      }
+      var editor = document.querySelector('.editor:not([hidden])');
+      if (editor && editor.id !== 'runner') { closeDetail(); paintSelection(); return; }
+      closeDetail(); paintSelection();
     });
     el('btn-bt').onclick = function () { window.toggleBacktests(); };
     el('btn-run').onclick = function () { window.openRunner(); };

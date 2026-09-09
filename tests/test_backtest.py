@@ -189,21 +189,23 @@ def test_an_unknown_universe_is_refused(tmp_path: Path):
 def test_scoring_as_we_go_matches_scoring_at_the_end(tmp_path: Path):
     """The replay closes each period the moment it can. That has to be the same
     arithmetic as scoring the whole set afterwards, or the live curve is a lie."""
-    from qanat.backtest import _price_frame, decay_weights, score
+    from qanat.backtest import _price_frame, score
 
     store, project, root = _ready(tmp_path)
     window = _window(store)
     streamed = run_backtest(store, project, root, **window, rebalance="10d", seed=4, decay=2)
 
-    # rebuild the portfolios from what the run recorded, and score them in one go
+    # Rebuild the portfolios from what the run recorded, and score them in one go.
+    # `bt_weights` holds what was actually *priced*, decay already applied -- it used
+    # to hold the alpha's raw output, so the drill-down showed a book that was never
+    # traded. Nothing here re-applies decay for that reason.
     rows = store.bt_weights(streamed.run_id)
     held: dict = {}
     for r in rows:
         held.setdefault(str(r["as_of"]), {})[r["symbol"]] = r["weight"]
     held = {k: pd.Series(v) for k, v in held.items()}
     stops = sorted(held)
-    batch, totals, _ = score(_price_frame(store, project), decay_weights(held, stops, 2),
-                             stops, project)
+    batch, totals, _ = score(_price_frame(store, project), held, stops, project)
 
     assert len(batch) == len(streamed.periods)
     assert totals["net"] == pytest.approx(streamed.totals["net"])

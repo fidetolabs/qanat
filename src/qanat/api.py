@@ -79,8 +79,10 @@ class BacktestRequest(BaseModel):
     alpha: str | list[str] | None = None
     allocation: dict[str, float] | None = None
     # costs are a condition of the run, not of the file: "where does this edge die?"
-    fee_bps: float | None = None
-    slippage_bps: float | None = None
+    # -- but only upwards. A negative cost pays you to trade, so turnover becomes
+    # profit and the run lands in the strategy book looking like a discovery.
+    fee_bps: float | None = Field(default=None, ge=0)
+    slippage_bps: float | None = Field(default=None, ge=0)
     purge: str | None = None
     embargo: str | None = None
 
@@ -663,6 +665,13 @@ def create_app(state: AppState) -> FastAPI:
                     raise HTTPException(422, why)
             if req.universe and state.project.universe(req.universe) is None:
                 raise HTTPException(422, f"no universe '{req.universe}'")
+            if req.shelf and not req.universe:
+                known = ", ".join(u.id for u in state.project.universes)
+                raise HTTPException(422, (
+                    "every alpha on the shelf holds itself to a universe, so this needs one. "
+                    + (f"This project has: {known}" if known
+                       else "This project has none yet -- add one first")
+                ))
 
             existing_id = req.id if req.id and state.project.job(req.id) else None
             step_id = existing_id or f"alpha_{name}"
@@ -840,10 +849,21 @@ def create_app(state: AppState) -> FastAPI:
                 fee_bps=req.fee_bps, slippage_bps=req.slippage_bps,
                 purge=req.purge, embargo=req.embargo,
             )
-        except BacktestError as exc:
+        except (BacktestError, ValueError) as exc:
+            # A mistyped `rebalance` raised a plain ValueError from parse_duration,
+            # which escaped as a 500 with the body "Internal Server Error" -- so the
+            # console showed nothing at all about a typo it could have named.
             raise HTTPException(422, str(exc)) from exc
         finally:
             state._replay.release()
+        if not res.periods:
+            # HTTP 200 with empty totals let the console draw a successful, blank
+            # report for a run where every pass failed.
+            raise HTTPException(422, (
+                f"the replay produced no periods. First failure: {res.failures[0]}"
+                if res.failures else
+                "the replay produced no periods -- no pass had a price on both sides"
+            ))
         return res.as_dict()
 
     @app.get("/api/events")

@@ -52,10 +52,20 @@ class RunResult:
 def run_source(store: Store, project: Project, root: Path, src: Source) -> RunResult:
     run_id = store.start_run(src.id, "source", [src.ref])
     try:
-        df = source_adapters.fetch(src, root)
+        df = source_adapters.fetch(
+            src, root, on_warn=lambda m: store.event("warn", src.id, m)
+        )
         if df is None or df.empty:
+            # In replace mode an empty answer has to clear the table. Returning here
+            # left the last poll's rows in place, and downstream they read as a fresh
+            # answer -- which is the exact thing `Store.write` documents and prevents,
+            # from a path that never reached it.
+            cleared = ""
+            if src.mode == "replace" and store.exists(src.ref):
+                store.write(src.ref, df if df is not None else pd.DataFrame(), mode="replace")
+                cleared = f" -- {src.ref} cleared"
             _record_applied(store, root, src)
-            store.event("warn", src.id, "source returned no rows")
+            store.event("warn", src.id, f"source returned no rows{cleared}")
             store.end_run(run_id, "ok", 0)
             return RunResult(src.id, "ok", 0, targets=(src.ref,))
         rows = store.write(src.ref, df, mode=src.mode, key=src.key)
@@ -68,6 +78,12 @@ def run_source(store: Store, project: Project, root: Path, src: Source) -> RunRe
         store.event("error", src.id, msg)
         store.end_run(run_id, "failed", 0, msg)
         return RunResult(src.id, "failed", 0, msg, (src.ref,))
+    except BaseException as exc:
+        # `sys.exit()` or Ctrl-C. Not an Exception, so it used to skip `end_run` and
+        # leave the row saying `running` for ever. Record it, then let it through.
+        store.event("error", src.id, f"interrupted -- {type(exc).__name__}"[:400])
+        store.end_run(run_id, "interrupted", 0, str(exc)[:2000])
+        raise
 
 
 # ----------------------------------------------------------------------- steps
@@ -126,6 +142,20 @@ def _run_python(store: Store, ctx: Context, step: Step, script: Path) -> int:
 
     total = 0
     declared = {w.partition(".")[2]: w for w in step.writes}
+    # Check the whole set before writing any of it. Validating as we went meant a
+    # step that failed halfway left the tables it had already written, so the graph
+    # was half updated while the step was marked failed.
+    unknown = [k for k in out if k not in step.writes and k not in declared]
+    if unknown:
+        raise KeyError(
+            f"step '{step.id}' returned '{unknown[0]}', which it did not declare in writes "
+            f"({', '.join(step.writes)})"
+        )
+    missing_up_front = set(step.writes) - {k if k in step.writes else declared.get(k) for k in out}
+    if missing_up_front:
+        raise ValueError(
+            f"step '{step.id}' declared but did not write: {', '.join(sorted(missing_up_front))}"
+        )
     for key, df in out.items():
         ref = key if key in step.writes else declared.get(key)
         if ref is None:
@@ -134,9 +164,6 @@ def _run_python(store: Store, ctx: Context, step: Step, script: Path) -> int:
                 f"({', '.join(step.writes)})"
             )
         total += store.write(ref, df)
-    missing = set(step.writes) - {k if k in step.writes else declared.get(k) for k in out}
-    if missing:
-        raise ValueError(f"step '{step.id}' declared but did not write: {', '.join(sorted(missing))}")
     return total
 
 
@@ -227,6 +254,14 @@ def run_step(
         store.event("error", step.id, msg.splitlines()[0][:400])
         store.end_run(run_id, "failed", 0, traceback.format_exc(limit=3)[:2000])
         return RunResult(step.id, "failed", 0, msg, tuple(step.writes))
+    except BaseException as exc:
+        # `sys.exit()` in a script, or Ctrl-C. These are not Exceptions, so they used
+        # to sail past `end_run` and leave the row saying `running` for ever -- the
+        # console then span on that job until somebody noticed. Record, then re-raise.
+        msg = f"{type(exc).__name__}: {exc}"
+        store.event("error", step.id, f"interrupted -- {msg}"[:400])
+        store.end_run(run_id, "interrupted", 0, msg[:2000])
+        raise
 
 
 # ------------------------------------------------------------------- the graph
@@ -292,12 +327,30 @@ def run_all(
             results.append(run_source(store, project, root, s))
             if on_job:
                 on_job(results[-1])
+    # Tables whose producer failed this pass. A step reading one of them would
+    # recompute from the last good version, report `ok`, and stamp itself as applied
+    # -- so one vendor failure left a store that looked green everywhere with
+    # mixed-vintage data underneath.
+    broken: set[str] = {w for r in results if not r.ok for w in r.targets}
     for step in order(project):
         if only is not None and step.id not in only:
+            continue
+        stale_inputs = sorted(set(step.reads) & broken)
+        if stale_inputs:
+            store.event("warn", step.id,
+                        f"skipped -- {', '.join(stale_inputs)} did not refresh this pass")
+            results.append(RunResult(step.id, "skipped", 0,
+                                     f"upstream did not refresh: {', '.join(stale_inputs)}",
+                                     tuple(step.writes)))
+            broken.update(step.writes)
+            if on_job:
+                on_job(results[-1])
             continue
         results.append(
             run_step(store, project, root, step, as_of=as_of, seed=seed, universe=universe)
         )
+        if not results[-1].ok:
+            broken.update(results[-1].targets)
         if on_job:
             on_job(results[-1])
     return results

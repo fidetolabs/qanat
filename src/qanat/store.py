@@ -42,7 +42,65 @@ PIT = "qanat_pit"
 
 #: Column names a table's timestamp may go by, most specific first.
 TIME_COLS = ("as_of", "ts", "timestamp", "datetime", "date", "time", "fetched_at",
-             "created_at", "updated_at")
+             "created_at", "updated_at", "year")
+
+
+def _ident(name: str) -> str:
+    """A quoted identifier, with any embedded quote doubled.
+
+    Names are validated in `models.py`, so nothing legal reaches here with a quote
+    in it. This is the second wall: an identifier is interpolated into DDL, and a
+    wall that costs one line should not be left out.
+    """
+    return str(name).replace('"', '""')
+
+
+def as_instant(col: str) -> str:
+    """SQL that turns a time column into a comparable UTC instant.
+
+    A bare `CAST(x AS TIMESTAMP)` throws the offset away, so `16:00-05:00` and
+    `16:00Z` compared equal -- and a New York close became visible four hours
+    before it happened. Casting through TIMESTAMPTZ first keeps the offset; a
+    value with no offset is read in the session zone, which is UTC because the
+    connection sets it.
+
+    Integers are the other common clock on the web, and they are not all the same
+    thing. DuckDB refuses to cast any of them to a timestamp, so rather than fail
+    three layers down they are read by magnitude:
+
+        1000 .. 9999          a year          -- annual macro data says `2024`
+        1e8  .. 1e11          epoch seconds   -- 1973 to 5138
+        above 1e11            epoch millis    -- what USGS, Slack and Binance send
+
+    Anything below 1000 is not a date anybody meant, and is left null rather than
+    silently read as a few minutes after 1970.
+    """
+    q = f'"{_ident(col)}"'
+    n = f"CAST({q} AS HUGEINT)"
+    return (
+        f"CASE "
+        f"WHEN typeof({q}) IN ('BIGINT','INTEGER','HUGEINT','UBIGINT','UINTEGER','SMALLINT') "
+        f"THEN CASE "
+        f"       WHEN {n} BETWEEN 1000 AND 9999 THEN make_timestamp({n}::BIGINT, 1, 1, 0, 0, 0) "
+        f"       WHEN abs({n}) > 100000000000 THEN epoch_ms({n}::BIGINT) "
+        f"       WHEN abs({n}) > 100000000 THEN to_timestamp({n}::BIGINT)::TIMESTAMP "
+        f"       ELSE NULL END "
+        f"ELSE CAST(TRY_CAST({q} AS TIMESTAMPTZ) AT TIME ZONE 'UTC' AS TIMESTAMP) "
+        f"END"
+    )
+
+
+def _typed(df: pd.DataFrame) -> pd.DataFrame:
+    """Land a column that is entirely null as text, not as a guess.
+
+    A field that is optional in a feed -- a US holiday's `counties`, a symbol on a
+    payload row -- is null in the first response that happens not to carry it, and
+    pandas types that as INTEGER. The type sticks, and the day the field arrives with
+    real data every poll fails on a cast that names neither the feed nor the field.
+    Text is the one type that does not close the door; a step can cast it later.
+    """
+    empty = [c for c in df.columns if df[c].isna().all()]
+    return df.astype({c: "string" for c in empty}) if empty else df
 
 
 def phys(ref: str) -> str:
@@ -109,11 +167,16 @@ class Store:
                     "      serves both, or\n"
                     "    · move the project to Postgres (`qanat init --postgres`), which takes many"
                 ) from exc
+        # Without this the meaning of a timestamp depends on the machine: a stamp
+        # written as UTC renders in local time, and an as-of comparison is then off
+        # by the offset. It passed CI on a UTC box and was nine hours wrong in Seoul.
+        self.con.execute("SET TimeZone='UTC'")
         self.home = self.con.execute("SELECT current_schema()").fetchone()[0]
         self.as_of: str | None = None
         self._pit_overrides: dict[str, str] = {}
         self._readers = threading.local()
         self._ensure_meta()
+        self._recover()
 
     def __str__(self) -> str:
         return f"{self.kind}: {self.label}"
@@ -225,6 +288,60 @@ class Store:
                     applied_at TIMESTAMP
                 )""")
 
+    #: Written while a replay holds the store, cleared when it lets go. A replay
+    #: rewrites the derived tables at each as-of date and puts them back in a
+    #: `finally` -- which a SIGKILL, an OOM kill or a closed laptop never reaches.
+    #: The store then reopened on tables truncated to a date in the past, with no
+    #: sign that anything had happened.
+    _REPLAY_MARK = "_replay_in_progress"
+
+    def _recover(self) -> None:
+        """Notice a replay that never finished, and put the store back.
+
+        Sets `interrupted_replay` to the as-of date it died at. The derived tables
+        are functions of raw, which a replay never touches, so one ordinary pass
+        rebuilds them -- `qanat run` and `qanat serve` do that on sight.
+        """
+        self.interrupted_replay: str | None = None
+        with self._lock:
+            row = self.con.execute(
+                f"SELECT spec FROM {STATE} WHERE job_id = ?", [self._REPLAY_MARK]
+            ).fetchone()
+            stranded = self.con.execute(
+                f"SELECT count(*) FROM {RUNS} WHERE status = 'running'"
+            ).fetchone()[0]
+            if stranded:
+                self.con.execute(
+                    f"UPDATE {RUNS} SET status = 'interrupted', ended_at = now()::TIMESTAMP, "
+                    "error = 'the process ended before this run did' WHERE status = 'running'"
+                )
+            self.con.execute(
+                f"UPDATE {BACKTESTS} SET status = 'interrupted', "
+                "error = 'the process ended before this replay did' WHERE status = 'running'"
+            )
+            if row is None:
+                return
+            self.con.execute(f'DROP SCHEMA IF EXISTS "{PIT}" CASCADE')
+            self.con.execute(f"DELETE FROM {STATE} WHERE job_id = ?", [self._REPLAY_MARK])
+            self.interrupted_replay = str(row[0])
+            self.event("warn", "store", (
+                f"a replay was interrupted at as-of {row[0]}. Every table a step writes was "
+                "left holding only the rows that existed then -- run the pipeline once "
+                "(`qanat run`) to rebuild them from raw."
+            ))
+
+    def replay_open(self, as_of: str) -> None:
+        with self._lock:
+            self.con.execute(f"DELETE FROM {STATE} WHERE job_id = ?", [self._REPLAY_MARK])
+            self.con.execute(
+                f"INSERT INTO {STATE} VALUES (?, 'replay', ?, now()::TIMESTAMP)",
+                [self._REPLAY_MARK, str(as_of)],
+            )
+
+    def replay_closed(self) -> None:
+        with self._lock:
+            self.con.execute(f"DELETE FROM {STATE} WHERE job_id = ?", [self._REPLAY_MARK])
+
     # ---- writing -------------------------------------------------------------
     def write(self, ref: str, df: pd.DataFrame, mode: str = "replace",
               key: Sequence[str] | None = None) -> int:
@@ -266,6 +383,7 @@ class Store:
                 finally:
                     self.con.unregister("_incoming")
             return 0
+        df = _typed(df)
         if key:
             missing = [k for k in key if k not in df.columns]
             if missing:
@@ -283,13 +401,38 @@ class Store:
                 exists = self._exists(name)
                 if mode == "append" and exists:
                     if key:
+                        # IS NOT DISTINCT FROM, not `=`: in SQL a null never equals a
+                        # null, so a row whose key held a blank matched nothing and was
+                        # appended again on every single poll, for ever.
                         match = " AND ".join(
-                            f'{self._q(name)}."{k}" = _incoming."{k}"' for k in key
+                            f'{self._q(name)}."{_ident(k)}" IS NOT DISTINCT FROM '
+                            f'_incoming."{_ident(k)}"' for k in key
                         )
                         self.con.execute(
                             f'DELETE FROM {self._q(name)} USING _incoming WHERE {match}'
                         )
-                    self.con.execute(f'INSERT INTO {self._q(name)} SELECT * FROM _incoming')
+                    # By name, not by position. `INSERT ... SELECT *` lines the columns
+                    # up in order, so a feed that reordered its columns wrote dates into
+                    # the symbol column and reported ok.
+                    have = [c for (c,) in self.con.execute(
+                        "SELECT column_name FROM duckdb_columns() WHERE database_name = "
+                        "current_catalog() AND schema_name = ? AND table_name = ? "
+                        "ORDER BY column_index", [self.home, name]).fetchall()]
+                    incoming = list(df.columns)
+                    if set(have) != set(incoming):
+                        added = sorted(set(incoming) - set(have))
+                        gone = sorted(set(have) - set(incoming))
+                        raise ValueError(
+                            f"{ref}: the incoming rows do not match the table. "
+                            + (f"New column(s): {', '.join(added)}. " if added else "")
+                            + (f"Missing: {', '.join(gone)}. " if gone else "")
+                            + f"The table holds: {', '.join(have)}"
+                        )
+                    self._widen(name, ref, have)
+                    cols = ", ".join(f'"{_ident(c)}"' for c in have)
+                    self.con.execute(
+                        f'INSERT INTO {self._q(name)} ({cols}) SELECT {cols} FROM _incoming'
+                    )
                 else:
                     self.con.execute(
                         f'CREATE OR REPLACE TABLE {self._q(name)} AS SELECT * FROM _incoming'
@@ -299,6 +442,40 @@ class Store:
                 if self.as_of is not None:
                     self._shadow(ref)
         return len(df)
+
+    _INT = ("TINYINT", "SMALLINT", "INTEGER", "BIGINT", "HUGEINT",
+            "UTINYINT", "USMALLINT", "UINTEGER", "UBIGINT", "UHUGEINT")
+
+    def _widen(self, name: str, ref: str, have: list[str]) -> None:
+        """Make room for what is arriving, instead of rounding it away.
+
+        A first poll of whole-number closes types the column BIGINT, and every later
+        poll was then silently rounded -- 102.5 became 102, and a sub-dollar price
+        became 0. Widening the column is the honest answer; where it cannot widen,
+        the error names the column and both types rather than the cast.
+        """
+        theirs = {c: t for c, t in self.con.execute(
+            "SELECT column_name, data_type FROM duckdb_columns() WHERE database_name = "
+            "current_catalog() AND schema_name = ? AND table_name = '_incoming'",
+            [self.home]).fetchall()} or {
+            c: t for c, t in self.con.execute("DESCRIBE SELECT * FROM _incoming").df()
+            [["column_name", "column_type"]].to_numpy()}
+        mine = {c: t for c, t in self.con.execute(
+            "SELECT column_name, data_type FROM duckdb_columns() WHERE database_name = "
+            "current_catalog() AND schema_name = ? AND table_name = ?",
+            [self.home, name]).fetchall()}
+        for col in have:
+            old, new = mine.get(col), theirs.get(col)
+            if not old or not new or old == new:
+                continue
+            if old in self._INT and new in ("FLOAT", "DOUBLE", "DECIMAL"):
+                self.con.execute(
+                    f'ALTER TABLE {self._q(name)} ALTER COLUMN "{_ident(col)}" TYPE DOUBLE'
+                )
+                self.event("warn", "store", (
+                    f"{ref}.{col} widened from {old} to DOUBLE -- the first rows it saw "
+                    f"were whole numbers, and {new} values were being rounded into them"
+                ))
 
     def sql_into(self, ref: str, select_sql: str) -> int:
         name = phys(ref)
@@ -313,13 +490,34 @@ class Store:
 
     def _q(self, name: str) -> str:
         """A table name pinned to the home schema, so `search_path` cannot move it."""
-        return f'"{self.home}"."{name}"' 
+        return f'"{self.home}"."{_ident(name)}"'
+
+    def _readable(self, ref: str) -> str:
+        """Where a *read* comes from.
+
+        While a replay is open that is the as-of view, not the table under it. The
+        pinning in `_q` exists so a write cannot be moved by `search_path`; applied
+        to reads it also meant `store.read()` reached around the clock, which is
+        the one thing the as-of views exist to prevent. Writes still use `_q`.
+        """
+        name = phys(ref)
+        if self.as_of is not None and self._has_view(name):
+            return f'"{PIT}"."{_ident(name)}"'
+        return self._q(name)
+
+    def _has_view(self, name: str) -> bool:
+        try:
+            return bool(self.con.execute(
+                "SELECT count(*) FROM duckdb_views() WHERE schema_name = ? AND view_name = ?",
+                [PIT, name],
+            ).fetchone()[0])
+        except Exception:  # noqa: BLE001 -- no view catalogue: fall back to the table
+            return False
 
     # ---- reading -------------------------------------------------------------
     def read(self, ref: str, limit: int | None = None, as_of: str | None = None) -> pd.DataFrame:
         """Read a table. With `as_of`, only rows that existed at that timestamp."""
-        name = phys(ref)
-        q = f'SELECT * FROM {self._q(name)}'
+        q = f'SELECT * FROM {self._readable(ref)}'
         params: list[Any] = []
         if as_of:
             col = self.time_column(ref)
@@ -328,7 +526,7 @@ class Store:
                     f"{ref} has no time column, so it cannot be read as of a timestamp. "
                     f"Name one of {', '.join(TIME_COLS)}, or set time_columns in qanat.yaml"
                 )
-            q += f' WHERE CAST("{col}" AS TIMESTAMP) <= CAST(? AS TIMESTAMP)'
+            q += f' WHERE {as_instant(col)} <= CAST(? AS TIMESTAMP)'
             params.append(as_of)
         if limit:
             q += f" LIMIT {int(limit)}"
@@ -378,7 +576,7 @@ class Store:
         else:
             body = (
                 f'SELECT * FROM {self._q(name)} '
-                f"WHERE CAST(\"{col}\" AS TIMESTAMP) <= CAST('{self.as_of}' AS TIMESTAMP)"
+                f"WHERE {as_instant(col)} <= CAST('{self.as_of}' AS TIMESTAMP)"
             )
         self.con.execute(f'CREATE OR REPLACE VIEW "{PIT}"."{name}" AS {body}')
         return col is not None
@@ -413,7 +611,7 @@ class Store:
             return None
         with self._lock:
             v = self.con.execute(
-                f'SELECT max(CAST("{col}" AS TIMESTAMP)) FROM {self._q(phys(ref))}'
+                f'SELECT max({as_instant(col)}) FROM {self._q(phys(ref))}'
             ).fetchone()[0]
         return str(v) if v is not None else None
 
@@ -454,7 +652,7 @@ class Store:
     def load_state(self) -> dict[str, dict[str, str]]:
         with self._lock:
             rows = self.con.execute(f"SELECT job_id, digest, spec FROM {STATE}").fetchall()
-        return {j: {"digest": d, "spec": s} for j, d, s in rows}
+        return {j: {"digest": d, "spec": s} for j, d, s in rows if j != self._REPLAY_MARK}
 
     def set_state(self, job_id: str, digest: str, spec: str) -> None:
         """Record one job as applied. Called when that job actually succeeds."""

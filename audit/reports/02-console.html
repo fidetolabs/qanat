@@ -1,0 +1,1016 @@
+<title>Clicking Every Button in Qanat</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,500;9..144,600&family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600&display=swap">
+
+<style>
+  :root {
+    --ground:   #e5e8e9;
+    --surface:  #f3f5f5;
+    --sunken:   #dbe0e1;
+    --ink:      #171d20;
+    --muted:    #5b6669;
+    --faint:    #7d888b;
+    --rule:     #c7cfd0;
+    --accent:   #0f6b70;
+    --crit:     #a8341f;
+    --high:     #8f5c0d;
+    --med:      #35566e;
+    --held:     #3d7a1c;
+    --crit-bg:  #f6e3de;
+    --held-bg:  #e3efd9;
+
+    --f-display: "Fraunces", Georgia, "Times New Roman", serif;
+    --f-body: "IBM Plex Sans", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    --f-mono: "IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+  }
+
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --ground:  #101416;  --surface: #171e21;  --sunken:  #0b0e10;
+      --ink:     #dfe6e7;  --muted:   #8d999c;  --faint:   #6d797c;
+      --rule:    #293236;  --accent:  #4fc7c9;  --crit:    #ef7256;
+      --high:    #e2a13f;  --med:     #85aecd;  --held:    #a2e65d;
+      --crit-bg: #2b1712;  --held-bg: #1a2412;
+    }
+  }
+  :root[data-theme="dark"] {
+    --ground:  #101416;  --surface: #171e21;  --sunken:  #0b0e10;
+    --ink:     #dfe6e7;  --muted:   #8d999c;  --faint:   #6d797c;
+    --rule:    #293236;  --accent:  #4fc7c9;  --crit:    #ef7256;
+    --high:    #e2a13f;  --med:     #85aecd;  --held:    #a2e65d;
+    --crit-bg: #2b1712;  --held-bg: #1a2412;
+  }
+
+  * { box-sizing: border-box; }
+
+  body {
+    margin: 0;
+    background: var(--ground);
+    color: var(--ink);
+    font-family: var(--f-body);
+    font-size: 16px;
+    line-height: 1.65;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  .wrap {
+    max-width: 1040px;
+    margin: 0 auto;
+    padding: clamp(2rem, 6vw, 4.5rem) clamp(1.1rem, 4vw, 2.5rem) 6rem;
+    display: flex; flex-direction: column; gap: 4rem;
+  }
+
+  .prose { max-width: 64ch; }
+
+  .masthead { display: flex; flex-direction: column; gap: 1.4rem; }
+
+  .eyebrow {
+    font-family: var(--f-mono); font-size: 0.72rem; font-weight: 500;
+    letter-spacing: 0.14em; text-transform: uppercase; color: var(--accent);
+  }
+
+  h1 {
+    font-family: var(--f-display); font-weight: 600;
+    font-size: clamp(2.3rem, 6.2vw, 3.7rem); line-height: 1.03;
+    letter-spacing: -0.02em; margin: 0; text-wrap: balance;
+  }
+
+  .standfirst {
+    font-size: clamp(1.02rem, 2.2vw, 1.16rem); color: var(--muted);
+    margin: 0; max-width: 58ch;
+  }
+
+  .runmeta {
+    display: flex; flex-wrap: wrap; gap: 0.2rem 2rem;
+    padding-top: 1.25rem; border-top: 1px solid var(--rule);
+    font-family: var(--f-mono); font-size: 0.78rem; color: var(--faint);
+  }
+  .runmeta b { color: var(--muted); font-weight: 500; }
+
+  .sibling {
+    display: inline-flex; align-items: center; gap: 0.6rem;
+    font-family: var(--f-mono); font-size: 0.78rem;
+    color: var(--accent); text-decoration: none;
+    border: 1px solid var(--rule); padding: 0.5rem 0.8rem;
+    background: var(--surface); align-self: flex-start;
+  }
+  .sibling:hover { border-color: var(--accent); }
+  .sibling .arrow { color: var(--faint); }
+
+  section { display: flex; flex-direction: column; gap: 1.5rem; }
+
+  .shead {
+    display: flex; align-items: baseline; gap: 1rem;
+    border-bottom: 1px solid var(--rule); padding-bottom: 0.6rem;
+  }
+  .shead h2 {
+    font-family: var(--f-display); font-weight: 600;
+    font-size: clamp(1.45rem, 3.4vw, 1.9rem);
+    letter-spacing: -0.015em; margin: 0; flex: 1;
+  }
+  .shead .count { font-family: var(--f-mono); font-size: 0.76rem; color: var(--faint); white-space: nowrap; }
+
+  p { margin: 0 0 0.9rem; }
+  p:last-child { margin-bottom: 0; }
+  a { color: var(--accent); }
+
+  code, .mono { font-family: var(--f-mono); font-size: 0.86em; }
+  p code, li code, td code, dd code {
+    background: var(--sunken); padding: 0.1em 0.36em; border-radius: 3px; color: var(--ink);
+  }
+
+  .board {
+    display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+    gap: 1px; background: var(--rule); border: 1px solid var(--rule);
+  }
+  .tile { background: var(--surface); padding: 1.15rem 1.25rem; display: flex; flex-direction: column; gap: 0.15rem; }
+  .tile .n {
+    font-family: var(--f-display); font-size: 2.5rem; font-weight: 600;
+    line-height: 1; font-variant-numeric: tabular-nums; letter-spacing: -0.02em;
+  }
+  .tile .l {
+    font-family: var(--f-mono); font-size: 0.7rem; letter-spacing: 0.09em;
+    text-transform: uppercase; color: var(--faint);
+  }
+  .tile.broke .n { color: var(--crit); }
+  .tile.held .n  { color: var(--held); }
+
+  .sevbar { display: flex; height: 10px; border: 1px solid var(--rule); overflow: hidden; }
+  .sevbar span { display: block; }
+  .sevkey {
+    display: flex; flex-wrap: wrap; gap: 0.4rem 1.5rem;
+    font-family: var(--f-mono); font-size: 0.74rem; color: var(--muted);
+  }
+  .sevkey i { font-style: normal; display: inline-flex; align-items: center; gap: 0.45rem; }
+  .dot { width: 9px; height: 9px; display: inline-block; }
+
+  /* method */
+  .method { display: grid; grid-template-columns: repeat(auto-fit, minmax(250px, 1fr)); gap: 1px; background: var(--rule); border: 1px solid var(--rule); }
+  .mcard { background: var(--surface); padding: 1.15rem 1.25rem; display: flex; flex-direction: column; gap: 0.4rem; }
+  .mcard h3 { font-family: var(--f-body); font-weight: 600; font-size: 0.95rem; margin: 0; }
+  .mcard .who { font-family: var(--f-mono); font-size: 0.68rem; letter-spacing: 0.09em; text-transform: uppercase; color: var(--accent); }
+  .mcard p { font-size: 0.88rem; color: var(--muted); margin: 0; }
+
+  /* findings */
+  .findings { display: flex; flex-direction: column; gap: 1.5rem; }
+  .finding {
+    background: var(--surface); border: 1px solid var(--rule);
+    border-left: 4px solid var(--sev, var(--rule));
+    padding: 1.4rem clamp(1.1rem, 3vw, 1.7rem);
+    display: flex; flex-direction: column; gap: 1.1rem;
+  }
+  .finding.crit { --sev: var(--crit); }
+  .finding.high { --sev: var(--high); }
+  .finding.med  { --sev: var(--med);  }
+
+  .fhead { display: flex; flex-direction: column; gap: 0.55rem; }
+  .ftags { display: flex; flex-wrap: wrap; align-items: center; gap: 0.5rem; }
+  .chip {
+    font-family: var(--f-mono); font-size: 0.68rem; font-weight: 500;
+    letter-spacing: 0.08em; text-transform: uppercase;
+    padding: 0.18rem 0.5rem; border: 1px solid var(--rule); color: var(--muted);
+  }
+  .chip.sev { border-color: transparent; }
+  .finding.crit .chip.sev { background: var(--crit); color: var(--surface); }
+  .finding.high .chip.sev { background: var(--high); color: var(--surface); }
+  .finding.med  .chip.sev { background: var(--med);  color: var(--surface); }
+  .chip.id { color: var(--faint); }
+
+  .finding h3 {
+    font-family: var(--f-display); font-weight: 600;
+    font-size: clamp(1.12rem, 2.6vw, 1.3rem); line-height: 1.25;
+    letter-spacing: -0.01em; margin: 0; text-wrap: balance;
+  }
+
+  .part { max-width: 72ch; }
+  .part + .part { margin-top: 1rem; }
+  .label {
+    font-family: var(--f-mono); font-size: 0.68rem; letter-spacing: 0.11em;
+    text-transform: uppercase; color: var(--faint); margin: 0 0 0.35rem;
+  }
+  .part.fix { border-top: 1px solid var(--rule); padding-top: 1rem; margin-top: 1.15rem; }
+  .part.fix .label { color: var(--accent); }
+
+  pre {
+    margin: 0; background: var(--sunken); border: 1px solid var(--rule);
+    padding: 0.85rem 1rem; overflow-x: auto;
+    font-family: var(--f-mono); font-size: 0.79rem; line-height: 1.55; color: var(--ink);
+  }
+  pre .hit { color: var(--crit); font-weight: 500; }
+  pre .dim { color: var(--faint); }
+  pre .good { color: var(--held); }
+
+  ul.tight { margin: 0; padding-left: 1.15rem; }
+  ul.tight li { margin-bottom: 0.4rem; }
+  ul.tight li:last-child { margin-bottom: 0; }
+
+  /* table */
+  .scroll { overflow-x: auto; border: 1px solid var(--rule); background: var(--surface); }
+  table { border-collapse: collapse; width: 100%; min-width: 660px; font-size: 0.9rem; }
+  thead th {
+    text-align: left; font-family: var(--f-mono); font-size: 0.68rem;
+    letter-spacing: 0.1em; text-transform: uppercase; color: var(--faint);
+    font-weight: 500; padding: 0.75rem 1rem; border-bottom: 1px solid var(--rule); white-space: nowrap;
+  }
+  tbody td { padding: 0.65rem 1rem; border-bottom: 1px solid var(--rule); vertical-align: top; }
+  tbody tr:last-child td { border-bottom: 0; }
+  td.ref { font-family: var(--f-mono); font-size: 0.78rem; color: var(--faint); white-space: nowrap; }
+  td.where { font-family: var(--f-mono); font-size: 0.78rem; color: var(--muted); }
+  .group td {
+    background: var(--sunken); font-family: var(--f-mono); font-size: 0.68rem;
+    letter-spacing: 0.11em; text-transform: uppercase; color: var(--muted); padding: 0.45rem 1rem;
+  }
+  .sevtag {
+    font-family: var(--f-mono); font-size: 0.68rem; font-weight: 500;
+    letter-spacing: 0.06em; text-transform: uppercase; padding: 0.14rem 0.4rem; white-space: nowrap;
+  }
+  .sevtag.h { color: var(--high); border: 1px solid var(--high); }
+  .sevtag.m { color: var(--med); border: 1px solid var(--med); }
+  .sevtag.s { color: var(--faint); border: 1px solid var(--rule); }
+
+  .improve { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 1px; background: var(--rule); border: 1px solid var(--rule); }
+  .imp { background: var(--surface); padding: 1.3rem; display: flex; flex-direction: column; gap: 0.55rem; }
+  .imp h3 { font-family: var(--f-body); font-weight: 600; font-size: 1rem; margin: 0; line-height: 1.3; }
+  .imp p { font-size: 0.9rem; color: var(--muted); margin: 0; }
+  .imp .closes { font-family: var(--f-mono); font-size: 0.72rem; color: var(--accent); }
+
+  .note {
+    background: var(--surface); border: 1px solid var(--rule);
+    border-left: 4px solid var(--accent); padding: 1.2rem 1.4rem;
+    font-size: 0.93rem; color: var(--muted); max-width: 70ch;
+  }
+  .note strong { color: var(--ink); font-weight: 600; }
+  ol.steps { margin: 0.6rem 0 0; padding-left: 1.3rem; }
+  ol.steps li { margin-bottom: 0.35rem; }
+
+  footer {
+    border-top: 1px solid var(--rule); padding-top: 1.2rem;
+    font-family: var(--f-mono); font-size: 0.75rem; color: var(--faint); line-height: 1.7;
+  }
+
+
+  .st { font-family:var(--f-mono); font-size:.66rem; font-weight:500; letter-spacing:.07em;
+        text-transform:uppercase; padding:.18rem .5rem; border:1px solid transparent; }
+  .st.fx { background:var(--held-bg); color:var(--held); }
+  .st.pt { background:var(--high-bg,#f7ebd6); color:var(--high); }
+  .st.op { border-color:var(--rule); color:var(--faint); }
+  .fixbanner { background:var(--surface); border:1px solid var(--rule);
+               border-left:4px solid var(--held); padding:1.3rem clamp(1.1rem,3vw,1.6rem);
+               display:flex; flex-direction:column; gap:.7rem; }
+  .fixbanner h2 { font-family:var(--f-display); font-weight:600; margin:0;
+                  font-size:clamp(1.15rem,2.8vw,1.4rem); }
+  .fixbanner p { max-width:66ch; font-size:.95rem; color:var(--muted); }
+  .fixbanner .tally { display:flex; flex-wrap:wrap; gap:.5rem; }
+
+  @media (prefers-reduced-motion: reduce) { * { animation: none !important; transition: none !important; } }
+</style>
+
+<div class="wrap">
+
+  <header class="masthead">
+    <div class="eyebrow">Chaos run · part two · the console</div>
+    <h1>Clicking Every Button in Qanat</h1>
+    <p class="standfirst">Part one broke the engine. This one drives the console in a real browser: every
+      button, the form, the graph, the keyboard, and what the page does when the server stops answering.
+      20 problems.</p>
+    <div style="display:flex; flex-wrap:wrap; gap:.6rem">
+      <a class="sibling" href="https://claude.ai/code/artifact/067ddaba-29b4-4356-a8be-22dda69b3c83">
+        <span class="arrow">←</span> Part one · the engine</a>
+      <a class="sibling" href="https://claude.ai/code/artifact/0c725dfa-416c-4cc0-a5ae-b3e19ccaaaeb">
+        Part three · the workflow <span class="arrow">→</span></a>
+    </div>
+    <div class="runmeta">
+      <span><b>Browser</b> Chrome 152, 1440×900</span>
+      <span><b>Server</b> qanat serve · 127.0.0.1:8421</span>
+      <span><b>Project</b> qanat init --demo</span>
+      <span><b>Console errors on load</b> 0</span>
+    </div>
+  </header>
+
+  <section>
+    <div class="fixbanner">
+      <div class="tally">
+        <span class="st fx">58 fixed</span>
+        <span class="st pt">6 partly fixed</span>
+        <span class="st op">9 still open</span>
+      </div>
+      <h2>Everything below was fixed in v0.1.2, except where a badge says otherwise</h2>
+      <p>Each finding carries its own status. Every fix was checked by re-running the
+        script that found it, and the ones that mattered most are now tests —
+        <code>tests/test_audit_fixes.py</code> holds one case per finding, so each of
+        these mistakes fails loudly if it comes back. The full ledger, with the repro
+        scripts, is in <code>audit/</code>.</p>
+      <p>One finding cannot be closed and is recorded as a limit rather than a fix: a
+        step is arbitrary Python, so it can always read a source file off disk itself
+        and reach data the as-of views hide. The three doors that were qanat's to
+        close are closed.</p>
+    </div>
+  </section>
+
+
+  <section>
+    <div class="shead">
+      <h2>The numbers</h2>
+      <span class="count">20 problems</span>
+    </div>
+
+    <div class="board">
+      <div class="tile"><span class="n">34</span><span class="l">Buttons checked</span></div>
+      <div class="tile"><span class="n">21</span><span class="l">Form inputs</span></div>
+      <div class="tile broke"><span class="n">20</span><span class="l">Problems found</span></div>
+      <div class="tile held"><span class="n">15</span><span class="l">Keyboard stops on load</span></div>
+    </div>
+
+    <div class="sevbar" role="img" aria-label="How bad: 2 very bad, 8 bad, 8 medium, 2 small">
+      <span style="background: var(--crit); flex: 2"></span>
+      <span style="background: var(--high); flex: 8"></span>
+      <span style="background: var(--med); flex: 8"></span>
+      <span style="background: var(--faint); flex: 2"></span>
+    </div>
+    <div class="sevkey">
+      <i><span class="dot" style="background: var(--crit)"></span>2 very bad</i>
+      <i><span class="dot" style="background: var(--high)"></span>8 bad</i>
+      <i><span class="dot" style="background: var(--med)"></span>8 medium</i>
+      <i><span class="dot" style="background: var(--faint)"></span>2 small</i>
+    </div>
+
+    <div class="prose">
+      <p>Three themes.</p>
+      <p><strong>One. The form does not check what you type.</strong> I set the trading cost to
+        <code>-500</code>. Nothing stopped me. The alpha now shows <strong>+145.64%</strong> in the strategy
+        book, next to the honest numbers, with no mark on it.</p>
+      <p><strong>Two. The page keeps showing old data as if it were new.</strong> When the server hangs, the
+        console still says "connected" and keeps drawing the last numbers it saw.</p>
+      <p><strong>Three. The pipeline graph is a <code>&lt;canvas&gt;</code> with no keyboard path.</strong>
+        Clicking a table is the main thing you do in this console, and you cannot do it without a mouse.</p>
+      <p>Credit where it is due: all 34 buttons are real <code>&lt;button&gt;</code> elements with real text.
+        Every <code>fetch()</code> checks its status. The "server is down" banner, when you can see it, is
+        honest and well written. This is not a careless front end — the gaps are specific.</p>
+    </div>
+  </section>
+
+  <section>
+    <div class="shead">
+      <h2>How I tested it</h2>
+      <span class="count">three passes, run together</span>
+    </div>
+    <div class="method">
+      <div class="mcard">
+        <span class="who">Live browser · me</span>
+        <h3>Drove the real console</h3>
+        <p>Opened <code>qanat serve</code> in Chrome. Clicked every button, opened the form, typed bad values,
+          clicked the canvas, walked the tab order, pressed Escape, paused the server, then killed it.</p>
+      </div>
+      <div class="mcard">
+        <span class="who">Agent 1 · source</span>
+        <h3>Read the front end for keyboard gaps</h3>
+        <p>Audited all six console files for click handlers on non-focusable elements, missing labels, focus
+          traps, and motion guards. Gave me file and line numbers to aim at.</p>
+      </div>
+      <div class="mcard">
+        <span class="who">Agent 2 · source</span>
+        <h3>Read the front end for error paths</h3>
+        <p>Traced every <code>fetch</code>, every <code>catch</code>, every polling loop, and every destructive
+          action, to find where the UI would mislead rather than fail loudly.</p>
+      </div>
+    </div>
+    <div class="note">
+      <strong>I did not take the agents' word for it.</strong> Every finding below that came from a source
+      audit, I then reproduced in the live browser. Two of their claims changed after I checked: Escape
+      <em>does</em> work on the side panel (just not on the form), and the server-down banner <em>is</em>
+      shown and well worded in the default layout. Those corrections are in the findings.
+    </div>
+  </section>
+
+  <section>
+    <div class="shead">
+      <h2>The main problems</h2>
+      <span class="count">8, worst first</span>
+    </div>
+
+    <div class="findings">
+
+      <!-- U-01 -->
+      <article class="finding crit">
+        <div class="fhead">
+          <div class="ftags">
+            <span class="chip sev">Very bad</span>
+            <span class="chip id">U-01</span>
+            <span class="st fx">fixed in 0.1.2</span>
+            <span class="chip">run form · api.py</span>
+          </div>
+          <h3>A negative trading cost is accepted, and the fake result goes into the strategy book</h3>
+        </div>
+
+        <div class="part">
+          <p class="label">What I did</p>
+          <p>In the "Run a backtest" form I set <strong>commission</strong> to <code>-500</code> and
+            <strong>slippage</strong> to <code>-500</code>, then pressed <em>run it</em>. Then I sent
+            <code>fee_bps: -9999</code> straight to the API.</p>
+        </div>
+
+        <div class="part">
+          <p class="label">What happened</p>
+<pre>browser input validity: <span class="hit">valid</span>   <span class="dim">(no min attribute on #f-fee / #f-slip)</span>
+POST /api/backtest  fee_bps=-9999  -> <span class="hit">200 OK</span>
+
+strategy book now reads:
+  momentum   net <span class="hit">1938.02%</span>   3 runs · 60d
+  low_vol    net <span class="hit">145.64%</span>    2 runs · 5d   <span class="dim">(its real result: -5.61%)</span></pre>
+        </div>
+
+        <div class="part">
+          <p class="label">Why it matters</p>
+          <p>A negative cost means you get <em>paid</em> to trade. Turnover becomes profit. The more the alpha
+            trades, the better it looks.</p>
+          <p>Nothing stops this at any layer. The number input has no <code>min</code>. The console does not
+            check. And <code>BacktestRequest</code> in <code>api.py</code> declares
+            <code>fee_bps: float | None</code> with no limit. The backend <em>does</em> check
+            <code>fee_bps &lt; 0</code> — but only for the project file, in <code>validate()</code>, not for
+            the per-run override.</p>
+          <p>The result then lands in the strategy book, which the code describes as "an alpha is in it because
+            it produced a result, which is the only claim worth keeping". A run made at −9999 bps is not a
+            claim worth keeping, and the book has no way to say so. It even becomes the headline number for
+            that alpha, because the book shows the newest run.</p>
+        </div>
+
+        <div class="part fix">
+          <p class="label">How to fix it</p>
+          <ul class="tight">
+            <li>Add <code>ge=0</code> to <code>fee_bps</code> and <code>slippage_bps</code> in
+              <code>BacktestRequest</code>. One line, and it closes the API, the console and MCP at once.</li>
+            <li>Add <code>min="0"</code> to <code>#f-fee</code> and <code>#f-slip</code> so the browser catches
+              it before the request.</li>
+            <li>Show the run's conditions on the book row. If a run used costs other than the project's, say
+              so beside the number.</li>
+          </ul>
+        </div>
+      </article>
+
+      <!-- U-02 -->
+      <article class="finding crit">
+        <div class="fhead">
+          <div class="ftags">
+            <span class="chip sev">Very bad</span>
+            <span class="chip id">U-02</span>
+            <span class="st fx">fixed in 0.1.2</span>
+            <span class="chip">index.html · dag.js</span>
+          </div>
+          <h3>The pipeline graph cannot be used without a mouse</h3>
+        </div>
+
+        <div class="part">
+          <p class="label">What I did</p>
+          <p>Walked the whole tab order from the top of the page, then checked what the graph is made of.</p>
+        </div>
+
+        <div class="part">
+          <p class="label">What happened</p>
+<pre>tab stops on the whole page: <span class="hit">15</span>
+canvas reachable by Tab:     <span class="hit">false</span>
+canvas attributes:           { role: <span class="hit">null</span>, aria-label: <span class="hit">null</span>, tabindex: <span class="hit">null</span> }
+
+the whole page has:  aria-label x <span class="hit">0</span>   role="dialog" x <span class="hit">0</span>   aria-live x <span class="hit">0</span></pre>
+        </div>
+
+        <div class="part">
+          <p class="label">Why it matters</p>
+          <p>The graph is one <code>&lt;canvas id="dagcv"&gt;</code>. Every table in the project is painted on
+            it, and clicking one is how you open its detail panel — the code wires this at
+            <code>dag.js:1075</code> and <code>console.js:421</code>. The canvas has no <code>tabindex</code>,
+            no <code>role</code>, no <code>aria-label</code>, and no fallback content.</p>
+          <p>So there are 12 tables and 12 jobs in the demo project, and a keyboard user can reach exactly
+            none of them. The hint text under the graph names only mouse moves: "click a table · drag to pan ·
+            scroll to zoom · double-click to fit". The <em>fit</em> button is the only one of the four with a
+            real control.</p>
+          <p>A screen reader gets nothing at all: the whole middle of the app reads as empty.</p>
+        </div>
+
+        <div class="part fix">
+          <p class="label">How to fix it</p>
+          <ul class="tight">
+            <li>Put a real list inside the canvas element as fallback content — one focusable
+              <code>&lt;button&gt;</code> per table, visually hidden, that fires the same
+              <code>onSelect</code>. The canvas stays the picture; the list is the keyboard path.</li>
+            <li>Give the canvas <code>role="img"</code> and an <code>aria-label</code> summarising the graph
+              ("pipeline: 5 stages, 12 tables, 12 jobs").</li>
+            <li>Add arrow-key panning and <code>+</code>/<code>-</code> zoom once the canvas is focusable.</li>
+          </ul>
+        </div>
+      </article>
+
+      <!-- U-03 -->
+      <article class="finding high">
+        <div class="fhead">
+          <div class="ftags">
+            <span class="chip sev">Bad</span>
+            <span class="chip id">U-03</span>
+            <span class="st fx">fixed in 0.1.2</span>
+            <span class="chip">console.js · backtests.js</span>
+          </div>
+          <h3>A hung server still reads "connected", with old numbers on screen</h3>
+        </div>
+
+        <div class="part">
+          <p class="label">What I did</p>
+          <p>Sent <code>SIGSTOP</code> to the server. It keeps the port open but answers nothing — a hang, not
+            a crash. Waited 9 seconds, about four poll cycles.</p>
+        </div>
+
+        <div class="part">
+          <p class="label">What happened</p>
+<pre>connection label:   <span class="hit">"connected"</span>
+body class:         book-editing results-open      <span class="dim">(no server-down)</span>
+down banner shown:  <span class="hit">false</span>
+still showing the old book numbers: <span class="hit">true</span></pre>
+        </div>
+
+        <div class="part">
+          <p class="label">Why it matters</p>
+          <p>No <code>fetch()</code> in the console sets a timeout, and there is no
+            <code>AbortController</code> anywhere. A request to a hung server does not fail — it just never
+            returns. So the "disconnected" path never runs, the banner never appears, and every panel keeps
+            showing its last good snapshot as if it were live.</p>
+          <p>A hang is the more common failure in practice. A crashed server is obvious; a wedged one is not.
+            And qanat can wedge itself — part one showed a job with no timeout holding a worker forever.</p>
+          <p><strong>Credit:</strong> when the server is truly <em>dead</em>, this all works. I killed it and
+            got <code>body.server-down</code>, "disconnected", and an honest banner: "qanat is not answering on
+            this address. The console keeps the last thing it saw, so what is on screen may be old." That is
+            good writing. The gap is only the hang.</p>
+        </div>
+
+        <div class="part fix">
+          <p class="label">How to fix it</p>
+          <ul class="tight">
+            <li>Wrap the shared <code>api()</code> helper in an <code>AbortController</code> with a timeout of
+              a few seconds, and treat a timeout the same as a network failure.</li>
+            <li>Track the time of the last good response, and once it is older than two poll cycles, mark the
+              panels stale even before the connection is declared dead.</li>
+          </ul>
+        </div>
+      </article>
+
+      <!-- U-04 -->
+      <article class="finding high">
+        <div class="fhead">
+          <div class="ftags">
+            <span class="chip sev">Bad</span>
+            <span class="chip id">U-04</span>
+            <span class="st fx">fixed in 0.1.2</span>
+            <span class="chip">theme.css:642 · index.html:36</span>
+          </div>
+          <h3>When the server is down, the run form opens completely blank</h3>
+        </div>
+
+        <div class="part">
+          <p class="label">What I did</p>
+          <p>Killed the server. Folded the graph (a normal thing to do while reading results). Then clicked
+            <em>RUN BACKTEST</em>.</p>
+        </div>
+
+        <div class="part">
+          <p class="label">What happened</p>
+<pre>banner visible, graph open:   <span class="good">true</span>
+banner visible, graph folded: <span class="hit">false</span>
+fold state saved to localStorage: <span class="hit">"1"</span>   <span class="dim">(survives reload, forever)</span>
+
+modal open:            true
+modal body length:     42 characters
+warnbox element there: true
+warnbox visible:       <span class="hit">false</span>
+text the user sees:    <span class="hit">""</span></pre>
+        </div>
+
+        <div class="part">
+          <p class="label">Why it matters</p>
+          <p>Two CSS rules combine badly.</p>
+          <p>The down banner lives inside <code>&lt;div class="view"&gt;</code>, and
+            <code>.graph-folded .view { display: none }</code> hides that whole container. The fold is saved to
+            <code>localStorage</code>, so a user who folds the graph once loses the only explanation of a dead
+            server on every visit after that.</p>
+          <p>Then <code>body.server-down .warnbox { display: none }</code> hides every warning box in the app
+            while the server is down. The run form's failure path fills the modal with <em>only</em> a
+            warnbox — so the modal opens, and it is empty. Same for the alpha editor and the source editor.</p>
+          <p>Net effect for that user: the server is dead, the console shows a small dot and one word, every
+            panel shows old data, and clicking the main button opens a blank box.</p>
+        </div>
+
+        <div class="part fix">
+          <p class="label">How to fix it</p>
+          <ul class="tight">
+            <li>Move <code>#down-banner</code> out of <code>.view</code> and into the top bar, so folding the
+              graph cannot hide it.</li>
+            <li>Drop the <code>body.server-down .warnbox { display: none }</code> rule. If it exists to stop
+              banner pile-up, scope it to the panels that duplicate the top-level banner, never to a modal
+              whose only content is the warning.</li>
+            <li>Add a test that opens each modal with the server down and asserts the body is not empty.</li>
+          </ul>
+        </div>
+      </article>
+
+      <!-- U-05 -->
+      <article class="finding high">
+        <div class="fhead">
+          <div class="ftags">
+            <span class="chip sev">Bad</span>
+            <span class="chip id">U-05</span>
+            <span class="st fx">fixed in 0.1.2</span>
+            <span class="chip">backtests.js:915</span>
+          </div>
+          <h3>The backtest-list error handler writes to an element that does not exist</h3>
+        </div>
+
+        <div class="part">
+          <p class="label">What I did</p>
+          <p>Looked for <code>#bt-list</code> in the live DOM, because the error path writes to it.</p>
+        </div>
+
+        <div class="part">
+          <p class="label">What happened</p>
+<pre>document.getElementById('bt-list') -> <span class="hit">null</span>
+
+the code that runs when /api/backtests fails:
+  el('bt-list').innerHTML = '&lt;div class="bt-empty bad"&gt;' + esc(e.message) + '&lt;/div&gt;'</pre>
+        </div>
+
+        <div class="part">
+          <p class="label">Why it matters</p>
+          <p>There is no <code>id="bt-list"</code> anywhere — not in <code>index.html</code>, not in the CSS.
+            The runs-list panel it belonged to was removed, and this error path was left behind.</p>
+          <p>So when <code>/api/backtests</code> fails, the handler throws a <code>TypeError</code> on
+            <code>null.innerHTML</code>, <code>refresh()</code> rejects, and <strong>the user sees no error at
+            all</strong>. The results panel keeps drawing the last good run's equity curve and net figure,
+            with nothing marking it stale. This repeats every 4 seconds for as long as the server is
+            unhealthy.</p>
+        </div>
+
+        <div class="part fix">
+          <p class="label">How to fix it</p>
+          <ul class="tight">
+            <li>Point the handler at a container that exists (<code>#bt-detail</code>), or delete the dead
+              path along with the dead <code>renderList()</code> and <code>renderRunsHead()</code>
+              functions.</li>
+            <li>Add a global <code>window.onerror</code> hook in development that logs to the console — a
+              thrown <code>TypeError</code> in a polling loop should not be silent.</li>
+          </ul>
+        </div>
+      </article>
+
+      <!-- U-06 -->
+      <article class="finding high">
+        <div class="fhead">
+          <div class="ftags">
+            <span class="chip sev">Bad</span>
+            <span class="chip id">U-06</span>
+            <span class="st fx">fixed in 0.1.2</span>
+            <span class="chip">backtests.js:1354</span>
+          </div>
+          <h3>One failed request stops live progress for the rest of the session</h3>
+        </div>
+
+        <div class="part">
+          <p class="label">What I did</p>
+          <p>Traced the progress poller, which is what lights up the graph while a backtest walks the
+            window.</p>
+        </div>
+
+        <div class="part">
+          <p class="label">What happened</p>
+<pre>async function tick() {
+  try {
+    var r = await fetch('/api/backtest/progress');
+    if (!r.ok) <span class="hit">return;</span>              <span class="dim">// no reschedule</span>
+    p = await r.json();
+  } catch (e) { <span class="hit">return; </span>}          <span class="dim">// no reschedule</span>
+  ...
+  schedule(p.running ? 120 : 2500);   <span class="dim">// the only reschedule, at the very end</span>
+}</pre>
+        </div>
+
+        <div class="part">
+          <p class="label">Why it matters</p>
+          <p>Both early returns skip the only line that schedules the next tick. So a single 500, or one
+            dropped connection, kills live progress permanently.</p>
+          <p>What the user sees: the graph stops lighting up, the running total freezes on whatever rebalance
+            it last saw, and the "run finished, show me the result" handoff never fires. They watch a stalled
+            progress bar for the rest of a long backtest. Only a page reload brings it back.</p>
+        </div>
+
+        <div class="part fix">
+          <p class="label">How to fix it</p>
+          <ul class="tight">
+            <li>Wrap the body in <code>try/finally</code> and put <code>schedule()</code> in the
+              <code>finally</code>, so every path reschedules.</li>
+            <li>Back off on repeated failures (2.5s → 5s → 10s) instead of stopping, and go back to fast
+              polling on the first success.</li>
+          </ul>
+        </div>
+      </article>
+
+      <!-- U-07 -->
+      <article class="finding high">
+        <div class="fhead">
+          <div class="ftags">
+            <span class="chip sev">Bad</span>
+            <span class="chip id">U-07</span>
+            <span class="st fx">fixed in 0.1.2</span>
+            <span class="chip">api.py · retention.py</span>
+          </div>
+          <h3>A typo in "rebalance" returns a 500 — and the error names the wrong field</h3>
+        </div>
+
+        <div class="part">
+          <p class="label">What I did</p>
+          <p>Typed <code>banana</code> into the rebalance box, which is a free text field, and ran it.</p>
+        </div>
+
+        <div class="part">
+          <p class="label">What happened</p>
+<pre>POST /api/backtest  ->  <span class="hit">500 Internal Server Error</span>
+body the user gets: "Internal Server Error"
+
+server log:
+  File "src/qanat/backtest.py", line 92, in dates
+  File "src/qanat/retention.py", line 31, in parse_duration
+  ValueError: <span class="hit">retention</span> must look like '7d' or '24h', got 'banana'</pre>
+        </div>
+
+        <div class="part">
+          <p class="label">Why it matters</p>
+          <p>Two problems. First, <code>/api/backtest</code> only catches <code>BacktestError</code>.
+            <code>parse_duration</code> raises a plain <code>ValueError</code>, so it escapes as a 500 and the
+            user gets no explanation at all.</p>
+          <p>Second, even in the log the message is wrong for the situation. It says
+            <em>"<strong>retention</strong> must look like '7d'"</em> — but the user typed a
+            <strong>rebalance</strong>, not a retention policy. <code>parse_duration</code> lives in
+            <code>retention.py</code> and is reused by the backtest for <code>rebalance</code>,
+            <code>purge</code> and <code>embargo</code>, and its message never got updated. Anyone reading
+            that log will go looking at the wrong setting.</p>
+        </div>
+
+        <div class="part fix">
+          <p class="label">How to fix it</p>
+          <ul class="tight">
+            <li>Give <code>parse_duration</code> a <code>field</code> argument used in the message:
+              <em>"rebalance must look like '5d' or '1h', got 'banana'"</em>.</li>
+            <li>Catch <code>ValueError</code> alongside <code>BacktestError</code> in the endpoint and return
+              422 with the message.</li>
+            <li>Validate the duration in the form on blur, so the user never sends it.</li>
+          </ul>
+        </div>
+      </article>
+
+      <!-- U-08 -->
+      <article class="finding high">
+        <div class="fhead">
+          <div class="ftags">
+            <span class="chip sev">Bad</span>
+            <span class="chip id">U-08</span>
+            <span class="st fx">fixed in 0.1.2</span>
+            <span class="chip">alphaedit.js:155, :369</span>
+          </div>
+          <h3>Delete has no confirmation, and sits right next to save</h3>
+        </div>
+
+        <div class="part">
+          <p class="label">What I did</p>
+          <p>Searched the whole front end for <code>confirm(</code> and <code>prompt(</code>.</p>
+        </div>
+
+        <div class="part">
+          <p class="label">What happened</p>
+<pre>confirm() calls in the console: <span class="hit">0</span>
+prompt()  calls in the console: <span class="hit">0</span>
+
+DELETE /api/alphas/{id}   <span class="dim">— fires straight from the click handler</span>
+DELETE /api/stages/{id}   <span class="dim">— same</span></pre>
+        </div>
+
+        <div class="part">
+          <p class="label">Why it matters</p>
+          <p>The <em>delete</em> button sits in the same row as <em>save</em>, and one click removes an alpha
+            from the project — the server rewrites <code>qanat.yaml</code>. "Remove this stage" is the same.
+            No question is asked.</p>
+          <p>The console already has everything it needs to write a good confirmation: the graph payload
+            carries the row count for every table, and the stage panel has already worked out which tables
+            belong to that stage. It could ask <em>"remove <code>features</code>, which holds 3 tables and
+            412,908 rows?"</em> and instead it asks nothing.</p>
+          <p>It also throws away the server's answer. Deleting an alpha returns a helpful note — "the script is
+            still on disk, and so is anything it wrote" — and the console never reads it.</p>
+        </div>
+
+        <div class="part fix">
+          <p class="label">How to fix it</p>
+          <ul class="tight">
+            <li>Add a two-step confirm on both deletes, naming the thing and its row count.</li>
+            <li>Show the server's <code>note</code> and <code>warnings</code> after a successful delete — they
+              are already in the response.</li>
+            <li>Move <em>delete</em> out of the save row, or give it a different weight.</li>
+          </ul>
+        </div>
+      </article>
+
+    </div>
+  </section>
+
+  <section>
+    <div class="shead">
+      <h2>The other twelve</h2>
+      <span class="count">shorter, same evidence</span>
+    </div>
+
+    <div class="scroll">
+      <table>
+        <thead>
+          <tr><th>Problem</th><th>How bad</th><th>Where</th><th>ID</th></tr>
+        </thead>
+        <tbody>
+          <tr class="group"><td colspan="4">Keyboard and screen reader</td></tr>
+          <tr>
+            <td><strong>The run form is not a dialog.</strong> No <code>role="dialog"</code>, no
+              <code>aria-modal</code>. Focus never moves into it — after opening, the focused element is still
+              the button behind the overlay. Tab walks straight out into the page underneath.</td>
+            <td><span class="sevtag m">Medium</span></td><td class="where">index.html:90</td><td class="ref">U-09<br><span class="st pt">partly fixed</span></td>
+          </tr>
+          <tr>
+            <td><strong>Escape closes the wrong thing.</strong> One unconditional handler:
+              <code>if (e.key === 'Escape') closeDetail()</code>. Pressing Escape over the run form closes the
+              panel <em>behind</em> it and leaves the form up. I confirmed both: the side panel does close, the
+              form does not. The side panel's button even advertises <code>title="close (esc)"</code>, so the
+              app teaches a habit that fails where it is needed most.</td>
+            <td><span class="sevtag m">Medium</span></td><td class="where">console.js:467</td><td class="ref">U-10<br><span class="st fx">fixed in 0.1.2</span></td>
+          </tr>
+          <tr>
+            <td><strong>No focus ring anywhere.</strong> The whole 642-line stylesheet has one
+              <code>:focus</code> rule, and it is <code>.rrow input:focus { outline: 0; border-color:
+              #a2e65d66 }</code> — a 1px border at 40% opacity, which is not a real indicator. Every other
+              control falls back to the browser default on a near-black background.</td>
+            <td><span class="sevtag h">Bad</span></td><td class="where">theme.css:491</td><td class="ref">U-11<br><span class="st fx">fixed in 0.1.2</span></td>
+          </tr>
+          <tr>
+            <td><strong>Hidden panels keep their buttons in the tab order.</strong> The book and the detail
+              rail are hidden with <code>width: 0; overflow: hidden</code>, not <code>display: none</code>.
+              I folded the book and counted: <strong>7 of its buttons were still tabbable</strong> while
+              invisible. With no focus ring, the user has no idea where they are.</td>
+            <td><span class="sevtag h">Bad</span></td><td class="where">theme.css:33, :522</td><td class="ref">U-12<br><span class="st op">still open</span></td>
+          </tr>
+          <tr>
+            <td><strong>"edit" on an alpha card is mouse-only.</strong> It is a <code>&lt;span&gt;</code> with
+              a click handler, it is <code>opacity: 0</code> until you hover the card, and it sits
+              <em>inside</em> the card's own <code>&lt;button&gt;</code>. So a keyboard user who tabs to the
+              card and presses Enter always gets the card action, never edit. There is no keyboard path to
+              editing an alpha at all.</td>
+            <td><span class="sevtag h">Bad</span></td><td class="where">backtests.js:632</td><td class="ref">U-13<br><span class="st op">still open</span></td>
+          </tr>
+          <tr>
+            <td><strong>11 of 21 form inputs have no label.</strong> The shared <code>row()</code> helper puts
+              the <code>&lt;label&gt;</code> beside the control with no <code>for</code> and no wrapping, so
+              the link is visual only. A screen reader announces "edit text, blank" eleven times in the run
+              form — no way to tell the seed from the commission.</td>
+            <td><span class="sevtag m">Medium</span></td><td class="where">backtests.js:1169</td><td class="ref">U-14<br><span class="st fx">fixed in 0.1.2</span></td>
+          </tr>
+          <tr>
+            <td><strong>Sorting a table needs a mouse.</strong> The sort handler is bound to
+              <code>&lt;th&gt;</code>, which is not focusable, with no <code>aria-sort</code>. Sorting is the
+              only way to reorder a 50-row page of a table that may hold millions of rows.</td>
+            <td><span class="sevtag m">Medium</span></td><td class="where">console.js:330</td><td class="ref">U-15<br><span class="st op">still open</span></td>
+          </tr>
+          <tr>
+            <td><strong>Chart drill-down is pointer-only.</strong> Clicking a bar opens one rebalance; dragging
+              narrows the whole report. Both are on a plain <code>&lt;div&gt;</code>. The drill panel's own
+              empty state says "Click a bar above" — for a keyboard user that panel can never be filled.</td>
+            <td><span class="sevtag m">Medium</span></td><td class="where">backtests.js:822</td><td class="ref">U-16<br><span class="st op">still open</span></td>
+          </tr>
+
+          <tr class="group"><td colspan="4">Errors and state</td></tr>
+          <tr>
+            <td><strong>The run can be submitted twice, and the error is wiped.</strong> The form closes and
+              the graph lights up <em>before</em> the server answers. A second submit returns a correct
+              <code>409 "a replay is already running in this project"</code> — but it is inserted into a panel
+              that the 4-second repaint overwrites. The user gets a ~4 second flash, then a lit graph and the
+              previous run's numbers.</td>
+            <td><span class="sevtag h">Bad</span></td><td class="where">backtests.js:1207</td><td class="ref">U-17<br><span class="st pt">partly fixed</span></td>
+          </tr>
+          <tr>
+            <td><strong>Errors are shown as raw JSON.</strong> All four fetch wrappers do
+              <code>throw new Error(await r.text())</code>, so the user is shown
+              <code>{"detail":"a replay is already running in this project"}</code> verbatim. A Pydantic 422 is
+              worse — a wall of nested JSON. The message is not lost, just never unwrapped.</td>
+            <td><span class="sevtag m">Medium</span></td><td class="where">console.js:43</td><td class="ref">U-18<br><span class="st fx">fixed in 0.1.2</span></td>
+          </tr>
+          <tr>
+            <td><strong>Two polling loops overlap and none back off.</strong> Four timers at 2.5s, 4s, 5s and
+              120ms. The 4s and 5s ones both call <code>refresh()</code>, so every cycle sends duplicate
+              <code>GET /api/backtests</code> and <code>GET /api/alphas</code>, with no reentrancy guard —
+              they can interleave and both write the same globals. With the server down the console fires
+              roughly 2.5 requests a second, forever.</td>
+            <td><span class="sevtag m">Medium</span></td><td class="where">backtests.js:1296</td><td class="ref">U-19<br><span class="st fx">fixed in 0.1.2</span></td>
+          </tr>
+          <tr>
+            <td><strong>Dead affordances.</strong> Every run-log row has <code>cursor: pointer</code> and no
+              click handler — I clicked one and nothing happened. There is also no
+              <code>prefers-reduced-motion</code> guard anywhere, including on an infinite pulse animation and
+              a sweep that re-fires once per rebalance during a replay.</td>
+            <td><span class="sevtag s">Small</span></td><td class="where">theme.css:132, :334</td><td class="ref">U-20<br><span class="st fx">fixed in 0.1.2</span></td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <section>
+    <div class="shead">
+      <h2>What was already right</h2>
+      <span class="count">worth protecting</span>
+    </div>
+    <ul class="tight prose">
+      <li><strong>Zero console errors on load</strong>, and zero on every click I made.</li>
+      <li><strong>All 34 buttons are real <code>&lt;button&gt;</code> elements with real text.</strong> Not one
+        unnamed icon-only button in the main view. The seven pointer-handler-on-a-div cases are the exception,
+        not the pattern.</li>
+      <li><strong>Every <code>fetch()</code> checks its status</strong>, and all 18 API calls sit inside a
+        <code>try</code>/<code>catch</code>. The defects are in what the catch blocks do, not in their
+        absence.</li>
+      <li><strong>The server-down banner is honest.</strong> "The console keeps the last thing it saw, so what
+        is on screen may be old" is exactly the right sentence. It just needs to be somewhere the user cannot
+        hide it.</li>
+      <li><strong>The 409 on a second replay is correct and well worded</strong> — the backend guard works.
+        Only the display of it fails.</li>
+      <li><strong><code>dag.js</code> guards every field it reads</strong> from the API payload. Nothing in the
+        renderer can blank the page.</li>
+      <li><strong>The alpha editor's save button</strong> is the one flow that disables itself for the whole
+        round trip and re-enables on both paths. It is the model the other four should copy.</li>
+    </ul>
+  </section>
+
+  <section>
+    <div class="shead">
+      <h2>What I would build</h2>
+      <span class="count">6 changes</span>
+    </div>
+
+    <div class="improve">
+      <div class="imp">
+        <h3>Numbers the form cannot lie with</h3>
+        <p>Constrain costs at the model (<code>ge=0</code>), at the input (<code>min="0"</code>), and validate
+          durations on blur. Then show every run's conditions on its book row, so a run at unusual costs can
+          never be read as a normal one.</p>
+        <span class="closes">fixes U-01, U-07</span>
+      </div>
+      <div class="imp">
+        <h3>A keyboard path into the graph</h3>
+        <p>Put a visually hidden list of real buttons inside the canvas — one per table, firing the same
+          select. The picture stays for mouse users; the list makes the app operable. This is the single
+          biggest gap in the console.</p>
+        <span class="closes">fixes U-02, helps U-15, U-16</span>
+      </div>
+      <div class="imp">
+        <h3>One honest "is this current?" signal</h3>
+        <p>Timeout every fetch, track the last good response, and put the staleness marker in the top bar where
+          nothing can hide it. A hung server and a dead one should look the same to the reader.</p>
+        <span class="closes">fixes U-03, U-04</span>
+      </div>
+      <div class="imp">
+        <h3>Errors that survive the next repaint</h3>
+        <p>One toast area outside the polled panels, with <code>role="alert"</code>. Unwrap
+          <code>{"detail": ...}</code> into plain text. Then no error can be erased four seconds after it
+          appears.</p>
+        <span class="closes">fixes U-05, U-17, U-18</span>
+      </div>
+      <div class="imp">
+        <h3>Ask before deleting</h3>
+        <p>Both deletes name the thing and its row count before doing it, and show the server's note
+          afterwards. The data for a good confirmation is already in the payload the console has.</p>
+        <span class="closes">fixes U-08</span>
+      </div>
+      <div class="imp">
+        <h3>A focus pass</h3>
+        <p>One visible <code>:focus-visible</code> ring on every control, <code>display: none</code> for folded
+          panels instead of <code>width: 0</code>, dialog semantics and focus trapping on the two modals, and
+          labels wired with <code>for</code>. Most of this is an afternoon in one CSS file and one helper
+          function.</p>
+        <span class="closes">fixes U-09 to U-14, U-20</span>
+      </div>
+    </div>
+
+    <div class="note">
+      <strong>Order I would fix them in.</strong>
+      <ol class="steps">
+        <li><strong>U-01.</strong> One line — <code>ge=0</code> on two fields. A backtesting tool that reports
+          +1938% because someone typed a minus sign is the most serious thing on this page.</li>
+        <li><strong>U-05 and U-06.</strong> Both are a few lines, and both currently make failures invisible.</li>
+        <li><strong>U-04.</strong> Move one element and delete one CSS rule.</li>
+        <li><strong>U-02.</strong> The keyboard path into the graph. Bigger, but it is what makes the console
+          usable by everyone rather than most people.</li>
+      </ol>
+    </div>
+  </section>
+
+  <footer>
+    Live browser session against qanat 0.1.1 on a fresh <code>qanat init --demo</code> project, plus two
+    parallel source audits whose findings I reproduced in the browser before reporting them.<br>
+    Nothing here left the machine. The demo project was a scratch copy.
+  </footer>
+
+</div>

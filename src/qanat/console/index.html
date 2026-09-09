@@ -31,13 +31,21 @@
   </aside>
 
   <main class="stage">
+    <!-- The banner used to live inside .view, which `graph-folded` sets to
+         display:none from a preference kept in localStorage. A reader who once
+         folded the graph lost the only explanation of a dead server, for good. -->
+    <div id="down-banner" class="downbanner">
+      <b>qanat is not answering on this address.</b> The console keeps the last thing it saw, so
+      what is on screen may be out of date. Start it again with
+      <code>qanat serve</code> and this clears itself.
+    </div>
     <div class="view">
-      <canvas id="dagcv"></canvas>
-      <div id="down-banner" class="downbanner">
-        <b>qanat is not answering on this address.</b> The console keeps the last thing it saw, so
-        what is on screen may be out of date. Start it again with
-        <code>qanat serve</code> and this clears itself.
-      </div>
+      <canvas id="dagcv" role="img" aria-label="the pipeline graph"></canvas>
+      <!-- The graph is a canvas, so clicking a table is mouse-only. This is the
+           same action as a real control, one per table, for anybody on a keyboard
+           or a screen reader. -->
+      <h2 class="vh">Tables in this pipeline</h2>
+      <ul class="vh" id="dag-keys"></ul>
       <button class="srcadd" type="button" id="b-add-src">＋ data source</button>
       <div class="modes">
         <button class="mb" type="button" id="b-fit">fit</button>

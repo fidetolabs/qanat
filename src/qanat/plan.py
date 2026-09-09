@@ -46,6 +46,7 @@ def job_spec(job: Source | Step, root: Path) -> dict:
             "to": sorted(job.writes),
             "schedule": job.schedule,
             "mode": job.mode,
+            "key": sorted(job.key),
             "options": job.options,
         }
     return {
@@ -57,6 +58,12 @@ def job_spec(job: Source | Step, root: Path) -> dict:
         "schedule": job.schedule,
         "universe": job.universe,
         "options": job.options,
+        # These change every number the step produces, and were not in the snapshot:
+        # moving an alpha from a 1d to a 21d rebalance left `qanat plan` saying
+        # nothing had changed.
+        "rebalance": job.rebalance,
+        "decay": job.decay,
+        "when": sorted(job.when),
     }
 
 
@@ -148,6 +155,10 @@ _LABEL = {
     "connector": "connector",
     "universe": "universe",
     "mode": "mode",
+    "key": "key",
+    "rebalance": "rebalance",
+    "decay": "decay",
+    "when": "waits on",
 }
 
 

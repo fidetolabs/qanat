@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import os
+import threading
 from pathlib import Path
 from typing import Any
 
@@ -78,12 +80,35 @@ def _dump_step(st: Step) -> dict[str, Any]:
     return row
 
 
+#: One writer at a time. The console edits from a request thread and the scheduler
+#: stamps `live_from` from its own, and a plain write_text let them interleave: two
+#: in four hundred reads got a half-written file, and one writer's change was lost.
+_WRITE = threading.RLock()
+
+
 def save_project(project: Project, root: Path) -> Path:
-    """Write qanat.yaml. Returns the file path."""
+    """Write qanat.yaml, atomically, keeping the last good copy.
+
+    `write_text` truncates and then writes, so anything reading in between sees a
+    torn file -- `state.reload()` after an edit, `qanat check` in another terminal,
+    an agent over MCP. Writing beside it and renaming is atomic on every platform
+    this runs on, and costs nothing.
+    """
     path = root / "qanat.yaml"
     data = dump_project(project)
     text = yaml.safe_dump(data, sort_keys=False, default_flow_style=False, allow_unicode=True)
-    path.write_text(text)
+    with _WRITE:
+        if path.is_file():
+            try:
+                (root / "qanat.yaml.bak").write_text(path.read_text())
+            except OSError:  # a backup we cannot write is not a reason to block the save
+                pass
+        tmp = path.with_suffix(".yaml.tmp")
+        with tmp.open("w") as fh:
+            fh.write(text)
+            fh.flush()
+            os.fsync(fh.fileno())
+        os.replace(tmp, path)
     return path
 
 
