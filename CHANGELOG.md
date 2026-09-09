@@ -24,8 +24,11 @@ alpha earned **1292% against an honest 3.40%** with no failure, warning or note.
   schema-qualified reference during a replay and says why.
 - **A timezone offset was thrown away.** `CAST(col AS TIMESTAMP)` kept the wall
   clock, so a `16:00-05:00` row was visible four hours before it happened and a
-  `+09:00` row nine hours late. Every as-of comparison now goes through TIMESTAMPTZ,
-  and the connection is pinned to UTC.
+  `+09:00` row nine hours late. Against the default DuckDB store every as-of
+  comparison now goes through TIMESTAMPTZ, and the connection is pinned to UTC.
+  Against an attached Postgres the plain cast is kept: the column there already
+  carries its own zone, and a richer expression is rewritten when DuckDB pushes the
+  view down, which Postgres then refuses.
 - **`fetched_at` from the REST connector landed as TIMESTAMPTZ**, so off UTC every
   landed row was hidden from a replay for the length of the offset — right on a UTC
   server, nine hours wrong in Seoul. It is naive UTC now.

@@ -55,39 +55,48 @@ def _ident(name: str) -> str:
     return str(name).replace('"', '""')
 
 
-def as_instant(col: str) -> str:
+#: DuckDB's names for the integer types, as `duckdb_columns()` reports them --
+#: including for an attached Postgres, which it maps onto the same set.
+INT_TYPES = ("TINYINT", "SMALLINT", "INTEGER", "BIGINT", "HUGEINT",
+             "UTINYINT", "USMALLINT", "UINTEGER", "UBIGINT", "UHUGEINT")
+
+
+def as_instant(col: str, dtype: str | None = None, kind: str = "duckdb") -> str:
     """SQL that turns a time column into a comparable UTC instant.
 
-    A bare `CAST(x AS TIMESTAMP)` throws the offset away, so `16:00-05:00` and
-    `16:00Z` compared equal -- and a New York close became visible four hours
-    before it happened. Casting through TIMESTAMPTZ first keeps the offset; a
-    value with no offset is read in the session zone, which is UTC because the
-    connection sets it.
+    Two things used to go wrong here, and the fix for each has to survive being
+    pushed down into an attached Postgres -- so the type is decided in Python and
+    only portable functions appear in the SQL.
 
-    Integers are the other common clock on the web, and they are not all the same
-    thing. DuckDB refuses to cast any of them to a timestamp, so rather than fail
-    three layers down they are read by magnitude:
+    **Offsets were thrown away.** A bare `CAST(x AS TIMESTAMP)` keeps the wall clock,
+    so `16:00-05:00` and `16:00Z` compared equal and a New York close was visible
+    four hours before it happened. Against a DuckDB file the cast now goes through
+    TIMESTAMPTZ. Against Postgres the column already carries its own zone and the
+    plain cast is left alone, because anything richer is rewritten on pushdown.
 
-        1000 .. 9999          a year          -- annual macro data says `2024`
-        1e8  .. 1e11          epoch seconds   -- 1973 to 5138
-        above 1e11            epoch millis    -- what USGS, Slack and Binance send
+    **Integers are a clock too, and not all the same one.** DuckDB refuses to cast
+    them at all, so rather than fail three layers down they are read by magnitude:
 
-    Anything below 1000 is not a date anybody meant, and is left null rather than
+        1000 .. 9999      a year        -- annual macro data says `2024`
+        1e8  .. 1e11      epoch seconds -- 1973 to 5138
+        above 1e11        epoch millis  -- what USGS, Slack and Binance send
+
+    Anything smaller is not a date anybody meant, and is left null rather than
     silently read as a few minutes after 1970.
     """
     q = f'"{_ident(col)}"'
-    n = f"CAST({q} AS HUGEINT)"
-    return (
-        f"CASE "
-        f"WHEN typeof({q}) IN ('BIGINT','INTEGER','HUGEINT','UBIGINT','UINTEGER','SMALLINT') "
-        f"THEN CASE "
-        f"       WHEN {n} BETWEEN 1000 AND 9999 THEN make_timestamp({n}::BIGINT, 1, 1, 0, 0, 0) "
-        f"       WHEN abs({n}) > 100000000000 THEN epoch_ms({n}::BIGINT) "
-        f"       WHEN abs({n}) > 100000000 THEN to_timestamp({n}::BIGINT)::TIMESTAMP "
-        f"       ELSE NULL END "
-        f"ELSE CAST(TRY_CAST({q} AS TIMESTAMPTZ) AT TIME ZONE 'UTC' AS TIMESTAMP) "
-        f"END"
-    )
+    if dtype and str(dtype).upper().split("(")[0] in INT_TYPES:
+        n = f"CAST({q} AS BIGINT)"
+        return (
+            f"CASE "
+            f"WHEN {n} BETWEEN 1000 AND 9999 THEN make_timestamp({n}, 1, 1, 0, 0, 0) "
+            f"WHEN abs({n}) > 100000000000 THEN CAST(to_timestamp({n} / 1000.0) AS TIMESTAMP) "
+            f"WHEN abs({n}) > 100000000 THEN CAST(to_timestamp({n}) AS TIMESTAMP) "
+            f"ELSE NULL END"
+        )
+    if kind == "postgres":
+        return f"CAST({q} AS TIMESTAMP)"
+    return f"CAST(TRY_CAST({q} AS TIMESTAMPTZ) AT TIME ZONE 'UTC' AS TIMESTAMP)"
 
 
 def _typed(df: pd.DataFrame) -> pd.DataFrame:
@@ -443,9 +452,6 @@ class Store:
                     self._shadow(ref)
         return len(df)
 
-    _INT = ("TINYINT", "SMALLINT", "INTEGER", "BIGINT", "HUGEINT",
-            "UTINYINT", "USMALLINT", "UINTEGER", "UBIGINT", "UHUGEINT")
-
     def _widen(self, name: str, ref: str, have: list[str]) -> None:
         """Make room for what is arriving, instead of rounding it away.
 
@@ -468,7 +474,7 @@ class Store:
             old, new = mine.get(col), theirs.get(col)
             if not old or not new or old == new:
                 continue
-            if old in self._INT and new in ("FLOAT", "DOUBLE", "DECIMAL"):
+            if old in INT_TYPES and new in ("FLOAT", "DOUBLE", "DECIMAL"):
                 self.con.execute(
                     f'ALTER TABLE {self._q(name)} ALTER COLUMN "{_ident(col)}" TYPE DOUBLE'
                 )
@@ -526,12 +532,18 @@ class Store:
                     f"{ref} has no time column, so it cannot be read as of a timestamp. "
                     f"Name one of {', '.join(TIME_COLS)}, or set time_columns in qanat.yaml"
                 )
-            q += f' WHERE {as_instant(col)} <= CAST(? AS TIMESTAMP)'
+            q += f' WHERE {self._instant(ref, col)} <= CAST(? AS TIMESTAMP)'
             params.append(as_of)
         if limit:
             q += f" LIMIT {int(limit)}"
         with self._lock:
             return self.con.execute(q, params).df()
+
+    def _instant(self, ref: str, col: str) -> str:
+        """`as_instant` for one real column, with its declared type looked up."""
+        info = self.table_info(ref)
+        dtype = dict(info.columns).get(col) if info else None
+        return as_instant(col, dtype, self.kind)
 
     def time_column(self, ref: str, override: str | None = None) -> str | None:
         """Which column carries this table's timestamp."""
@@ -576,7 +588,7 @@ class Store:
         else:
             body = (
                 f'SELECT * FROM {self._q(name)} '
-                f"WHERE {as_instant(col)} <= CAST('{self.as_of}' AS TIMESTAMP)"
+                f"WHERE {self._instant(ref, col)} <= CAST('{self.as_of}' AS TIMESTAMP)"
             )
         self.con.execute(f'CREATE OR REPLACE VIEW "{PIT}"."{name}" AS {body}')
         return col is not None
@@ -611,7 +623,7 @@ class Store:
             return None
         with self._lock:
             v = self.con.execute(
-                f'SELECT max({as_instant(col)}) FROM {self._q(phys(ref))}'
+                f'SELECT max({self._instant(ref, col)}) FROM {self._q(phys(ref))}'
             ).fetchone()[0]
         return str(v) if v is not None else None
 

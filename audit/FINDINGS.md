@@ -31,7 +31,7 @@ recorded as a limit, not a fix:
 | ID | Sev | Finding | Status |
 | --- | --- | --- | --- |
 | W-01 | C | `ctx.store.read()` and a schema-qualified `ctx.sql("… FROM main.raw__x")` both skip the as-of views. Cheating alpha earned 1292% against an honest 3.40%. | **fixed** |
-| W-02 | C | A timezone offset is dropped by `CAST(col AS TIMESTAMP)`, so a `-05:00` row is visible 4 hours early and a `+09:00` row 9 hours late. | **fixed** |
+| W-02 | C | A timezone offset is dropped by `CAST(col AS TIMESTAMP)`, so a `-05:00` row is visible 4 hours early and a `+09:00` row 9 hours late. | **fixed** for a DuckDB store; on an attached Postgres the column carries its own zone and the plain cast is kept — a richer expression is rewritten on pushdown |
 | W-03 | C | REST `fetched_at` lands as `TIMESTAMPTZ`, so off UTC every row is hidden from a replay for the length of the offset. 0 of 1 rows visible on Asia/Seoul. | **fixed** |
 | R-01 | H | An epoch-integer clock breaks `max_time`, `read(as_of=)` and every PIT view read with `Unimplemented type for cast (BIGINT -> TIMESTAMP)`. | **fixed** |
 | W-04 | H | A holding with no price earns zero, is still counted in `holdings`, and produces no note. 25% of a book became silent cash. | **fixed** |
