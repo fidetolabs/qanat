@@ -1,5 +1,83 @@
 # Changelog
 
+## 0.1.3 — 2026-09-10
+
+The last nine open findings from the audit, and one regression the audit found in
+its own previous fix. Nothing is open now; six findings remain partly fixed, and
+[`audit/FINDINGS.md`](audit/FINDINGS.md) says what is left of each.
+
+### The graph is the real graph now
+
+**A `.sql` body could read a table the step never declared.** `ctx.read` has always
+refused an undeclared table and said why, but naming it in SQL went straight round
+that. The consequences were all quiet: the console drew an arrow that was not where
+the data came from, `qanat check` warned that a table two steps read "is never read
+by anything", and `plan().stale()` never marked the consumer — so it stayed one
+generation behind for ever while reporting `ok`.
+
+Both doors are shut. `qanat check` reads the `.sql` body and errors on a table that
+is in the project but not in `from:`; `ctx.sql` does the same at run time. Comments
+and string literals are ignored, so a table name inside a comment is still a comment.
+
+### A job that will not finish
+
+**A job had no time limit and no way to stop it**, so it held its worker until the
+process ended — and four of those stopped the scheduler dead, with nothing but warn
+events to say so.
+
+A job may now set `timeout: 10m`, or a project may set `job_timeout:` for all of
+them. When it expires the scheduler frees the worker and closes the run row as
+`timeout` instead of leaving it saying `running` for ever. `DELETE /api/jobs/{id}/run`
+does the same on demand, and `/api/graph` now reports `workers` and `busy` so
+starvation is visible without reading the log.
+
+The limit is stated rather than hidden: nothing in this process can end a running
+Python thread. The job finishes on its own and its result is discarded. What is
+fixed is the scheduler carrying on, and the console no longer showing the job as
+running.
+
+### Smaller things that were left
+
+- **The lookahead guard is honest about its one gap.** It returns early when a table
+  has no recognised time column — and such a table is not filtered by the as-of views
+  either. The step now says so when it writes one, and the backtest report lists them
+  under `no_clock`, instead of leaving the promise wider than the code.
+- **A store outside the project directory is called out** by `qanat check`. It is a
+  real choice, not an error, but it means copying the project no longer copies the
+  work.
+- **`payload: true` is documented for the shapes that need it.** The docstring
+  offered it for parallel arrays, which land correctly without it, while the two
+  shapes that genuinely need it went unmentioned. It now describes the `records:`
+  array index and the single-object body as well.
+
+### The console, for anyone not using a mouse
+
+- **A folded panel no longer keeps its buttons in the tab order.** `overflow: hidden`
+  clips pixels and removes nothing, so a closed rail kept every button, chip, pager
+  and form field focusable — and with no focus ring you were walking through controls
+  you could not see.
+- **`edit` on an alpha card is a real button.** It was a `<span>` with a click handler
+  *inside* the card's own `<button>`, so pressing Enter on the card always picked the
+  alpha and never opened it — editing was mouse-only, with no keyboard path at all.
+  The card and `edit` are siblings now, and `edit` appears on focus as well as hover.
+- **A column header is a control.** Sorting was bound to `<th>`, which cannot take
+  focus and carries no state; it is a button now, with `aria-sort` on the header.
+- **A rebalance can be opened without a mouse.** Clicking a bar opens one period and
+  dragging narrows the report, both on a plain `<div>` — so the drill panel told
+  people to "click a bar above" when they had no way to click one. There is now one
+  control per rebalance beside the chart.
+
+### A regression this audit caught in its own fix
+
+The 0.1.2 fix for live progress put its two helpers in the wrong one of
+`backtests.js`'s two IIFEs. `tick` threw `ReferenceError: backoff is not defined` on
+its first call, its `catch` threw the same error again, and nothing rescheduled — the
+progress poller was dead from page load, which is exactly what that fix was for.
+
+It was found the same way everything else here was: by opening the console in a
+browser and watching what it did. The poller is now checked by counting the requests
+it makes, not by reading the code that should make them.
+
 ## 0.1.2 — 2026-09-09
 
 A chaos audit of the whole tool, and the fixes it produced. Seventy-three findings

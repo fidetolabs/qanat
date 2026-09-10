@@ -247,6 +247,32 @@ def validate(p: Project, root: Path) -> Report:
 
     from qanat.retention import parse_duration
 
+    for job in p.jobs:
+        if job.timeout:
+            try:
+                parse_duration(job.timeout, "timeout")
+            except ValueError as exc:
+                r.errors.append(f"job '{job.id}': {exc}")
+    if p.job_timeout:
+        try:
+            parse_duration(p.job_timeout, "job_timeout")
+        except ValueError as exc:
+            r.errors.append(str(exc))
+
+    # A file store outside the project is not wrong, but it is worth saying out loud:
+    # the project and its data then move separately, and a copy of the directory is
+    # no longer a copy of the work.
+    if not p.store.startswith(("postgresql://", "postgres://")):
+        try:
+            inside = (root / p.store).resolve().is_relative_to(root.resolve())
+        except (OSError, ValueError):
+            inside = False
+        if not inside:
+            r.warnings.append(
+                f"store '{p.store}' is outside the project directory, so copying or moving "
+                f"the project will not take its data along"
+            )
+
     for ref, policy in p.retention.items():
         if ref.count(".") != 1:
             r.errors.append(f"retention key must be stage.table, got {ref!r}")
@@ -350,6 +376,21 @@ def validate(p: Project, root: Path) -> Report:
             body = f.read_text()
         except OSError:
             continue
+        from qanat.store import tables_named
+
+        stray = sorted(
+            ref for ref in tables_named(body)
+            if ref in producers and ref not in st.reads and ref not in st.writes
+        )
+        if stray:
+            r.errors.append(
+                f"step '{st.id}': {Path(st.script).name} reads {', '.join(stray)} without "
+                f"declaring {'it' if len(stray) == 1 else 'them'} in `from:`. The graph is "
+                f"drawn from what a step declares, so an undeclared read is an arrow nobody "
+                f"can see -- and `qanat plan` will not mark this step stale when that table "
+                f"changes"
+            )
+
         for name in sorted(set(_VAR.findall(body))):
             if name == "as_of":
                 continue

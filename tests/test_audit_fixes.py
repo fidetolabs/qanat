@@ -372,3 +372,112 @@ def test_g03_a_step_whose_upstream_failed_is_skipped(tmp_path: Path):
     assert out["fa"].status == "failed"
     assert out["fb"].status == "skipped", "fb reads what fa did not refresh"
     store.close()
+
+
+# ------------------------------------------------- the last nine, in 0.1.3
+def test_g05_a_sql_step_cannot_read_a_table_it_did_not_declare(tmp_path: Path):
+    """`ctx.read` refuses an undeclared table and says why. A `.sql` body reached the
+    same table anyway, so the console drew the wrong arrow, `check` warned that a
+    table two steps read "is never read by anything", and `stale()` never marked the
+    consumer -- it stayed a generation behind for ever, reporting ok."""
+    from qanat.project import validate
+
+    p, root = _project(
+        tmp_path,
+        "  - {id: fa, from: [f.prices], to: [f.a], script: steps/fa.sql}\n"
+        "  - {id: sneak, from: [f.prices], to: [f.b], script: steps/sneak.sql}\n",
+        {"fa.sql": "SELECT * FROM f__prices",
+         "sneak.sql": "SELECT p.*, a.* FROM f__prices p JOIN f__a a USING (symbol)"},
+    )
+    rep = validate(p, root)
+    assert any("f.a" in e and "declaring" in e for e in rep.errors), rep.errors
+
+
+def test_g05_ctx_sql_is_held_to_the_same_rule(tmp_path: Path):
+    """The Python side of the same hole."""
+    from qanat.context import Context
+    from qanat.models import Project, Source, Stage, Step
+
+    project = Project(
+        name="t",
+        stages=[Stage(id="raw", kind="raw"), Stage(id="w", kind="weights")],
+        sources=[Source(id="b", writes=["raw.bars"], connector="csv")],
+        steps=[Step(id="a", reads=[], writes=["w.h"], script="a.py")],
+    )
+    store = Store(tmp_path / "t.duckdb")
+    ctx = Context(store, project, tmp_path, project.steps[0])
+    with pytest.raises(KeyError, match="raw.bars"):
+        ctx.sql("SELECT * FROM raw__bars")
+    store.close()
+
+
+def test_g05_comments_and_strings_are_not_table_names():
+    """The check reads SQL, so it has to ignore the parts of SQL that are text."""
+    from qanat.store import tables_named
+
+    assert tables_named("SELECT * FROM raw__bars") == {"raw.bars"}
+    assert tables_named("-- raw__ghost\nSELECT 1") == set()
+    assert tables_named("SELECT 'raw__ghost' AS x") == set()
+    assert tables_named("/* raw__ghost */ SELECT 1") == set()
+
+
+def test_f13_a_job_that_runs_too_long_gives_its_worker_back(tmp_path: Path):
+    """A job used to hold its slot until the process ended, so four slow ones stopped
+    the scheduler with nothing but warn events to say so.
+
+    Python cannot kill a running thread. What this asserts is the part that can be
+    fixed: the slot comes back and the run row stops saying `running`.
+    """
+    import time
+
+    from qanat.scheduler import Scheduler
+    from qanat.store import Store as S
+
+    p, root = _project(tmp_path, "", {})
+    p.steps[-1].timeout = "1s"
+    store = S(p.store_url(root))
+    sched = Scheduler(store, p, root, workers=2)
+    assert sched.limit("alpha_h") == 1.0
+
+    with sched._lock:
+        sched._inflight.add("alpha_h")
+        sched._deadline["alpha_h"] = time.time() - 0.1   # already overdue
+    store.start_run("alpha_h", "step", ["weights.h"])
+    assert sched.reap() == ["alpha_h"]
+    assert "alpha_h" not in sched._inflight
+    left = store.query("SELECT count(*) c FROM _qanat_runs WHERE status = 'running'")["c"][0]
+    assert int(left) == 0
+    store.close()
+
+
+def test_f13_a_running_job_can_be_cancelled(tmp_path: Path):
+    from qanat.scheduler import Scheduler
+    from qanat.store import Store as S
+
+    p, root = _project(tmp_path, "", {})
+    store = S(p.store_url(root))
+    sched = Scheduler(store, p, root, workers=2)
+    assert sched.cancel("alpha_h") is False, "nothing is running yet"
+    with sched._lock:
+        sched._inflight.add("alpha_h")
+    assert sched.cancel("alpha_h") is True
+    assert "alpha_h" not in sched._inflight
+    store.close()
+
+
+def test_f13_a_timeout_that_is_not_a_duration_is_caught_at_check_time(tmp_path: Path):
+    from qanat.project import validate
+
+    p, root = _project(tmp_path, "", {})
+    p.steps[-1].timeout = "soon"
+    assert any("timeout must look like" in e for e in validate(p, root).errors)
+
+
+def test_f15_a_store_outside_the_project_is_called_out(tmp_path: Path):
+    """Not wrong, but worth saying: the project and its data then move separately."""
+    from qanat.project import validate
+
+    p, root = _project(tmp_path, "", {})
+    assert not any("outside the project directory" in w for w in validate(p, root).warnings)
+    p.store = "/tmp/somewhere-else.duckdb"
+    assert any("outside the project directory" in w for w in validate(p, root).warnings)

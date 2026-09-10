@@ -4,7 +4,7 @@ A qanat is the underground channel that carried water across the desert for two
 thousand years: it moved the water, it never owned it.
 """
 
-__version__ = "0.1.2"
+__version__ = "0.1.3"
 
 from qanat.models import Project, Source, Stage, Step, Universe
 from qanat.store import Store
