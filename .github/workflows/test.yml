@@ -33,7 +33,7 @@ jobs:
           python-version: "${{ matrix.python }}"
           enable-cache: true
       - run: uv sync --frozen --extra dev
-      - run: uv run ruff check src tests
+      - run: uv run ruff check src tests audit
       - run: uv run pytest -q
         env:
           QANAT_TEST_PG: postgresql://qanat:qanat@127.0.0.1:5433/qanat
@@ -44,3 +44,26 @@ jobs:
         run: uv run pytest tests/test_postgres.py -q --no-header -p no:cacheprovider | tail -1 | grep -qE "[0-9]+ passed"
         env:
           QANAT_TEST_PG: postgresql://qanat:qanat@127.0.0.1:5433/qanat
+
+  # The standing chaos batteries. Slower than the suite above and one of them calls
+  # live public APIs, so they run once rather than across the matrix -- their job is
+  # to notice a regression in ground a past audit already covered, not to gate a
+  # push. See audit/README.md.
+  batteries:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v7
+        with: { enable-cache: true }
+      - run: uv python install 3.12
+      - run: uv sync --frozen --extra dev
+
+      # Offline first: if this fails, something in the engine moved.
+      - name: the batteries that need nothing but the code
+        run: uv run pytest audit/batteries -m "audit and not network" -q
+
+      # And the live shapes. A third party being down is not qanat being broken,
+      # so this reports without failing the run.
+      - name: the shapes the public web answers in
+        continue-on-error: true
+        run: uv run pytest audit/batteries -m "audit and network" -q
