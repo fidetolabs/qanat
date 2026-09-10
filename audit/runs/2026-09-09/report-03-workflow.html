@@ -1,0 +1,1251 @@
+<title>Does the Backtest Tell the Truth?</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,500;9..144,600&family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600&display=swap">
+
+<style>
+  :root {
+    --ground:#e5e8e9; --surface:#f3f5f5; --sunken:#dbe0e1; --ink:#171d20;
+    --muted:#5b6669; --faint:#7d888b; --rule:#c7cfd0; --accent:#0f6b70;
+    --crit:#a8341f; --high:#8f5c0d; --med:#35566e; --held:#3d7a1c;
+    --crit-bg:#f6e3de; --held-bg:#e3efd9;
+    --f-display:"Fraunces",Georgia,"Times New Roman",serif;
+    --f-body:"IBM Plex Sans",-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;
+    --f-mono:"IBM Plex Mono",ui-monospace,SFMono-Regular,Menlo,monospace;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --ground:#101416; --surface:#171e21; --sunken:#0b0e10; --ink:#dfe6e7;
+      --muted:#8d999c; --faint:#6d797c; --rule:#293236; --accent:#4fc7c9;
+      --crit:#ef7256; --high:#e2a13f; --med:#85aecd; --held:#a2e65d;
+      --crit-bg:#2b1712; --held-bg:#1a2412;
+    }
+  }
+  :root[data-theme="dark"] {
+    --ground:#101416; --surface:#171e21; --sunken:#0b0e10; --ink:#dfe6e7;
+    --muted:#8d999c; --faint:#6d797c; --rule:#293236; --accent:#4fc7c9;
+    --crit:#ef7256; --high:#e2a13f; --med:#85aecd; --held:#a2e65d;
+    --crit-bg:#2b1712; --held-bg:#1a2412;
+  }
+
+  * { box-sizing: border-box; }
+  body { margin:0; background:var(--ground); color:var(--ink); font-family:var(--f-body);
+         font-size:16px; line-height:1.65; -webkit-font-smoothing:antialiased; }
+  .wrap { max-width:1040px; margin:0 auto;
+          padding:clamp(2rem,6vw,4.5rem) clamp(1.1rem,4vw,2.5rem) 6rem;
+          display:flex; flex-direction:column; gap:4rem; }
+  .prose { max-width:64ch; }
+
+  .masthead { display:flex; flex-direction:column; gap:1.4rem; }
+  .eyebrow { font-family:var(--f-mono); font-size:.72rem; font-weight:500;
+             letter-spacing:.14em; text-transform:uppercase; color:var(--accent); }
+  h1 { font-family:var(--f-display); font-weight:600; font-size:clamp(2.2rem,6vw,3.6rem);
+       line-height:1.04; letter-spacing:-.02em; margin:0; text-wrap:balance; }
+  .standfirst { font-size:clamp(1.02rem,2.2vw,1.16rem); color:var(--muted); margin:0; max-width:58ch; }
+  .runmeta { display:flex; flex-wrap:wrap; gap:.2rem 2rem; padding-top:1.25rem;
+             border-top:1px solid var(--rule); font-family:var(--f-mono);
+             font-size:.78rem; color:var(--faint); }
+  .runmeta b { color:var(--muted); font-weight:500; }
+
+  .siblings { display:flex; flex-wrap:wrap; gap:.6rem; }
+  .sibling { display:inline-flex; align-items:center; gap:.5rem; font-family:var(--f-mono);
+             font-size:.76rem; color:var(--accent); text-decoration:none;
+             border:1px solid var(--rule); padding:.5rem .8rem; background:var(--surface); }
+  .sibling:hover { border-color:var(--accent); }
+  .sibling .arrow { color:var(--faint); }
+
+  section { display:flex; flex-direction:column; gap:1.5rem; }
+  .shead { display:flex; align-items:baseline; gap:1rem;
+           border-bottom:1px solid var(--rule); padding-bottom:.6rem; }
+  .shead h2 { font-family:var(--f-display); font-weight:600;
+              font-size:clamp(1.45rem,3.4vw,1.9rem); letter-spacing:-.015em; margin:0; flex:1; }
+  .shead .count { font-family:var(--f-mono); font-size:.76rem; color:var(--faint); white-space:nowrap; }
+
+  p { margin:0 0 .9rem; } p:last-child { margin-bottom:0; }
+  a { color:var(--accent); }
+  code,.mono { font-family:var(--f-mono); font-size:.86em; }
+  p code, li code, td code, dd code { background:var(--sunken); padding:.1em .36em;
+                                      border-radius:3px; color:var(--ink); }
+
+  .board { display:grid; grid-template-columns:repeat(auto-fit,minmax(150px,1fr));
+           gap:1px; background:var(--rule); border:1px solid var(--rule); }
+  .tile { background:var(--surface); padding:1.15rem 1.25rem; display:flex;
+          flex-direction:column; gap:.15rem; }
+  .tile .n { font-family:var(--f-display); font-size:2.5rem; font-weight:600; line-height:1;
+             font-variant-numeric:tabular-nums; letter-spacing:-.02em; }
+  .tile .l { font-family:var(--f-mono); font-size:.7rem; letter-spacing:.09em;
+             text-transform:uppercase; color:var(--faint); }
+  .tile.broke .n { color:var(--crit); }
+  .tile.held .n { color:var(--held); }
+
+  .sevbar { display:flex; height:10px; border:1px solid var(--rule); overflow:hidden; }
+  .sevbar span { display:block; }
+  .sevkey { display:flex; flex-wrap:wrap; gap:.4rem 1.5rem; font-family:var(--f-mono);
+            font-size:.74rem; color:var(--muted); }
+  .sevkey i { font-style:normal; display:inline-flex; align-items:center; gap:.45rem; }
+  .dot { width:9px; height:9px; display:inline-block; }
+
+  .findings { display:flex; flex-direction:column; gap:1.5rem; }
+  .finding { background:var(--surface); border:1px solid var(--rule);
+             border-left:4px solid var(--sev,var(--rule));
+             padding:1.4rem clamp(1.1rem,3vw,1.7rem);
+             display:flex; flex-direction:column; gap:1.1rem; }
+  .finding.crit { --sev:var(--crit); }
+  .finding.high { --sev:var(--high); }
+  .finding.med  { --sev:var(--med); }
+  .fhead { display:flex; flex-direction:column; gap:.55rem; }
+  .ftags { display:flex; flex-wrap:wrap; align-items:center; gap:.5rem; }
+  .chip { font-family:var(--f-mono); font-size:.68rem; font-weight:500; letter-spacing:.08em;
+          text-transform:uppercase; padding:.18rem .5rem; border:1px solid var(--rule); color:var(--muted); }
+  .chip.sev { border-color:transparent; }
+  .finding.crit .chip.sev { background:var(--crit); color:var(--surface); }
+  .finding.high .chip.sev { background:var(--high); color:var(--surface); }
+  .finding.med  .chip.sev { background:var(--med);  color:var(--surface); }
+  .chip.id { color:var(--faint); }
+  .finding h3 { font-family:var(--f-display); font-weight:600;
+                font-size:clamp(1.12rem,2.6vw,1.3rem); line-height:1.25;
+                letter-spacing:-.01em; margin:0; text-wrap:balance; }
+  .part { max-width:72ch; } .part + .part { margin-top:1rem; }
+  .label { font-family:var(--f-mono); font-size:.68rem; letter-spacing:.11em;
+           text-transform:uppercase; color:var(--faint); margin:0 0 .35rem; }
+  .part.fix { border-top:1px solid var(--rule); padding-top:1rem; margin-top:1.15rem; }
+  .part.fix .label { color:var(--accent); }
+
+  pre { margin:0; background:var(--sunken); border:1px solid var(--rule); padding:.85rem 1rem;
+        overflow-x:auto; font-family:var(--f-mono); font-size:.79rem; line-height:1.55; color:var(--ink); }
+  pre .hit { color:var(--crit); font-weight:500; }
+  pre .good { color:var(--held); font-weight:500; }
+  pre .dim { color:var(--faint); }
+
+  ul.tight { margin:0; padding-left:1.15rem; }
+  ul.tight li { margin-bottom:.4rem; } ul.tight li:last-child { margin-bottom:0; }
+
+  .scroll { overflow-x:auto; border:1px solid var(--rule); background:var(--surface); }
+  table { border-collapse:collapse; width:100%; min-width:640px; font-size:.9rem; }
+  thead th { text-align:left; font-family:var(--f-mono); font-size:.68rem; letter-spacing:.1em;
+             text-transform:uppercase; color:var(--faint); font-weight:500; padding:.75rem 1rem;
+             border-bottom:1px solid var(--rule); white-space:nowrap; }
+  tbody td { padding:.65rem 1rem; border-bottom:1px solid var(--rule); vertical-align:top; }
+  tbody tr:last-child td { border-bottom:0; }
+  td.num { font-family:var(--f-mono); font-variant-numeric:tabular-nums; white-space:nowrap; }
+  td.ref { font-family:var(--f-mono); font-size:.78rem; color:var(--faint); white-space:nowrap; }
+  td.where { font-family:var(--f-mono); font-size:.78rem; color:var(--muted); }
+  .group td { background:var(--sunken); font-family:var(--f-mono); font-size:.68rem;
+              letter-spacing:.11em; text-transform:uppercase; color:var(--muted); padding:.45rem 1rem; }
+  .tag { font-family:var(--f-mono); font-size:.68rem; font-weight:500; letter-spacing:.06em;
+         text-transform:uppercase; padding:.14rem .45rem; white-space:nowrap; }
+  .tag.leak { color:var(--crit); background:var(--crit-bg); }
+  .tag.ok { color:var(--held); background:var(--held-bg); }
+  .sevtag { font-family:var(--f-mono); font-size:.68rem; font-weight:500; letter-spacing:.06em;
+            text-transform:uppercase; padding:.14rem .4rem; white-space:nowrap; }
+  .sevtag.h { color:var(--high); border:1px solid var(--high); }
+  .sevtag.m { color:var(--med); border:1px solid var(--med); }
+
+  .improve { display:grid; grid-template-columns:repeat(auto-fit,minmax(280px,1fr));
+             gap:1px; background:var(--rule); border:1px solid var(--rule); }
+  .imp { background:var(--surface); padding:1.3rem; display:flex; flex-direction:column; gap:.55rem; }
+  .imp h3 { font-family:var(--f-body); font-weight:600; font-size:1rem; margin:0; line-height:1.3; }
+  .imp p { font-size:.9rem; color:var(--muted); margin:0; }
+  .imp .closes { font-family:var(--f-mono); font-size:.72rem; color:var(--accent); }
+
+  .note { background:var(--surface); border:1px solid var(--rule); border-left:4px solid var(--accent);
+          padding:1.2rem 1.4rem; font-size:.93rem; color:var(--muted); max-width:70ch; }
+  .note strong { color:var(--ink); font-weight:600; }
+  .note.good { border-left-color:var(--held); }
+  ol.steps { margin:.6rem 0 0; padding-left:1.3rem; }
+  ol.steps li { margin-bottom:.35rem; }
+
+  footer { border-top:1px solid var(--rule); padding-top:1.2rem; font-family:var(--f-mono);
+           font-size:.75rem; color:var(--faint); line-height:1.7; }
+
+
+  .st { font-family:var(--f-mono); font-size:.66rem; font-weight:500; letter-spacing:.07em;
+        text-transform:uppercase; padding:.18rem .5rem; border:1px solid transparent; }
+  .st.fx { background:var(--held-bg); color:var(--held); }
+  .st.pt { background:var(--high-bg,#f7ebd6); color:var(--high); }
+  .st.op { border-color:var(--rule); color:var(--faint); }
+  .fixbanner { background:var(--surface); border:1px solid var(--rule);
+               border-left:4px solid var(--held); padding:1.3rem clamp(1.1rem,3vw,1.6rem);
+               display:flex; flex-direction:column; gap:.7rem; }
+  .fixbanner h2 { font-family:var(--f-display); font-weight:600; margin:0;
+                  font-size:clamp(1.15rem,2.8vw,1.4rem); }
+  .fixbanner p { max-width:66ch; font-size:.95rem; color:var(--muted); }
+  .fixbanner .tally { display:flex; flex-wrap:wrap; gap:.5rem; }
+
+  @media (prefers-reduced-motion: reduce) { * { animation:none !important; transition:none !important; } }
+</style>
+
+<div class="wrap">
+
+  <header class="masthead">
+    <div class="eyebrow">Chaos run · part three · the actual job</div>
+    <h1>Does the Backtest Tell the Truth?</h1>
+    <p class="standfirst">I built projects from nothing — connect a source, build the graph, write an alpha,
+      backtest it, get a PnL table — first on data where I already knew the right answer, then on seven real
+      public feeds off the web. The arithmetic matches to thirteen decimal places. Four times an alpha could
+      still see the future, and those four are the ones that matter.</p>
+    <div class="siblings">
+      <a class="sibling" href="https://claude.ai/code/artifact/067ddaba-29b4-4356-a8be-22dda69b3c83">
+        <span class="arrow">←</span> Part one · the engine</a>
+      <a class="sibling" href="https://claude.ai/code/artifact/c7018f9f-c61a-4847-b18f-0d82f7254e4a">
+        <span class="arrow">←</span> Part two · the console</a>
+    </div>
+    <div class="runmeta">
+      <span><b>Method</b> known-answer data + live public APIs</span>
+      <span><b>Projects built</b> 25+, all from scratch</span>
+      <span><b>Version</b> qanat 0.1.1</span>
+      <span><b>Machine</b> Asia/Seoul</span>
+    </div>
+  </header>
+
+  <section>
+    <div class="fixbanner">
+      <div class="tally">
+        <span class="st fx">67 fixed</span>
+        <span class="st pt">6 partly fixed</span>
+        <span class="st op">nothing open</span>
+      </div>
+      <h2>Everything below is fixed as of v0.1.3, except six marked partly fixed</h2>
+      <p>Each finding carries its own status. Every fix was checked by re-running the
+        script that found it — not by re-reading the code — and each one has a case in
+        <code>tests/test_audit_fixes.py</code> named for its id, so it fails loudly if it
+        comes back. The ledger and the reproduction scripts are in <code>audit/</code>.</p>
+      <p>Two things are recorded as limits rather than fixes. A step is arbitrary Python,
+        so it can always read a source file off disk and reach data the as-of views hide;
+        the three doors that were qanat's to close are closed, and a standing test asserts
+        this one still leaks so nobody rediscovers it as an alpha. And a running Python
+        thread cannot be ended, so a job timeout frees the worker and closes the run
+        rather than pretending the work stopped.</p>
+    </div>
+  </section>
+
+
+  <section>
+    <div class="shead">
+      <h2>The numbers</h2>
+      <span class="count">14 hypotheses · 7 real sources · 38 problems</span>
+    </div>
+    <div class="board">
+      <div class="tile"><span class="n">14</span><span class="l">Hypotheses tested</span></div>
+      <div class="tile"><span class="n">7</span><span class="l">Real web sources</span></div>
+      <div class="tile held"><span class="n">8</span><span class="l">Exact matches</span></div>
+      <div class="tile broke"><span class="n">4</span><span class="l">Ways to see the future</span></div>
+      <div class="tile broke"><span class="n">38</span><span class="l">Problems found</span></div>
+    </div>
+    <div class="sevbar" role="img" aria-label="How bad: 4 very bad, 11 bad, 23 medium">
+      <span style="background:var(--crit); flex:4"></span>
+      <span style="background:var(--high); flex:11"></span>
+      <span style="background:var(--med); flex:23"></span>
+    </div>
+    <div class="sevkey">
+      <i><span class="dot" style="background:var(--crit)"></span>4 very bad</i>
+      <i><span class="dot" style="background:var(--high)"></span>11 bad</i>
+      <i><span class="dot" style="background:var(--med)"></span>23 medium</i>
+    </div>
+  </section>
+
+  <section>
+    <div class="shead">
+      <h2>How I tested it</h2>
+      <span class="count">the oracle trick</span>
+    </div>
+    <div class="prose">
+      <p>Testing a backtester is hard, because you cannot tell a wrong answer from a right one just by looking
+        at it. So I did not look. I made the data first.</p>
+      <p><strong>Example.</strong> Two symbols. Every symbol rises exactly <code>+0.1%</code> every single
+        day. No randomness. An alpha that always holds A. Over <em>n</em> periods the answer must be
+        <code>(1.001)ⁿ − 1</code> and nothing else. If qanat says something different, qanat is wrong.</p>
+      <p>Then I did the same for turnover, for fees, for blending two alphas, for purge, for embargo. And for
+        the one that matters most: I built data where <strong>seeing the future is worth about 1,300% and
+        being blind is worth about 3%</strong>. Then I tried six different ways of cheating. The number tells
+        you which ones worked.</p>
+    </div>
+  </section>
+
+  <section>
+    <div class="shead">
+      <h2>What is exactly right</h2>
+      <span class="count">read this first</span>
+    </div>
+    <div class="prose">
+      <p>This part matters as much as the failures. The core of this tool is correct, and precisely so.</p>
+    </div>
+    <div class="scroll">
+      <table>
+        <thead><tr><th>What I checked</th><th>Expected</th><th>qanat said</th><th></th></tr></thead>
+        <tbody>
+          <tr><td>Net over 143 periods at +0.1%/day</td><td class="num">0.1536473679</td><td class="num">0.1536473679</td><td><span class="tag ok">exact</span></td></tr>
+          <tr><td>Gross per period</td><td class="num">0.001</td><td class="num">0.001</td><td><span class="tag ok">exact</span></td></tr>
+          <tr><td>Turnover, first period (buy from flat)</td><td class="num">1.0</td><td class="num">1.0</td><td><span class="tag ok">exact</span></td></tr>
+          <tr><td>Turnover, holding unchanged</td><td class="num">0.0</td><td class="num">0.0</td><td><span class="tag ok">exact</span></td></tr>
+          <tr><td>Fees on turnover 2.0 at 10 bps</td><td class="num">0.002</td><td class="num">0.002</td><td><span class="tag ok">exact</span></td></tr>
+          <tr><td>Blend of two alphas, 3:1 allocation</td><td class="num">0.001625</td><td class="num">0.001625</td><td><span class="tag ok">exact</span></td></tr>
+          <tr><td>Purge 5d — how far back the alpha can see</td><td class="num">5 days</td><td class="num">5 days</td><td><span class="tag ok">exact</span></td></tr>
+          <tr><td>Embargo 3d — when the period fills</td><td class="num">+3 days</td><td class="num">+3 days</td><td><span class="tag ok">exact</span></td></tr>
+        </tbody>
+      </table>
+    </div>
+    <ul class="tight prose">
+      <li><strong>Totals reconcile.</strong> <code>net_sum</code> equals <code>gross − fees − slippage</code>
+        to the last digit.</li>
+      <li><strong>The fill rule is right.</strong> A portfolio decided on day <em>t</em> is filled at the next
+        price, never at the price that produced it. This is the single most important line in the codebase and
+        it holds.</li>
+      <li><strong>Same run twice gives the same digest and the same number.</strong> Editing the alpha script
+        changes the digest. Changing an option changes the digest. A <code>random.choice</code> alpha is
+        repeatable under a fixed seed.</li>
+      <li><strong>Bad allocations are refused clearly</strong> — all-zero and negative both get a plain
+        sentence explaining why.</li>
+      <li><strong>Steps declared out of dependency order still run in the right order.</strong></li>
+    </ul>
+  </section>
+
+  <section>
+    <div class="shead">
+      <h2>Can an alpha see the future?</h2>
+      <span class="count">6 ways tried · 4 work</span>
+    </div>
+    <div class="prose">
+      <p>The data: every day one of two symbols jumps +2% and the other falls 2%, in a pattern with nothing to
+        learn from the past. A blind alpha earns about 3%. An alpha that can see two days ahead earns about
+        1,300%. So the net <em>is</em> the leak detector.</p>
+    </div>
+    <div class="scroll">
+      <table>
+        <thead><tr><th>How the alpha tried to reach the data</th><th>Net</th><th>Result</th></tr></thead>
+        <tbody>
+          <tr><td><code>ctx.read("normalized.prices")</code> — the sanctioned way</td><td class="num">3.40%</td><td><span class="tag ok">blocked</span></td></tr>
+          <tr><td><code>ctx.sql("… FROM normalized__prices")</code></td><td class="num">3.40%</td><td><span class="tag ok">blocked</span></td></tr>
+          <tr><td><code>ctx.sql("… FROM raw__bars")</code></td><td class="num">3.40%</td><td><span class="tag ok">blocked</span></td></tr>
+          <tr><td><code>ctx.read("raw.bars")</code> with raw declared in <code>from:</code></td><td class="num">3.40%</td><td><span class="tag ok">blocked</span></td></tr>
+          <tr><td><code>ctx.sql("… FROM <strong>main.</strong>raw__bars")</code></td><td class="num">1292.59%</td><td><span class="tag leak">leak</span></td></tr>
+          <tr><td><code>ctx.store.read("raw.bars")</code></td><td class="num">1292.59%</td><td><span class="tag leak">leak</span></td></tr>
+          <tr><td><code>pd.read_csv(ctx.root / "seed/bars.csv")</code></td><td class="num">1292.59%</td><td><span class="tag leak">leak</span></td></tr>
+          <tr><td>a price stamped <code>-05:00</code> instead of UTC</td><td class="num">—</td><td><span class="tag leak">leak</span></td></tr>
+        </tbody>
+      </table>
+    </div>
+    <div class="note">
+      <strong>All four leaks produced zero failures, zero warnings and zero notes.</strong> The report reads
+      as a clean, spectacular alpha. The lookahead guard did not fire, because the alpha wrote an honest
+      <code>as_of</code> date while cheating on the pick — which is exactly the shape an accidental leak
+      takes.
+    </div>
+
+    <div class="findings">
+
+      <article class="finding crit">
+        <div class="fhead">
+          <div class="ftags"><span class="chip sev">Very bad</span><span class="chip id">W-01</span>
+            <span class="st fx">fixed in 0.1.2</span>
+            <span class="chip">store.py:314 · context.py:66</span></div>
+          <h3>Naming the schema steps around the as-of views</h3>
+        </div>
+        <div class="part">
+          <p class="label">Why the other doors are shut</p>
+          <p>During a replay, qanat shadows every table with a view holding only the rows that existed at that
+            moment, and puts that view first on the search path. So a plain table name resolves to the past.
+            That works.</p>
+          <p>It also happens to have a second wall: a replay rewrites the <em>derived</em> tables at each
+            as-of date, so even a bypass reads truncated data. But a replay never re-polls a source — which is
+            correct — so the <strong>raw</strong> table still physically holds the whole history. Raw is the
+            one place where the view is the only defence.</p>
+        </div>
+        <div class="part">
+          <p class="label">And the view is easy to step around</p>
+<pre><span class="dim"># resolves through search_path to the as-of view — blocked</span>
+ctx.sql("SELECT date, symbol, close FROM raw__bars")        <span class="good">3.40%</span>
+
+<span class="dim"># names the schema, so the view is skipped entirely</span>
+ctx.sql("SELECT date, symbol, close FROM main.raw__bars")   <span class="hit">1292.59%</span></pre>
+          <p><code>ctx.store.read("raw.bars")</code> does the same thing without any SQL, because
+            <code>Store._q()</code> pins every name to the home schema by design — a fix for a Postgres
+            problem that quietly disables the as-of views for anything that calls it. And
+            <code>ctx.store</code> is a public attribute on the object handed to every step.</p>
+          <p>This is not an exotic path. <code>ctx.read()</code> refuses a table you did not declare in
+            <code>from:</code>, and the error tells you to add it. A researcher who hits that friction and
+            reaches for <code>ctx.store.read()</code> instead gets a silent time machine.</p>
+        </div>
+        <div class="part fix">
+          <p class="label">How to fix it</p>
+          <ul class="tight">
+            <li>While <code>store.as_of</code> is set, make <code>Store.read()</code> resolve through the
+              as-of schema instead of <code>_q()</code>, or refuse outright.</li>
+            <li>Stop exposing the raw <code>Store</code> on <code>Context</code>. If steps need escape
+              hatches, give them named ones that respect the clock.</li>
+            <li>In <code>ctx.sql()</code>, reject a schema-qualified reference to a project table during a
+              replay, with a message that points at <code>ctx.read</code>.</li>
+            <li>Add a leak test to the suite: this exact battery, asserting that a cheating alpha earns the
+              same as a blind one.</li>
+          </ul>
+        </div>
+      </article>
+
+      <article class="finding crit">
+        <div class="fhead">
+          <div class="ftags"><span class="chip sev">Very bad</span><span class="chip id">W-02</span>
+            <span class="st fx">fixed in 0.1.2</span>
+            <span class="chip">store.py:331, 381, 416</span></div>
+          <h3>A timezone offset is thrown away, so rows arrive early</h3>
+        </div>
+        <div class="part">
+          <p class="label">What I did</p>
+          <p>Landed three rows that are <em>the same instant</em>, written three ways: <code>21:00Z</code>,
+            <code>16:00-05:00</code>, and <code>06:00+09:00</code> the next day.</p>
+        </div>
+        <div class="part">
+          <p class="label">What happened</p>
+<pre>as_of 2024-01-01T17:00 (UTC) -&gt; visible: [<span class="hit">'NY_ROW'</span>]        <span class="dim">4 hours BEFORE it happened</span>
+as_of 2024-01-01T20:00 (UTC) -&gt; visible: [<span class="hit">'NY_ROW'</span>]
+as_of 2024-01-01T22:00 (UTC) -&gt; visible: ['NY_ROW', 'UTC_ROW']
+as_of 2024-01-02T07:00 (UTC) -&gt; visible: ['NY_ROW', 'SEOUL_ROW', 'UTC_ROW']
+
+<span class="dim">through open_pit() — the real replay path:</span>
+as-of view at 17:00 UTC -&gt; [<span class="hit">'NY_ROW'</span>]</pre>
+        </div>
+        <div class="part">
+          <p class="label">Why it matters</p>
+          <p>Every as-of comparison does <code>CAST(col AS TIMESTAMP)</code>, which drops the offset and keeps
+            the wall-clock digits. So a New York close is treated as 5 hours earlier than it was, and a Seoul
+            close as 9 hours later. One leaks the future; the other hides real history.</p>
+          <p>Any project mixing venues, or any feed that switches format, gets this. And it is inside the
+            machinery that exists specifically to stop leakage.</p>
+        </div>
+        <div class="part fix">
+          <p class="label">How to fix it</p>
+          <ul class="tight">
+            <li>Cast through <code>TIMESTAMPTZ</code> and normalise to UTC at all three sites
+              (<code>read</code>, <code>_shadow</code>, <code>max_time</code>).</li>
+            <li>Warn at land time when a time column contains mixed offsets.</li>
+            <li>Set <code>TimeZone='UTC'</code> on the store connection so behaviour does not depend on the
+              laptop.</li>
+          </ul>
+        </div>
+      </article>
+
+      <article class="finding crit">
+        <div class="fhead">
+          <div class="ftags"><span class="chip sev">Very bad</span><span class="chip id">W-03</span>
+            <span class="st fx">fixed in 0.1.2</span>
+            <span class="chip">rest.py:137</span></div>
+          <h3>REST rows are invisible to a replay for hours, but only off UTC</h3>
+        </div>
+        <div class="part">
+          <p class="label">What happened, on this machine</p>
+<pre>fetched_at column type: <span class="hit">TIMESTAMP WITH TIME ZONE</span>
+store.max_time  : 2026-09-09 15:14:51      <span class="dim">Seoul wall clock</span>
+true utcnow     : 2026-09-09 06:14:51+00
+duckdb TimeZone : Asia/Seoul
+
+rows visible at as_of = "now, in UTC": <span class="hit">0 of 1</span></pre>
+        </div>
+        <div class="part">
+          <p class="label">Why it matters</p>
+          <p>The REST connector stamps <code>fetched_at</code> with an aware UTC datetime, which lands as
+            <code>TIMESTAMPTZ</code> and then renders in the session timezone. The docstring says this stamp
+            is what makes retention and replay correct. On a UTC server it is. Nine time zones east it is off
+            by nine hours in the wrong direction.</p>
+          <p>The worst part is the shape of the bug: it passes CI, it passes on the maintainer's server, and
+            it silently misbehaves on a user's laptop. Every REST-landed row is hidden from a replay for the
+            length of the UTC offset.</p>
+        </div>
+        <div class="part fix">
+          <p class="label">How to fix it</p>
+          <ul class="tight">
+            <li>Write <code>datetime.now(timezone.utc).replace(tzinfo=None)</code> so the stamp is naive UTC,
+              like every other timestamp in the store.</li>
+            <li>Or pin the connection to UTC, which fixes this and W-02 together.</li>
+            <li>Add a CI job on a non-UTC timezone. This class of bug is invisible otherwise.</li>
+          </ul>
+        </div>
+      </article>
+
+    </div>
+  </section>
+
+  <section>
+    <div class="shead">
+      <h2>Right-looking numbers that are wrong</h2>
+      <span class="count">no error, no warning</span>
+    </div>
+
+    <div class="findings">
+
+      <article class="finding high">
+        <div class="fhead">
+          <div class="ftags"><span class="chip sev">Bad</span><span class="chip id">W-04</span>
+            <span class="st fx">fixed in 0.1.2</span>
+            <span class="chip">backtest.py · score_period</span></div>
+          <h3>A holding with no price earns nothing, and is still counted as held</h3>
+        </div>
+        <div class="part">
+          <p class="label">What I did</p>
+          <p>Four names, equally weighted. On day 100 the feed simply stops sending D — which is what a real
+            feed does when a name delists.</p>
+        </div>
+        <div class="part">
+          <p class="label">What happened</p>
+<pre>D stops being priced after 2024-04-09
+
+as_of        holdings      gross
+2024-04-09          4   0.001877
+2024-04-14          <span class="hit">4</span>   0.001877   <span class="dim">&lt;- D has no price here</span>
+2024-04-19          <span class="hit">4</span>   0.001877
+2024-04-24          <span class="hit">4</span>   0.001877
+
+total notes in the whole report: <span class="hit">0</span>
+
+three live names at 1/4 each would give ~0.001877   <span class="hit">&lt;- this is what it earned</span>
+four live names would give                ~0.002503</pre>
+        </div>
+        <div class="part">
+          <p class="label">Why it matters</p>
+          <p>A quarter of the book silently became non-earning cash. The alpha said hold 25% D; the engine
+            held 25% nothing, and reported <code>holdings = 4</code> anyway.</p>
+          <p>There <em>is</em> code to note a missing price — but it never fires. The price table is a pivot,
+            so D is still a <em>column</em> after it dies, just full of nulls. The intersection that decides
+            "did I have a price for this name" therefore still contains D, the note is skipped, and the null
+            return quietly contributes zero to the sum.</p>
+          <p>This is the bias a point-in-time engine is sold to prevent, arriving through a side door. Compare
+            two alphas where one happens to pick names that delist, and the comparison is distorted with no
+            warning at all.</p>
+        </div>
+        <div class="part fix">
+          <p class="label">How to fix it</p>
+          <ul class="tight">
+            <li>Build the held-and-priced set from <em>non-null</em> prices, not from the column index. The
+              existing note then fires and <code>holdings</code> becomes honest.</li>
+            <li>Say it in the report: "12 rebalances held a name with no price; that sleeve earned nothing."</li>
+            <li>Let a project choose what a vanished name means — carry the last price, or take it to zero.
+              Right now it silently means "cash", which is the one answer nobody would choose on purpose.</li>
+          </ul>
+        </div>
+      </article>
+
+      <article class="finding high">
+        <div class="fhead">
+          <div class="ftags"><span class="chip sev">Bad</span><span class="chip id">W-05</span>
+            <span class="st fx">fixed in 0.1.2</span>
+            <span class="chip">backtest.py · digest_of</span></div>
+          <h3>The digest ignores the data, then <code>compare</code> blames the engine</h3>
+        </div>
+        <div class="part">
+          <p class="label">What I did</p>
+          <p>Ran a backtest. Changed the numbers inside the source CSV — same path, same project, same
+            window. Re-polled and ran it again.</p>
+        </div>
+        <div class="part">
+          <p class="label">What happened</p>
+<pre>run 1  digest 0dc91cb420e4d8af  net 0.197002   A last close 148.23
+       (the source file is edited; A now drifts three times as fast)
+run 2  digest <span class="hit">0dc91cb420e4d8af</span>  net <span class="hit">0.713240</span>   A last close 324.94
+
+qanat compare says: same_question=<span class="hit">True</span>
+  "<span class="hit">same inputs and same window, so any difference here is the engine</span>"</pre>
+        </div>
+        <div class="part">
+          <p class="label">Why it matters</p>
+          <p>The digest is described as "what this run was computed from". It hashes the job specs, the
+            backtest block and the window. For a CSV source the spec contains the <em>path</em>, never the
+            contents. So the one thing that actually changes from day to day — the data — is not in it.</p>
+          <p>Then <code>compare</code> takes the matching digest and tells the researcher the difference must
+            be the engine. It sends them to debug a bug that does not exist, while the real cause is sitting
+            in the data folder.</p>
+        </div>
+        <div class="part fix">
+          <p class="label">How to fix it</p>
+          <ul class="tight">
+            <li>Fold a cheap fingerprint of every input table into the digest — row count plus newest
+              timestamp is enough to catch this, and costs one query each.</li>
+            <li>Record that fingerprint in <code>conditions</code> so <code>compare</code> can say "the data
+              also moved: raw.bars went from 400 to 400 rows, newest 2024-07-18 both times" rather than
+              guessing.</li>
+            <li>Soften the sentence. "Any difference here is the engine" is only true if the data is in the
+              digest.</li>
+          </ul>
+        </div>
+      </article>
+
+      <article class="finding high">
+        <div class="fhead">
+          <div class="ftags"><span class="chip sev">Bad</span><span class="chip id">W-06</span>
+            <span class="st fx">fixed in 0.1.2</span>
+            <span class="chip">api.py · project.py · alphas.py</span></div>
+          <h3>The console's own "add an alpha" flow makes an alpha that cannot run</h3>
+        </div>
+        <div class="part">
+          <p class="label">What I did</p>
+          <p>The whole journey through the API, nothing by hand: new project, connect a CSV source, add a
+            normalize step, add momentum from the shelf, run, backtest.</p>
+        </div>
+        <div class="part">
+          <p class="label">What happened</p>
+<pre>[200] POST /api/sources (csv)            ok
+[200] POST /api/steps  (normalize)       ok
+[200] <span class="good">GET  /api/check</span>                    <span class="good">{"ok": true, "errors": []}</span>
+[200] POST /api/alphas (momentum)        {"id":"alpha_mom","writes":"weights.mom"}
+
+run the pipeline:
+   alpha_mom  <span class="hit">failed</span>  ValueError: step 'alpha_mom' has no universe set
+
+backtest it:
+   HTTP <span class="hit">200</span>   totals {}   periods 0   failures <span class="hit">37</span></pre>
+        </div>
+        <div class="part">
+          <p class="label">Why it matters</p>
+          <p>Every alpha on the shelf calls <code>ctx.universe()</code> without checking. But
+            <code>universe</code> is optional on the request and on the step, and <code>validate()</code> only
+            checks that a universe you <em>named</em> exists — never that a step which needs one has one.</p>
+          <p>So the shortest path a new user can take, entirely inside the console, ends with a green check
+            and a broken alpha. The API already refuses an alpha pointed at a table with no price column; this
+            is the same class of check and it is missing.</p>
+          <p>And the backtest returns <strong>HTTP 200</strong> for a run with no periods and 37 failures.
+            The store records <code>status: failed</code> correctly, but the response says success with an
+            empty body, so the console draws an empty report instead of an error.</p>
+        </div>
+        <div class="part fix">
+          <p class="label">How to fix it</p>
+          <ul class="tight">
+            <li>Mark shelf entries that need a universe, and refuse <code>POST /api/alphas</code> without one
+              — the same way a bad <code>reads</code> table is already refused.</li>
+            <li>Add a rule to <code>validate()</code>: a step whose script calls <code>ctx.universe()</code>
+              with no <code>universe:</code> set is an error, not a runtime surprise.</li>
+            <li>Return 422 from <code>POST /api/backtest</code> when a run produces no periods, with the first
+              failure in the body.</li>
+          </ul>
+        </div>
+      </article>
+
+    </div>
+  </section>
+
+  <section>
+    <div class="shead">
+      <h2>Building the graph</h2>
+      <span class="count">10 problems</span>
+    </div>
+
+    <div class="findings">
+      <article class="finding crit">
+        <div class="fhead">
+          <div class="ftags"><span class="chip sev">Very bad</span><span class="chip id">G-01</span>
+            <span class="st fx">fixed in 0.1.2</span>
+            <span class="chip">project.py · runner.py:241</span></div>
+          <h3>A loop between two steps multiplies your numbers by ten on every run</h3>
+        </div>
+        <div class="part">
+          <p class="label">What I did</p>
+          <p>Built a working pipeline, then edited it into a loop — the realistic case. <code>feat_a</code>
+            reads <code>normalized.b</code>, <code>feat_b</code> reads <code>normalized.a</code>. Both live in
+            one features stage, which is allowed to chain, so no rule catches it.</p>
+        </div>
+        <div class="part">
+          <p class="label">What happened</p>
+<pre>clean pipeline, sum of normalized.a = 43,263
+
+qanat check errors: <span class="hit">NONE</span>
+
+run 1: all ok? True  sum(normalized.a) = <span class="hit">432,633</span>
+run 2: all ok? True  sum(normalized.a) = <span class="hit">4,326,330</span>
+run 3: all ok? True  sum(normalized.a) = <span class="hit">43,263,299</span></pre>
+        </div>
+        <div class="part">
+          <p class="label">Why it matters</p>
+          <p>Every step reports <code>ok</code>. The console is green. And the value of your feature depends
+            on <em>how many times you happened to run the pipeline</em>. Run it once more before a backtest
+            and every number changes by an order of magnitude.</p>
+          <p>The code knows this hole exists. <code>runner.order()</code> gives up on a loop and appends the
+            leftovers in file order, with the comment: <em>"a cycle; qanat check is what reports it"</em>.
+            <code>qanat check</code> does not report it. That comment describes a guarantee nobody
+            wrote.</p>
+        </div>
+        <div class="part fix">
+          <p class="label">How to fix it</p>
+          <ul class="tight">
+            <li>Run the same fixpoint loop <code>order()</code> already uses inside <code>validate()</code>.
+              If anything is left unready, error and name the steps in the loop.</li>
+            <li>Make <code>order()</code> raise rather than return an order it knows is wrong.</li>
+            <li>Fix the comment either way — a false promise in a comment is worse than none.</li>
+          </ul>
+        </div>
+      </article>
+    </div>
+
+    <div class="scroll">
+      <table>
+        <thead><tr><th>Problem</th><th>How bad</th><th>ID</th></tr></thead>
+        <tbody>
+          <tr><td><strong>Two steps can write the same weights table, and the book counts them as two
+            alphas.</strong> <code>check</code> passes; <code>project.alphas</code> returns
+            <code>[('alpha_g','weights.h'), ('alpha_h','weights.h')]</code>; both backtest to
+            <code>last_net 0.040789972052</code> — identical to the last digit. The contract says the weights
+            stage holds "one table per alpha, each written by exactly one step", and the implemented rule only
+            checks that one <em>step</em> doesn't write two tables. Nothing checks the other direction. A blend
+            of the two would count the same edge twice, which is the exact thing that rule
+            exists to prevent.</td><td><span class="sevtag h">Bad</span></td><td class="ref">G-02<br><span class="st fx">fixed in 0.1.2</span></td></tr>
+          <tr><td><strong>A downstream step runs after its upstream failed, and reports success on stale
+            data.</strong> <code>feat_a</code> failed with a vendor error; <code>feat_b</code> then ran,
+            recomputed from yesterday's table, and returned <code>ok, rows=60</code> with the sum unchanged.
+            Worse, success stamps it into the applied state — so <code>qanat plan</code> then calls it
+            up to date. One failure leaves a store that is green everywhere with mixed-vintage data
+            underneath. The engine used the dependency to order the steps and then
+            ignored it.</td><td><span class="sevtag h">Bad</span></td><td class="ref">G-03<br><span class="st fx">fixed in 0.1.2</span></td></tr>
+          <tr><td><strong>A misspelled option leaves <code>${var}</code> in the SQL, and the table comes back
+            empty with status ok.</strong> A step filtering <code>WHERE symbol = '${sym}'</code> with the
+            option written as <code>other:</code> ran clean and wrote <strong>0 rows</strong>. The substitution
+            falls back to leaving the text alone, so it stays a valid string literal that matches nothing. No
+            error, no warning, no event — and every number downstream is then computed from an empty table.
+            A typo in a YAML key is one of the most common things a person
+            does.</td><td><span class="sevtag h">Bad</span></td><td class="ref">G-04<br><span class="st fx">fixed in 0.1.2</span></td></tr>
+          <tr><td><strong>A <code>.sql</code> step can read a table it never declared, so the graph you are
+            shown is not the graph that ran.</strong> <code>ctx.read</code> enforces declaration properly and
+            its error message is excellent. But the same step gets the table one line later through
+            <code>ctx.sql</code>, and a plain <code>.sql</code> body can join anything. Measured consequences:
+            the console draws the wrong arrow; <code>check</code> warns that the table "is never read by
+            anything" while two steps read it; and <code>plan().stale()</code> never marks the consumer, so it
+            stays one generation behind <em>forever</em> while reporting ok. The declaration discipline is an
+            honour system presented as a guarantee.</td><td><span class="sevtag h">Bad</span></td><td class="ref">G-05<br><span class="st fx">fixed in 0.1.3</span></td></tr>
+          <tr><td><strong><code>qanat plan</code> says "unchanged" after you edit <code>rebalance</code>,
+            <code>decay</code>, <code>when</code>, or a source's <code>key</code>.</strong> The recorded job
+            spec covers script, reads, writes, schedule, universe and options — and omits those four. Changing
+            an alpha from a 1d to a 21d rebalance changes every number it produces, and the command whose
+            whole job is to catch "still has rows, quietly means something else than last week" reports
+            nothing.</td><td><span class="sevtag m">Medium</span></td><td class="ref">G-06<br><span class="st fx">fixed in 0.1.2</span></td></tr>
+          <tr><td><strong>A <code>when:</code> chain does not fire when the upstream correctly computes
+            nothing.</strong> The scheduler only wakes consumers when rows &gt; 0, so a step that legitimately
+            clears its table never tells the steps waiting on it. The store's own docstring says clearing is
+            the whole point — otherwise "I computed nothing" reads downstream as "here is a fresh answer".
+            That is exactly what happens one hop down, indefinitely, with every job showing
+            green.</td><td><span class="sevtag m">Medium</span></td><td class="ref">G-07<br><span class="st fx">fixed in 0.1.2</span></td></tr>
+          <tr><td><strong>A features stage can be placed after the weights stage — but only when a pnl stage
+            exists.</strong> The "weights must be last" check sits on an <code>elif</code>, so it is skipped
+            whenever pnl is present. The editor will build the illegal layout for you with no complaint, and
+            an alpha's output can then escape into a general feature stage. The forward-only rule still blocks
+            feeding it back, so this is not full alpha-stacking — but the documented contract is not
+            enforced.</td><td><span class="sevtag m">Medium</span></td><td class="ref">G-08<br><span class="st fx">fixed in 0.1.2</span></td></tr>
+          <tr><td><strong>A step that writes two tables and fails partway leaves the first one
+            written.</strong> The check that all declared tables were produced happens after the writes
+            begin, so which tables survive depends on dict order. The step is marked failed and the graph is
+            half updated — which then feeds G-03.</td><td><span class="sevtag m">Medium</span></td><td class="ref">G-09<br><span class="st fx">fixed in 0.1.2</span></td></tr>
+          <tr><td><strong>An option named <code>as_of</code> is silently overridden during a replay.</strong>
+            The substitution map takes the step's options and then overwrites <code>as_of</code> with the
+            replay clock, so a step means one thing under <code>qanat run</code> and a different thing under
+            a backtest, with no warning.</td><td><span class="sevtag m">Medium</span></td><td class="ref">G-10<br><span class="st fx">fixed in 0.1.2</span></td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <div class="note good">
+      <strong>The graph layer is mostly solid.</strong> The topological sort is correct for every declaration
+      order tried, including fully reversed. Fan-in and fan-out work. <code>qanat plan</code> on a rename is
+      exactly right — create, orphan, and readable diffs. <code>stale()</code> propagates the full length of a
+      chain. Deleting a step something reads is caught at check time, not runtime. Self-loops, two weights
+      stages, zero weights stages, and writing into the pnl stage by hand are all rejected with clear
+      messages — the pnl one is the best sentence in the codebase. And real backtest PnL tables are correctly
+      protected from <code>prune</code>, even after the alpha is renamed.
+    </div>
+  </section>
+
+  <section>
+    <div class="shead">
+      <h2>Six real sources off the public web</h2>
+      <span class="count">7 more problems · and one big pass</span>
+    </div>
+
+    <div class="prose">
+      <p>Everything above used price data I made myself. So I went and got real ones: no API keys, nothing
+        private, just public endpoints anybody can call. Each has a different shape, and the shapes are where
+        the trouble is.</p>
+    </div>
+
+    <div class="scroll">
+      <table>
+        <thead><tr><th>Source</th><th>Shape</th><th>Landed?</th></tr></thead>
+        <tbody>
+          <tr><td><strong>ECB reference rates</strong> · Frankfurter</td>
+              <td>a date-keyed object of objects</td><td><span class="tag ok">257 rows</span></td></tr>
+          <tr><td><strong>Korean public holidays</strong> · Nager.Date</td>
+              <td>a plain list, with Korean text</td><td><span class="tag ok">16 rows</span></td></tr>
+          <tr><td><strong>Seoul weather</strong> · Open-Meteo</td>
+              <td>parallel arrays</td><td><span class="tag ok">10 rows</span></td></tr>
+          <tr><td><strong>World GDP</strong> · a 562 KB CSV on GitHub</td>
+              <td>an ordinary CSV over HTTP</td><td><span class="tag ok">13,979 rows</span></td></tr>
+          <tr><td><strong>Earthquakes</strong> · USGS GeoJSON</td>
+              <td>deeply nested objects</td><td><span class="tag ok">34 rows, as structs</span></td></tr>
+          <tr><td><strong>BTC spot price</strong> · Coinbase</td>
+              <td>a single object, not a list</td><td><span class="tag leak">would not land</span></td></tr>
+          <tr><td><strong>GDP by country</strong> · World Bank</td>
+              <td>a list of <em>[metadata, rows]</em></td><td><span class="tag leak">would not land</span></td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <div class="note good">
+      <strong>The whole chain works on real web data.</strong> I wired ECB rates as the price source and
+      Korean holidays as a feature, wrote an alpha that uses both — buy the currency that fell most against
+      the euro, sit flat in the week of a Korean holiday — and ran it the whole way:
+<pre style="margin-top:.7rem">qanat check   ok, with one genuinely useful warning about survivorship bias
+
+fx               ok   rows=257     <span class="dim">fetched live from the ECB</span>
+holidays         ok   rows=16      <span class="dim">새해, 설날 — unicode intact end to end</span>
+normalize_fx     ok   rows=771     <span class="dim">unpivoted to symbol/date/close</span>
+feat_holiday     ok   rows=16
+alpha_reversal   ok
+
+backtest  ->  60 periods · net -3.33% · in sample +1.58% · out of sample -4.83%
+<span class="good">pnl.reversal written · 60 rows · as_of, holdings, gross, fees, net, equity</span></pre>
+      <p style="margin-top:.7rem">Source to PnL table, on data pulled off the internet, with a non-price
+        feature joined in. That is the product's whole promise and it holds.</p>
+    </div>
+
+    <div class="findings">
+      <article class="finding high">
+        <div class="fhead">
+          <div class="ftags"><span class="chip sev">Bad</span><span class="chip id">R-01</span>
+            <span class="st fx">fixed in 0.1.2</span>
+            <span class="chip">store.py · TIME_COLS</span></div>
+          <h3>An epoch timestamp — the web's most common clock — breaks the as-of machinery</h3>
+        </div>
+        <div class="part">
+          <p class="label">What I did</p>
+          <p>USGS puts its timestamp at <code>properties.time</code> as epoch milliseconds. I flattened it
+            into a top-level column, which is exactly what a normalize step does.</p>
+        </div>
+        <div class="part">
+          <p class="label">What happened</p>
+<pre>time_column() finds it:      'time'                <span class="dim">the name matches, so qanat adopts it</span>
+
+store.max_time()          -> <span class="hit">ConversionException: Unimplemented type for cast (BIGINT -> TIMESTAMP)</span>
+store.read(as_of=...)     -> <span class="hit">ConversionException: Unimplemented type for cast (BIGINT -> TIMESTAMP)</span>
+open_pit() -- the replay  -> <span class="hit">succeeded</span>, and built a view that throws when read</pre>
+        </div>
+        <div class="part">
+          <p class="label">Why it matters</p>
+          <p>Every as-of comparison does a bare <code>CAST(col AS TIMESTAMP)</code>. DuckDB refuses that for
+            an integer, so any table whose clock is an epoch number is unusable for replay — and epoch
+            seconds or milliseconds is what USGS, GitHub, Slack, Binance and most public APIs send.</p>
+          <p>The worst part is the third line. <code>open_pit</code> succeeds and reports the table as
+            shadowed, because the view is lazy. The failure arrives later, mid-replay, as a DuckDB cast error
+            that says nothing about which table or why.</p>
+        </div>
+        <div class="part fix">
+          <p class="label">How to fix it</p>
+          <ul class="tight">
+            <li>Detect an integer time column and cast through <code>to_timestamp</code>, choosing seconds or
+              milliseconds by magnitude. Let a project override it in <code>time_columns:</code>.</li>
+            <li>At minimum, refuse it at land time with a real sentence — "raw.quakes: 'time' holds integers,
+              which cannot be a clock; convert it in a step or name another column" — rather than a cast error
+              three layers down.</li>
+          </ul>
+        </div>
+      </article>
+
+      <article class="finding high">
+        <div class="fhead">
+          <div class="ftags"><span class="chip sev">Bad</span><span class="chip id">R-02</span>
+            <span class="st fx">fixed in 0.1.2</span>
+            <span class="chip">store.py:292</span></div>
+          <h3>A column that is empty in the first response is typed wrong forever</h3>
+        </div>
+        <div class="part">
+          <p class="label">What I did</p>
+          <p>Polled the same holiday feed for two countries. Korea has no regional holidays, so
+            <code>counties</code> is null in every row. The United States does.</p>
+        </div>
+        <div class="part">
+          <p class="label">What happened</p>
+<pre>poll 1 (KR): ok, 16 rows
+   counties column typed: <span class="hit">INTEGER</span>          <span class="dim">every value was null, so pandas guessed</span>
+
+poll 2 (US): <span class="hit">FAIL</span>  ConversionException: Unimplemented type for cast (VARCHAR[] -> INTEGER)
+   table rows: still 16</pre>
+        </div>
+        <div class="part">
+          <p class="label">Why it matters</p>
+          <p>The first response permanently decides the schema. A field that happens to be empty on day one
+            becomes <code>INTEGER</code>, and the day it carries real data the feed stops landing — with an
+            error about a cast, not about a schema.</p>
+          <p>This is not a corner case. Optional fields that are usually null are the normal shape of a public
+            API, and adding a second country, a second exchange or a second ticker is the normal way a project
+            grows. There is no way to recover except dropping the table by hand.</p>
+        </div>
+        <div class="part fix">
+          <p class="label">How to fix it</p>
+          <ul class="tight">
+            <li>Let a source declare column types, and pass them through — the same fix that rescues
+              zero-padded tickers (W-07).</li>
+            <li>On append, compare the incoming dtypes to the table's and widen rather than cast, or fail with
+              a message naming the column and both types.</li>
+            <li>Land an all-null column as text rather than integer. It is the type least likely to be
+              wrong.</li>
+          </ul>
+        </div>
+      </article>
+    </div>
+
+    <div class="scroll">
+      <table>
+        <thead><tr><th>Problem</th><th>How bad</th><th>ID</th></tr></thead>
+        <tbody>
+          <tr><td><strong>Nested JSON lands with no clock at all.</strong> USGS GeoJSON became
+            <code>properties:STRUCT(…)</code> and <code>geometry:STRUCT(…)</code> — which is impressive — but
+            qanat only looks at top-level column names for a timestamp, so it finds none. During a replay that
+            table is never filtered: every row is visible at every as-of date, and retention can never expire
+            it. Nothing warns.</td><td><span class="sevtag h">Bad</span></td><td class="ref">R-03<br><span class="st pt">partly fixed</span></td></tr>
+          <tr><td><strong>A column called <code>Year</code> is not recognised as a clock.</strong> 13,979 rows
+            of real annual GDP data landed fine, and <code>time_column()</code> returned
+            <code>None</code> — <code>year</code> is not in the list of names qanat accepts (<code>as_of, ts,
+            timestamp, datetime, date, time, fetched_at, created_at, updated_at</code>). Same consequence as
+            R-03, from a much more ordinary dataset. Yearly and quarterly columns are the normal shape of
+            macro data.</td><td><span class="sevtag m">Medium</span></td><td class="ref">R-04<br><span class="st fx">fixed in 0.1.2</span></td></tr>
+          <tr><td><strong>A JSON body that is a single object cannot be ingested.</strong> Coinbase answers
+            <code>{"data":{"amount":"79235.53","base":"BTC","currency":"USD"}}</code>. With
+            <code>records: data</code> the connector dies on <code>ValueError: If using all scalar values, you
+            must pass an index</code> — a pandas message that names neither the source, the URL, nor the fix.
+            "Current value of one thing" is one of the most common endpoints on the
+            web.</td><td><span class="sevtag m">Medium</span></td><td class="ref">R-05<br><span class="st fx">fixed in 0.1.2</span></td></tr>
+          <tr><td><strong>A body that is a list of mixed things cannot be ingested.</strong> The World Bank
+            returns <code>[{metadata}, [rows]]</code>. <code>records:</code> is a dot-path only, so there is no
+            way to say "take element 1", and the connector dies on <code>dictionary update sequence element #0
+            has length 8; 2 is required</code>. An index step in the path
+            (<code>records: "1"</code>) would fix it.</td><td><span class="sevtag m">Medium</span></td><td class="ref">R-06<br><span class="st fx">fixed in 0.1.2</span></td></tr>
+          <tr><td><strong>The escape hatch works, but the docs point it at the wrong case.</strong>
+            <code>payload: true</code> rescued both failures above cleanly. But the docstring offers it for
+            "columns held as parallel arrays" — and that shape (Open-Meteo) landed perfectly <em>without</em>
+            it, while the two shapes that genuinely need it are not mentioned anywhere. Neither error message
+            suggests it.</td><td><span class="sevtag m">Medium</span></td><td class="ref">R-07<br><span class="st fx">fixed in 0.1.3</span></td></tr>
+          <tr><td><strong>A slow public API times out inside the default 30 seconds</strong> and the failure
+            is an httpx read timeout with no hint that <code>options.timeout</code> exists. The World Bank did
+            this to me on a first call that <code>curl</code> completed
+            fine.</td><td><span class="sevtag m">Medium</span></td><td class="ref">R-08<br><span class="st fx">fixed in 0.1.2</span></td></tr>
+          <tr><td><strong>Confirmed on real data:</strong> polling the ECB three times with the default
+            <code>mode: append</code> and no <code>key</code> took a table of 23 published rates to
+            <strong>69 rows</strong>. This is W-09, reproduced on a live feed rather than a fixture — and it
+            is the default configuration.</td><td><span class="sevtag m">Medium</span></td><td class="ref">W-09<br><span class="st fx">fixed in 0.1.2</span></td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <div class="note good">
+      <strong>What handled real data better than I expected.</strong> Korean text survived the whole path —
+      source, store, step, report — unchanged. A JSON list column (<code>types: ["Public"]</code>) landed
+      correctly as <code>VARCHAR[]</code>. Nested GeoJSON became proper DuckDB structs instead of failing or
+      stringifying. <code>orient: index</code> parsed the real ECB shape exactly as documented. Parallel
+      arrays worked with no escape hatch. A 562 KB CSV over HTTP landed without ceremony. And the survivorship
+      warning on my currency universe was correct, specific, and told me what file to edit.
+    </div>
+  </section>
+
+  <section>
+    <div class="shead">
+      <h2>The rest</h2>
+      <span class="count">15 more, shorter</span>
+    </div>
+    <div class="scroll">
+      <table>
+        <thead><tr><th>Problem</th><th>How bad</th><th>ID</th></tr></thead>
+        <tbody>
+          <tr class="group"><td colspan="3">Connecting a data source</td></tr>
+          <tr><td><strong>Zero-padded tickers are destroyed.</strong> The CSV connector calls
+            <code>pd.read_csv(path)</code> with no options at all, so Samsung's KRX code
+            <code>005930</code> lands as the integer <code>5930</code> and Tencent's <code>00700</code> as
+            <code>700</code>. The universe file lists them as text, so the join then finds nothing. There is
+            no <code>dtype</code> option to prevent it — anything you put in <code>options</code> is silently
+            ignored by this connector.</td><td><span class="sevtag h">Bad</span></td><td class="ref">W-07<br><span class="st fx">fixed in 0.1.2</span></td></tr>
+          <tr><td><strong>A reordered feed writes data into the wrong columns.</strong> The key is matched by
+            name but the insert is <code>INSERT INTO … SELECT *</code>, which is positional. Poll 1 sends
+            <code>date,symbol,close</code>; poll 2 sends <code>symbol,date,close</code>. Result: the date
+            column holds "A" and "B", the symbol column holds dates, and the run reports
+            <code>ok</code>.</td><td><span class="sevtag h">Bad</span></td><td class="ref">W-08<br><span class="st fx">fixed in 0.1.2</span></td></tr>
+          <tr><td><strong><code>mode: append</code> is the default and doubles the table every poll</strong>
+            when no <code>key</code> is set. Poll twice, get 8 rows from 4. Nothing warns — not at run time,
+            not in <code>qanat check</code>. The <code>store.write</code> docstring describes this exact
+            failure without enforcing it.</td><td><span class="sevtag m">Medium</span></td><td class="ref">W-09<br><span class="st fx">fixed in 0.1.2</span></td></tr>
+          <tr><td><strong>A null in a key column defeats dedup forever.</strong> The match is
+            <code>t.k = incoming.k</code>, and in SQL null never equals null, so a row with a blank key part
+            is appended again on every single poll. Unbounded growth, no warning. Within one batch
+            <code>drop_duplicates</code> does collapse it — so the two halves of the same feature
+            disagree.</td><td><span class="sevtag m">Medium</span></td><td class="ref">W-10<br><span class="st fx">fixed in 0.1.2</span></td></tr>
+          <tr><td><strong>One bad symbol loses the whole batch.</strong> The REST connector loops per symbol
+            and concatenates at the end, so a single 404 discards every symbol that succeeded. One delisted
+            ticker stalls the feed indefinitely — every poll lands zero rows until someone edits the
+            list.</td><td><span class="sevtag m">Medium</span></td><td class="ref">W-11<br><span class="st fx">fixed in 0.1.2</span></td></tr>
+          <tr><td><strong><code>mode: replace</code> never clears when the feed goes empty.</strong>
+            <code>run_source</code> short-circuits on an empty frame and never calls <code>write</code>, so
+            the "an empty answer must clear the table" logic is unreachable from a source. The old rows stay
+            and read downstream as current.</td><td><span class="sevtag m">Medium</span></td><td class="ref">W-12<br><span class="st fx">fixed in 0.1.2</span></td></tr>
+          <tr><td><strong>A float landing in a column pandas first typed as int is silently rounded.</strong>
+            First poll has whole-number closes → the column is <code>BIGINT</code> forever. After that
+            <code>102.5</code> becomes <code>102</code> and a sub-dollar price becomes
+            <code>0</code>.</td><td><span class="sevtag m">Medium</span></td><td class="ref">W-13<br><span class="st fx">fixed in 0.1.2</span></td></tr>
+          <tr><td><strong>A 200 response with the wrong shape replaces the price history.</strong> An expired
+            session returns <code>{error, message, code}</code> with status 200; in replace mode that lands as
+            the table. Two clean "ok" polls and the prices are gone. There is no schema contract on a source
+            anywhere.</td><td><span class="sevtag m">Medium</span></td><td class="ref">W-14<br><span class="st pt">partly fixed</span></td></tr>
+          <tr><td><strong>An unset <code>${VAR}</code> becomes an empty string.</strong> That produces
+            <code>Illegal header value b'Bearer '</code>, or a request sent with a blank API key, or the
+            actively wrong message <code>rest needs options.url</code> when the option <em>is</em> set and the
+            environment variable is not. Lowercase <code>${var}</code> is never expanded at all, and is sent
+            literally.</td><td><span class="sevtag m">Medium</span></td><td class="ref">W-15<br><span class="st fx">fixed in 0.1.2</span></td></tr>
+
+          <tr class="group"><td colspan="3">Reading the result</td></tr>
+          <tr><td><strong>Decay silently changes the size of the book, not just its turnover.</strong> For a
+            long-short book that flips sign, <code>decay_weights</code> returns
+            <code>|weights| = 0.33</code> where the alpha wrote <code>1.00</code> — it averages and never
+            renormalises. The sibling function <code>combine()</code>, used for blending several alphas, does
+            renormalise. Two blending paths in one file, two different rules. The docstring promises "the
+            signal survives, the turnover falls"; a third of the exposure does not
+            survive.</td><td><span class="sevtag m">Medium</span></td><td class="ref">W-16<br><span class="st fx">fixed in 0.1.2</span></td></tr>
+          <tr><td><strong>"What was held" is not what was priced.</strong> <code>save_bt_weights</code> stores
+            the alpha's raw output, before decay. With <code>decay: 3</code> the saved book has
+            <code>|weights| = 1.0</code> while the measured turnover proves the priced book was about
+            <code>0.34</code>. The drill-down shows a portfolio that was never
+            traded.</td><td><span class="sevtag m">Medium</span></td><td class="ref">W-17<br><span class="st fx">fixed in 0.1.2</span></td></tr>
+          <tr><td><strong>The "weights do not sum to 1" warning never reaches the report.</strong> I ran an
+            alpha whose book was 1.9× the declared size. The event log says so. The report does not:
+            <code>status: ok</code>, <code>notes: 0</code>, <code>failures: 0</code>, nothing in
+            <code>conditions</code>, and a headline of 19.69% on a levered
+            book.</td><td><span class="sevtag m">Medium</span></td><td class="ref">W-18<br><span class="st fx">fixed in 0.1.2</span></td></tr>
+          <tr><td><strong>Duplicate symbols are silently deduped.</strong> The alpha wrote A twice (0.6 and
+            0.9). The replay keeps the last one and drops the other with no note, so three different book
+            sizes exist for one rebalance — 1.9 written, 1.3 priced, and the 1.0 the contract
+            expects.</td><td><span class="sevtag m">Medium</span></td><td class="ref">W-19<br><span class="st fx">fixed in 0.1.2</span></td></tr>
+          <tr><td><strong>A half-failed run is ranked like a complete one.</strong> An alpha that crashes on
+            down days scored 71 of 152 periods — the rest failed. The store marks it <code>partial</code>, but
+            the strategy book filters only on <code>periods &gt; 0</code>, so its net sits in the ranking with
+            no marker, and <code>notes</code> is empty.</td><td><span class="sevtag m">Medium</span></td><td class="ref">W-20<br><span class="st fx">fixed in 0.1.2</span></td></tr>
+          <tr><td><strong>A rebalance finer than the data quietly shrinks the run.</strong> Daily rebalance on
+            weekly prices: 145 stops asked for, 20 scored, 125 skipped. The notes are all there and
+            <code>periods</code> honestly says 20 — but nothing up front says the run you asked for is not the
+            run you got.</td><td><span class="sevtag m">Medium</span></td><td class="ref">W-21<br><span class="st pt">partly fixed</span></td></tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <section>
+    <div class="shead">
+      <h2>What I would fix</h2>
+      <span class="count">in this order</span>
+    </div>
+    <div class="improve">
+      <div class="imp">
+        <h3>Shut the two open doors</h3>
+        <p>Make <code>Store.read()</code> respect the as-of clock, and stop handing steps the raw store. Then
+          add the leak battery to the test suite so it can never reopen. This is the tool's central promise.</p>
+        <span class="closes">fixes W-01</span>
+      </div>
+      <div class="imp">
+        <h3>One timezone, everywhere</h3>
+        <p>Pin the connection to UTC and cast through <code>TIMESTAMPTZ</code> at the three as-of sites. Stamp
+          <code>fetched_at</code> naive-UTC. Add a CI job on a non-UTC timezone — this bug is invisible
+          without one.</p>
+        <span class="closes">fixes W-02, W-03</span>
+      </div>
+      <div class="imp">
+        <h3>Never price a name you cannot price</h3>
+        <p>Intersect on non-null prices so the missing-price note actually fires and <code>holdings</code>
+          tells the truth. Then let the project say what a vanished name means.</p>
+        <span class="closes">fixes W-04</span>
+      </div>
+      <div class="imp">
+        <h3>Put the data in the digest</h3>
+        <p>Row count and newest timestamp per input table, folded into the hash and recorded in the
+          conditions. Then "same question" means it.</p>
+        <span class="closes">fixes W-05</span>
+      </div>
+      <div class="imp">
+        <h3>A data-quality block on every report</h3>
+        <p>Weights that did not sum to 1, duplicates dropped, names held without a price, rebalances skipped,
+          passes that failed. All of this is already computed and thrown into the event log. Put it in the
+          report, where the number is.</p>
+        <span class="closes">fixes W-18, W-19, W-20, W-21</span>
+      </div>
+      <div class="imp">
+        <h3>A schema contract on a source</h3>
+        <p>Insert by name, not by position. Let a source declare expected columns and dtypes, and refuse a
+          replace whose columns are disjoint from the table's. Warn on append with no key. That closes most of
+          the source list at once.</p>
+        <span class="closes">fixes W-07 to W-14</span>
+      </div>
+      <div class="imp">
+        <h3>Make <code>check</code> check the graph</h3>
+        <p>Detect loops. Refuse two producers for one table. Error on a <code>${var}</code> with no option
+          behind it, and on a <code>.sql</code> body that reads a table the step did not declare. Four rules,
+          and each one currently turns into a silent wrong number at run time.</p>
+        <span class="closes">fixes G-01, G-02, G-04, G-05</span>
+      </div>
+      <div class="imp">
+        <h3>A failure should stop what depends on it</h3>
+        <p>When a step fails, skip everything downstream of it and say why, instead of letting it recompute
+          from yesterday and stamp itself as current. The dependency order is already computed one line
+          earlier.</p>
+        <span class="closes">fixes G-03, G-09</span>
+      </div>
+      <div class="imp">
+        <h3>Treat a clock as a real question</h3>
+        <p>Accept epoch integers and <code>year</code>/<code>quarter</code> columns, look inside structs, and
+          say out loud when a table has no clock — because "no clock" silently means "never filtered by a
+          replay, never expired by retention". Right now it is the quietest thing in the system.</p>
+        <span class="closes">fixes R-01, R-03, R-04</span>
+      </div>
+      <div class="imp">
+        <h3>Meet the web where it is</h3>
+        <p>A single-object body and an array index in <code>records:</code> cover most of what the public web
+          actually returns. Name the source and suggest <code>payload: true</code> when a body will not
+          flatten, instead of passing a pandas message straight through.</p>
+        <span class="closes">fixes R-05, R-06, R-07</span>
+      </div>
+    </div>
+
+    <div class="note">
+      <strong>Where I would start.</strong>
+      <ol class="steps">
+        <li><strong>W-01.</strong> Two doors into the future, and one of them needs no SQL. Everything else in
+          this report is a wrong number; this one is a wrong number that looks like a discovery.</li>
+        <li><strong>G-01 and G-03.</strong> Both make the answer depend on how and how often you ran the
+          pipeline, while every light stays green. G-01 is the same fixpoint loop the code already has,
+          called from one more place.</li>
+        <li><strong>W-02 and W-03.</strong> One UTC decision fixes both, and W-03 is already misbehaving on
+          this machine right now.</li>
+        <li><strong>W-04.</strong> A dozen lines, and it removes a bias the tool advertises that it
+          prevents.</li>
+        <li><strong>W-07.</strong> One <code>dtype</code> option. Without it this tool cannot read a Korean or
+          Hong Kong ticker at all.</li>
+      </ol>
+    </div>
+  </section>
+
+  <section>
+    <div class="shead">
+      <h2>The honest summary</h2>
+      <span class="count"></span>
+    </div>
+    <div class="note good">
+      <p><strong>The engine's arithmetic is right.</strong> Net, gross, turnover, fees, slippage, blending,
+        purge, embargo — every one of them matched a hand-computed answer exactly, several to thirteen
+        decimal places. The fill rule that separates a backtest from a wish is correct. Reproducibility works.
+        That is the hard part, and it is done.</p>
+      <p style="margin-top:.8rem">What is not done is the <em>boundary</em> around that arithmetic: which data
+        a step may reach, what a timestamp means, what happens when a price is missing, whether the graph you
+        are shown is the graph that ran, and whether the report admits what it does not know. Every problem
+        above lives on that boundary. None of them require rewriting the engine.</p>
+      <p style="margin-top:.8rem">One pattern runs through almost all of them. When qanat cannot do the right
+        thing, it usually does <em>a</em> thing and calls it <code>ok</code>: an unpriced holding earns zero, a
+        missing option filters everything out, a failed upstream leaves yesterday's numbers, a loop keeps
+        multiplying. The engine is careful. The reporting around it is too generous.</p>
+    </div>
+  </section>
+
+  <section>
+    <div class="shead">
+      <h2>What the fixing taught</h2>
+      <span class="count">the part that is not a finding</span>
+    </div>
+
+    <div class="prose">
+      <p>All three reports are about qanat 0.1.1. This last section is about what
+        happened next, because two of the most useful things in the whole exercise are
+        not findings about the tool at all.</p>
+    </div>
+
+    <div class="findings">
+      <article class="finding high">
+        <div class="fhead">
+          <div class="ftags">
+            <span class="chip sev">Worth knowing</span>
+            <span class="chip">the audit broke its own fix</span>
+          </div>
+          <h3>Two regressions, both found by looking rather than reading</h3>
+        </div>
+        <div class="part">
+          <p class="label">What happened</p>
+          <p>The 0.1.2 fix for live progress — the poller that stopped for good after one
+            failed request — put its two helpers in the wrong one of
+            <code>backtests.js</code>'s two IIFEs.</p>
+<pre>ReferenceError: <span class="hit">backoff is not defined</span>
+    at tick (backtests.js:1447)</pre>
+          <p><code>tick</code> threw on its first call, its <code>catch</code> called the
+            same missing function and threw again, and nothing ever rescheduled. The
+            poller was dead from page load — which is exactly the failure that fix was
+            written to remove.</p>
+          <p>The second was in the keyboard path added for the graph: it passed a table
+            <em>name</em> to a function that wanted the table <em>object</em>, so clicking
+            any of the seventeen new controls opened nothing at all.</p>
+        </div>
+        <div class="part">
+          <p class="label">Why it matters</p>
+          <p>Both passed review, passed the test suite, and shipped. Neither was
+            discoverable by reading the diff — the first is a scope boundary two thousand
+            lines apart in one file, the second is a type mismatch in a language with no
+            types.</p>
+          <p>Both were caught in the next run's browser pass, in the first minute, by
+            doing the same thing that found every console problem in part two: opening the
+            page and watching what it did. That is the argument for keeping a manual
+            browser pass in an audit that is otherwise automated.</p>
+        </div>
+        <div class="part fix">
+          <p class="label">What changed because of it</p>
+          <ul class="tight">
+            <li>The poller is now checked by <em>counting the requests it makes</em>, not
+              by reading the code that should make them.</li>
+            <li>Every fix is verified by re-running the script that found the problem, and
+              reporting the honest number — never by re-reading the change.</li>
+          </ul>
+        </div>
+      </article>
+
+      <article class="finding med">
+        <div class="fhead">
+          <div class="ftags">
+            <span class="chip sev">Worth knowing</span>
+            <span class="chip">the boundary</span>
+          </div>
+          <h3>Three things that cannot be fixed, only stated</h3>
+        </div>
+        <div class="part">
+          <p class="label">A step can read the source file off disk</p>
+          <p>A step is arbitrary Python. <code>pd.read_csv(ctx.root / "seed/bars.csv")</code>
+            reaches the whole history and earns the full 1292%, and nothing in this process
+            can prevent it. The three doors that <em>were</em> qanat's to close are closed;
+            this one is now covered by a standing test that asserts it still leaks, so the
+            day it stops somebody notices instead of quietly trusting it.</p>
+        </div>
+        <div class="part">
+          <p class="label">A running Python thread cannot be ended</p>
+          <p>The job timeout frees the worker and closes the run row, so the scheduler
+            keeps working and the console stops showing the job as running. The work itself
+            finishes on its own and its result is discarded. The message the user sees says
+            that, rather than implying the job was stopped.</p>
+        </div>
+        <div class="part">
+          <p class="label">The timezone fix does not reach an attached Postgres</p>
+          <p>DuckDB pushes a view definition down into an attached Postgres, which then
+            rejected the offset-aware expression outright — the first CI run failed on
+            exactly this, and a local run could not have caught it because it skips the
+            Postgres suite. Against Postgres the plain cast is kept: the column there
+            already carries its own zone. The changelog says so rather than claiming the
+            whole fix.</p>
+        </div>
+      </article>
+    </div>
+
+    <div class="note">
+      <strong>Where the rest went.</strong> Six findings are partly fixed and marked as
+      such above; the largest is replay isolation, which is why the console still reads
+      truncated tables while a backtest runs. The ledger in <code>audit/FINDINGS.md</code>
+      says what is left of each, and <code>audit/SCENARIOS.md</code> is the catalogue of
+      what to try next time — including the rows that nothing automated is watching yet.
+    </div>
+  </section>
+
+  <footer>
+    All results reproduced against qanat 0.1.1, on 25+ projects built from scratch — first with synthetic data
+    whose correct answer was known before the run, then against live public APIs: the ECB via Frankfurter,
+    Nager.Date, Open-Meteo, USGS, Coinbase, the World Bank, and a CSV on GitHub. No API keys, one call per
+    endpoint.<br>
+    Three parallel audits fed into this; every claim of theirs that appears above I re-ran myself first, and
+    only the ones that reproduced are here.
+  </footer>
+
+</div>
