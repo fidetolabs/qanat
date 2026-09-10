@@ -100,6 +100,9 @@ class Source(Base):
     # Which columns identify one row. A feed that answers with the last seven days
     # every time is mostly repeats, and without a key an append keeps every copy.
     key: list[str] = Field(default_factory=list)
+    # How long this job gets before the scheduler stops waiting on it, e.g. "10m".
+    # Unset means the project default, and that means none.
+    timeout: str | None = None
     options: dict[str, Any] = Field(default_factory=dict)
 
     @field_validator("writes")
@@ -138,6 +141,7 @@ class Step(Base):
     # that sets neither runs when you ask for it.
     when: list[str] = Field(default_factory=list)
     universe: str | None = None
+    timeout: str | None = None
     options: dict[str, Any] = Field(default_factory=dict)
     # How this step is *executed* when it is an alpha. A five-day reversal and a
     # sixty-day momentum are not asking for the same rebalance gap, and the gap is
@@ -207,6 +211,9 @@ class Project(Base):
     steps: list[Step] = Field(default_factory=list)
     retention: dict[str, str] = Field(default_factory=dict)
     time_columns: dict[str, str] = Field(default_factory=dict)
+    # How long any job gets, unless it says otherwise. A job with no limit holds a
+    # worker until the process ends, and four of those stop the scheduler dead.
+    job_timeout: str | None = None
     backtest: Backtest | None = None
 
     # ---- lookups -------------------------------------------------------------

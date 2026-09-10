@@ -37,7 +37,14 @@ body{display:flex;flex-direction:column}
   display:flex;flex-direction:column;min-height:0;
   transition:flex-basis .2s ease,width .2s ease;
 }
-.rail-r.open{flex:0 0 var(--detail-w);width:var(--detail-w);border-left:1px solid var(--line)}
+.rail-r.open{flex:0 0 var(--detail-w);width:var(--detail-w);border-left:1px solid var(--line);
+  visibility:visible}
+/*  `overflow:hidden` clips pixels; it does not take anything out of the tab order.
+    A closed rail kept every button, chip, pager and form field in it focusable, and
+    with no focus ring a keyboard user was walking through controls they could not
+    see. `visibility:hidden` removes them and still animates. */
+.rail-r:not(.open){ visibility:hidden }
+.rail-folded .rail:first-of-type{ visibility:hidden }
 .rail-r > *{min-width:var(--detail-w)}
 .selhead{position:relative}
 .selhead .close{position:absolute;top:10px;right:12px}
@@ -372,8 +379,15 @@ table.t td.num{text-align:right}
   border: 1px solid #33291a; background: #171410; border-radius: 6px;
 }
 
-table.t.data th.sortable { cursor: pointer; user-select: none; white-space: nowrap; }
-table.t.data th.sortable:hover { color: var(--fg); }
+table.t.data th.sortable { user-select: none; white-space: nowrap; padding: 0; }
+/*  The handler used to sit on the <th>, which is not focusable and carries no
+    sort state -- so reordering a page of a table that may hold millions of rows
+    was mouse-only. */
+table.t.data th.sortable button {
+  background: none; border: 0; color: inherit; font: inherit; cursor: pointer;
+  width: 100%; text-align: left; padding: 6px 8px; display: block;
+}
+table.t.data th.sortable button:hover { color: var(--fg); }
 table.t.data th.sortable.on { color: var(--key); }
 table.t.data th i { display: block; font-style: normal; font-size: 8.5px; color: var(--fg-faint); }
 table.t.data td { white-space: nowrap; }
@@ -513,8 +527,12 @@ table.t.corr td:nth-child(3) { width: 34px; }
   background: var(--panel, #121212); border: 1px solid var(--line, #232120);
   max-height: 60vh; overflow: auto;
 }
-#dag-keys { list-style: none; display: flex; flex-direction: column; gap: 2px; }
-#dag-keys button {
+#dag-keys, .keylist { list-style: none; display: flex; flex-direction: column; gap: 2px; }
+.keylist button {
+  background: none; border: 0; color: inherit; font: inherit;
+  cursor: pointer; text-align: left; padding: 2px 4px;
+}
+#dag-keys button, .keylist button {
   background: none; border: 0; color: inherit; font: inherit;
   cursor: pointer; text-align: left; padding: 2px 4px;
 }
@@ -630,13 +648,21 @@ body.resizing { cursor: ns-resize; user-select: none; }
 /* ---- editing the book ------------------------------------------------------ */
 .kicker .info.edit { width: auto; border-radius: 5px; padding: 1px 7px; letter-spacing: .08em; }
 .sitem { position: relative; }
+/*  The card and its `edit` are siblings now: `edit` used to be a <span> with a click
+    handler *inside* the card's own <button>, so a keyboard user who tabbed to the
+    card and pressed Enter always got the card action and never edit. Nested
+    interactive elements are not addressable, by a person or by the parser. */
+.sitem-wrap { position: relative; display: block; }
+.sitem-wrap .edrow { position: absolute; right: 10px; bottom: 8px; }
 .edrow {
   position: absolute; right: 8px; bottom: 7px; padding: 1px 6px; border-radius: 4px;
   font-family: var(--mono); font-size: 9px; color: var(--fg-faint);
   border: 1px solid var(--line-2); background: var(--panel-2);
   opacity: 0; transition: opacity .12s;
 }
-.sitem:hover .edrow { opacity: 1; }
+.sitem-wrap:hover .edrow,
+.sitem-wrap:focus-within .edrow,
+.edrow:focus-visible { opacity: 1; }
 .edrow:hover { color: var(--key); border-color: #a2e65d55; background: #1a1d13; }
 .sitem.add {
   text-align: center; color: var(--key); border-style: dashed; border-color: #a2e65d55;

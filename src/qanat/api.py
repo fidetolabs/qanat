@@ -349,6 +349,10 @@ def build_graph(
             "rows": sum(t["rows"] for t in tables),
             "scheduled": len(sched_state),
             "drift": len(pl.changes),
+            # Worker starvation used to be visible only as a stream of warn events
+            # nobody was reading. Four stuck jobs stop the scheduler dead.
+            "workers": getattr(sched, "workers", 0) if sched else 0,
+            "busy": sum(1 for s in sched_state.values() if s.get("running")),
         },
         "plan": {
             "changes": [
@@ -960,6 +964,26 @@ def create_app(state: AppState) -> FastAPI:
                 raise HTTPException(409, "this server was started without a scheduler")
             state.sched.fire(job_id)
         return JSONResponse({"queued": job_id})
+
+    @app.delete("/api/jobs/{job_id}/run")
+    def cancel_now(job_id: str) -> dict[str, Any]:
+        """Stop waiting on a running job.
+
+        This frees the worker and closes the run row. It cannot stop the work
+        itself -- nothing in this process can end a running Python thread -- so the
+        answer says which of the two happened.
+        """
+        with state._lock:
+            if state.project.job(job_id) is None:
+                raise HTTPException(404, f"no job called '{job_id}'")
+            if state.sched is None:
+                raise HTTPException(409, "this server was started without a scheduler")
+            stopped = state.sched.cancel(job_id)
+        if not stopped:
+            raise HTTPException(409, f"'{job_id}' is not running")
+        return {"cancelled": job_id,
+                "note": "the worker is free and the run is closed. If the step was mid-"
+                        "computation it will finish on its own and its result is discarded"}
 
     @app.get("/api/health")
     def health() -> dict[str, Any]:

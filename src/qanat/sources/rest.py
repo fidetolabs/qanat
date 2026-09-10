@@ -23,16 +23,27 @@ url, the params and the headers, and the symbol is kept as a column:
       symbols: [AAPL, MSFT]        # or from_universe: ./universes/sp100.csv
       url: https://api.example.com/v1/chart/{symbol}
 
-Some APIs answer in a shape no combination of the options above can flatten --
-columns held as parallel arrays, or several lists that have to be zipped. Rather
-than teach this connector every one of them, land the body untouched and take it
-apart in a step, which is what `raw` is for:
+`records` is a dot path, and a step in it that is a number indexes a list. The
+World Bank answers `[{metadata}, [rows]]`, so:
+
+      records: "1"                 # take the second element, which is the rows
+
+A body that is one object rather than a list of them lands as a single row --
+"the current price of BTC" needs no special option.
+
+Some APIs still answer in a shape no combination of the above can flatten: several
+lists that have to be zipped together, or records nested under keys that vary.
+Rather than teach this connector every one of them, land the body untouched and
+take it apart in a step, which is what `raw` is for:
 
       payload: true
 
 That writes one row per request: `fetched_at`, `source_id`, `symbol`, and
 `payload`, the response as JSON text. Use a `.py` step to parse it -- DuckDB and
 Postgres do not spell their JSON functions the same way.
+
+Columns held as parallel arrays -- `{"time": [...], "temp": [...]}` -- do *not*
+need this. `records:` pointed at that object flattens it into rows already.
 """
 
 from __future__ import annotations

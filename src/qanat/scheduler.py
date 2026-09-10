@@ -40,6 +40,9 @@ class Scheduler:
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
         self._inflight: set[str] = set()
+        #: job id -> the moment it stops getting a worker. A job with no limit is
+        #: absent from this and holds its slot until the process ends.
+        self._deadline: dict[str, float] = {}
         self._lock = threading.Lock()
         self.next_at: dict[str, datetime] = {}
         self._last_retention = 0.0
@@ -100,6 +103,7 @@ class Scheduler:
                 if due and now >= due:
                     self.next_at[job.id] = croniter(job.schedule, now).get_next(datetime)
                     self.fire(job.id)
+            self.reap()
             if self.project.retention and time.time() - self._last_retention >= 60:
                 self._last_retention = time.time()
                 from qanat.retention import run_retention
@@ -167,6 +171,63 @@ class Scheduler:
             with self._lock:
                 self._inflight.discard(_LIVE)
 
+    def limit(self, job_id: str) -> float | None:
+        """How long this job gets, in seconds, or None for as long as it takes."""
+        from qanat.retention import parse_duration
+
+        job = self.project.job(job_id)
+        text = getattr(job, "timeout", None) or self.project.job_timeout
+        if not text:
+            return None
+        try:
+            return parse_duration(text, "timeout").total_seconds()
+        except ValueError:
+            return None
+
+    def reap(self) -> list[str]:
+        """Stop waiting on jobs that have run past their limit.
+
+        A job used to hold its worker until the process ended, so four slow ones
+        stopped the whole scheduler with nothing but warn events to say so. Python
+        cannot kill a running thread, so this frees the slot and closes the run row
+        rather than pretending the work stopped -- the thread finishes on its own and
+        finds its slot already gone, which is harmless. What it buys is a scheduler
+        that keeps working, and a console that stops showing the job as running.
+        """
+        now = time.time()
+        with self._lock:
+            over = [j for j, at in self._deadline.items() if at <= now and j in self._inflight]
+            for job_id in over:
+                self._inflight.discard(job_id)
+                self._deadline.pop(job_id, None)
+        for job_id in over:
+            self.store.event("warn", job_id, (
+                "over its timeout -- the worker was freed. The job may still be running; "
+                "nothing here can stop a Python thread, so raise the timeout or make the "
+                "step finish sooner"
+            ))
+            self._close_open_run(job_id, "timeout", "the job ran past its timeout")
+        return over
+
+    def cancel(self, job_id: str) -> bool:
+        """Stop waiting on a job now. Same limits as `reap`."""
+        with self._lock:
+            if job_id not in self._inflight:
+                return False
+            self._inflight.discard(job_id)
+            self._deadline.pop(job_id, None)
+        self.store.event("warn", job_id, "cancelled -- the worker was freed")
+        self._close_open_run(job_id, "cancelled", "cancelled from the console")
+        return True
+
+    def _close_open_run(self, job_id: str, status: str, why: str) -> None:
+        row = self.store.rcon.execute(
+            "SELECT run_id FROM _qanat_runs WHERE job_id = ? AND status = 'running' "
+            "ORDER BY started_at DESC LIMIT 1", [job_id]
+        ).fetchone()
+        if row:
+            self.store.end_run(row[0], status, 0, why)
+
     def fire(self, job_id: str) -> None:
         """Run a job now, in its own thread, unless it is already running."""
         with self._lock:
@@ -177,6 +238,9 @@ class Scheduler:
                 self.store.event("warn", job_id, "all workers busy -- this tick was skipped")
                 return
             self._inflight.add(job_id)
+            secs = self.limit(job_id)
+            if secs:
+                self._deadline[job_id] = time.time() + secs
         threading.Thread(target=self._execute, args=(job_id,), daemon=True).start()
 
     def _execute(self, job_id: str) -> RunResult | None:

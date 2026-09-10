@@ -13,10 +13,13 @@ that produced them are in [`repro/`](repro/).
 Severity: **C** critical · **H** high · **M** medium · **L** low.
 Status: **fixed** · partial · open.
 
-**58 of 73 are fixed** as of v0.1.2, 6 are partly fixed, and 9 remain — each with a
-reason below. Every fix was checked by re-running the script that found it; the
-suite is green and `ruff` is clean. The one finding that cannot be closed is
-recorded as a limit, not a fix:
+**67 of 73 are fixed** as of v0.1.3, and 6 are partly fixed. Nothing is open. Every fix was checked by re-running the script that found it; the
+suite is green and `ruff` is clean.
+
+Two of the fixes carry a limit that is stated rather than hidden. **F-13** frees the
+worker and closes the run row, but nothing in this process can end a running Python
+thread — the job finishes on its own and its result is discarded. And one finding
+cannot be closed at all:
 
 > A step is arbitrary Python, so it can always read a source file off disk itself
 > (`pd.read_csv(ctx.root / …)`) and reach data the as-of views hide. Nothing
@@ -35,7 +38,7 @@ recorded as a limit, not a fix:
 | W-03 | C | REST `fetched_at` lands as `TIMESTAMPTZ`, so off UTC every row is hidden from a replay for the length of the offset. 0 of 1 rows visible on Asia/Seoul. | **fixed** |
 | R-01 | H | An epoch-integer clock breaks `max_time`, `read(as_of=)` and every PIT view read with `Unimplemented type for cast (BIGINT -> TIMESTAMP)`. | **fixed** |
 | W-04 | H | A holding with no price earns zero, is still counted in `holdings`, and produces no note. 25% of a book became silent cash. | **fixed** |
-| F-14 | L | The lookahead guard silently skips any table with no recognised time column. | open — a clockless table is still skipped by the lookahead guard |
+| F-14 | L | The lookahead guard silently skips any table with no recognised time column. | **fixed** |
 
 ## Input validation — a string should not become an instruction
 
@@ -44,7 +47,7 @@ recorded as a limit, not a fix:
 | F-01 | C | A table name is never validated, so it can carry SQL. `qanat check` prints "contract holds", then the step drops a real table. | **fixed** |
 | F-02 | C | A step's `script:` can point outside the project (`../`, absolute), and is then imported and executed. The stub is also written before validation. | **fixed** |
 | U-01 | C | A negative commission is accepted at every layer. `-9999 bps` produced `+1938%` in the strategy book with no marker. | **fixed** |
-| F-15 | L | `store:` can be repointed anywhere on the filesystem in one call. | open — store path is still unconstrained |
+| F-15 | L | `store:` can be repointed anywhere on the filesystem in one call. | **fixed** — a warning, since a store on another disk is a real choice |
 
 ## Silent wrong numbers
 
@@ -54,7 +57,7 @@ recorded as a limit, not a fix:
 | G-03 | H | A downstream step runs after its upstream failed, reports `ok` on stale data, and is stamped up to date in `_qanat_state`. | **fixed** |
 | G-04 | H | A misspelled option leaves `${var}` literal in the SQL: 0 rows, status `ok`, no warning. | **fixed** |
 | G-02 | H | Two steps may write the same weights table; the book then counts one portfolio as two alphas with identical net. | **fixed** |
-| G-05 | H | A `.sql` body or `ctx.sql` can read an undeclared table, so the drawn lineage is wrong, `stale()` misses it, and `check` warns the opposite of the truth. | open — an undeclared read through raw SQL is still possible |
+| G-05 | H | A `.sql` body or `ctx.sql` can read an undeclared table, so the drawn lineage is wrong, `stale()` misses it, and `check` warns the opposite of the truth. | **fixed** |
 | W-05 | H | The digest ignores the data, so `compare` says "any difference here is the engine" when the data changed underneath. | **fixed** |
 | W-16 | M | `decay` silently rescales the book (\|w\| 1.0 → 0.33 for an offsetting book). `combine()` renormalises; `decay_weights` does not. | **fixed** |
 | W-17 | M | `save_bt_weights` records the pre-decay book, so "what was held" is not what was priced. | **fixed** |
@@ -76,7 +79,7 @@ recorded as a limit, not a fix:
 | F-06 | H | `qanat.yaml` is written non-atomically from two threads with no backup. 167 of 400 concurrent reads failed. | **fixed** |
 | F-07 | H | A rejected edit poisons the in-memory project, so every later edit fails until restart. | **fixed** |
 | F-09 | M | `sys.exit()` / `KeyboardInterrupt` in a step escapes the runner, leaving the run row `running` forever. | **fixed** |
-| F-13 | M | A job has no timeout and no way to cancel it. | open — no job timeout or cancel endpoint yet |
+| F-13 | M | A job has no timeout and no way to cancel it. | **fixed** — the worker is freed and the run closed; a running Python thread still cannot be killed |
 | G-09 | M | A multi-write step that fails partway leaves the tables it already wrote. | **fixed** |
 | F-12 | M | Nothing bounds the size of a replay: one year at `rebalance: 1s` is 31.6M stops and 762 MB before anything runs. | **fixed** |
 | F-10 | M | Retention deletes `raw` rows — the one thing a replay cannot rebuild — with no confirmation and no minimum. | **fixed** |
@@ -99,7 +102,7 @@ recorded as a limit, not a fix:
 | R-04 | M | A `Year` column is not recognised as a clock, so real annual data is never filtered or expired. | **fixed** |
 | R-05 | M | A JSON body that is a single object cannot be ingested. | **fixed** |
 | R-06 | M | A body that is `[metadata, rows]` cannot be ingested: `records:` has no array index. | **fixed** |
-| R-07 | M | `payload: true` rescues both, but the docs point it at a case that works without it. | open — docs only |
+| R-07 | M | `payload: true` rescues both, but the docs point it at a case that works without it. | **fixed** |
 | R-08 | M | A slow public API times out inside the default 30s with no hint that `options.timeout` exists. | **fixed** |
 
 ## The journey and the contract
@@ -122,14 +125,14 @@ recorded as a limit, not a fix:
 | U-07 | H | A bad `rebalance` returns HTTP 500, and the log names the wrong field ("retention must look like…"). | **fixed** |
 | U-08 | H | Delete has no confirmation and sits next to save. | **fixed** |
 | U-11 | H | No visible focus indicator anywhere; the one `:focus` rule removes the outline. | **fixed** |
-| U-12 | H | Folded panels keep their buttons in the tab order. | open — folded panels still keep their buttons in the tab order |
-| U-13 | H | `edit` on an alpha card is hover-only and nested inside a button — no keyboard path at all. | open — `edit` on an alpha card is still hover-only |
+| U-12 | H | Folded panels keep their buttons in the tab order. | **fixed** |
+| U-13 | H | `edit` on an alpha card is hover-only and nested inside a button — no keyboard path at all. | **fixed** |
 | U-17 | H | The run can be submitted twice, and the 409 is erased by the next repaint. | partial — the 409 now survives the repaint; the button is still re-enabled on reopen |
 | U-09 | M | The run form is not a dialog: no role, no focus move, no trap. | partial — closes on Escape and the backdrop; no focus trap yet |
 | U-10 | M | Escape closes the panel behind the form instead of the form. | **fixed** |
 | U-14 | M | 11 of 21 form inputs have no associated label. | **fixed** |
-| U-15 | M | Table sorting is bound to `<th>` and needs a mouse. | open — table sorting is still bound to <th> |
-| U-16 | M | Chart drill-down and range selection are pointer-only. | open — chart drill-down is still pointer-only |
+| U-15 | M | Table sorting is bound to `<th>` and needs a mouse. | **fixed** |
+| U-16 | M | Chart drill-down and range selection are pointer-only. | **fixed** |
 | U-18 | M | Errors are shown as raw JSON (`{"detail": …}`). | **fixed** |
 | U-19 | M | Two polling loops overlap; none back off. | **fixed** |
 | U-20 | L | Dead affordances (`cursor: pointer` on rows with no handler) and no `prefers-reduced-motion` guard. | **fixed** |
@@ -149,3 +152,19 @@ recorded as a limit, not a fix:
 - `qanat plan` on a rename is exact; `stale()` propagates the full length of a chain.
 - PnL tables written by a replay are correctly protected from `prune`.
 - All 34 console buttons are real `<button>` elements with real text; every `fetch()` checks its status.
+
+
+---
+
+## A regression this audit caught in its own fix
+
+The 0.1.2 fix for **U-06** (live progress stopping for good after one failed request)
+put `fetchTimeout` and `backoff` in the wrong one of `backtests.js`'s two IIFEs. So
+`tick` threw `ReferenceError: backoff is not defined` on its first call, its `catch`
+threw the same error again, and nothing ever rescheduled — the progress poller was
+dead from page load, which is the very thing U-06 described.
+
+It was found the same way everything else here was: by opening the console in a real
+browser and reading what it actually did. It is fixed in 0.1.3, and the poller is now
+checked by watching it make requests rather than by reading the code that should make
+them.

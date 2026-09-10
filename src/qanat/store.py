@@ -12,6 +12,7 @@ anything else that opens the database.
 
 from __future__ import annotations
 
+import re
 import threading
 import time
 from collections.abc import Sequence
@@ -97,6 +98,23 @@ def as_instant(col: str, dtype: str | None = None, kind: str = "duckdb") -> str:
     if kind == "postgres":
         return f"CAST({q} AS TIMESTAMP)"
     return f"CAST(TRY_CAST({q} AS TIMESTAMPTZ) AT TIME ZONE 'UTC' AS TIMESTAMP)"
+
+
+#: A physical `stage__table` name inside a query. Both halves match the name rule
+#: `models.py` enforces, so this cannot collide with an ordinary identifier.
+_TABLE_TOKEN = re.compile(r"\b([a-z][a-z0-9_]*)__([a-z][a-z0-9_]*)\b")
+_SQL_NOISE = re.compile(r"--[^\n]*|/\*.*?\*/|'(?:[^']|'')*'", re.DOTALL)
+
+
+def tables_named(sql: str) -> set[str]:
+    """Every `stage.table` a query mentions, ignoring comments and string literals.
+
+    `ctx.read` refuses a table the step did not declare, and says why. A `.sql` body
+    could reach the same table anyway, so the arrow the console drew was not where
+    the data came from, `stale()` never marked the consumer, and `check` warned that
+    a table read by two steps "is never read by anything".
+    """
+    return {f"{a}.{b}" for a, b in _TABLE_TOKEN.findall(_SQL_NOISE.sub(" ", sql or ""))}
 
 
 def _typed(df: pd.DataFrame) -> pd.DataFrame:

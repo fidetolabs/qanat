@@ -697,6 +697,17 @@ def _run_backtest(
     # see the whole history, so it takes its copy first.
     prices = _price_frame(store, project)
 
+    # A table with no recognised time column is not filtered by the as-of views and
+    # is not checked for lookahead either -- `_check_lookahead` returns early when it
+    # cannot find a clock. That is the one gap the guard has, so the run says which
+    # tables it applies to rather than leaving the promise wider than the code.
+    clockless = sorted(
+        ref
+        for job_id in needed
+        for ref in getattr(project.job(job_id), "writes", [])
+        if store.exists(ref) and store.time_column(ref, project.time_columns.get(ref)) is None
+    )
+
     fingerprint = data_fingerprint(store, project)
     digest = digest_of(project, root, frm, to, every, seed, smoothing, universe,
                        cut_at, key + json.dumps(share, sort_keys=True) +
@@ -710,7 +721,8 @@ def _run_backtest(
                          "universe": universe or "(as declared on the step)",
                          "fee_bps": costs.fee_bps, "slippage_bps": costs.slippage_bps,
                          "purge": held_for, "embargo": costs.embargo,
-                         "jobs_in_run": sorted(needed), "data": fingerprint}
+                         "jobs_in_run": sorted(needed), "data": fingerprint,
+                         "no_clock": clockless}
 
     held: dict[str, pd.Series] = {}
     previous = pd.Series(dtype=float)   # the portfolio the last closed period held
@@ -722,6 +734,13 @@ def _run_backtest(
                             f"last {smoothing} stops, newest heaviest")
     if universe:
         result.notes.append(f"universe overridden to '{universe}' for this run")
+    if clockless:
+        result.notes.append(
+            f"{len(clockless)} table(s) in this lineage have no time column, so the as-of "
+            f"views do not filter them and the lookahead check skips them: "
+            f"{', '.join(clockless)}. Name the column in `time_columns:` if one of them "
+            f"carries a date under another name"
+        )
     try:
         for i, stop in enumerate(stops):
             progress.stop_at(stop, i)

@@ -357,10 +357,31 @@
       }).join('') + '</tbody></table>';
   }
 
+  //  Clicking a bar opens one rebalance and dragging narrows the report, both on a
+  //  plain <div> with pointer handlers -- so the drill panel's own empty state said
+  //  "Click a bar above" to people who had no way to click one. This is the same
+  //  action as a real control, one per rebalance, hidden until it takes focus.
+  function periodKeys(ps) {
+    if (!ps.length) return '';
+    return '<h4 class="vh">Open one rebalance</h4><ul class="vh keylist" id="bt-keys">' +
+      ps.map(function (p, i) {
+        return '<li><button type="button" data-period="' + i + '">' +
+               esc(p.as_of.slice(0, 10)) + ' · net ' + pct(p.net) + '</button></li>';
+      }).join('') + '</ul>';
+  }
+
+  function wirePeriodKeys() {
+    var host = el('bt-keys');
+    if (!host) return;
+    Array.prototype.forEach.call(host.querySelectorAll('button'), function (b) {
+      b.onclick = function () { openPeriod(parseInt(b.getAttribute('data-period'), 10)); };
+    });
+  }
+
   function drillPanel() {
     if (!DETAIL) {
       return panel('Selected rebalance', '<span class="faint">nothing picked</span>',
-        '<div class="bt-empty">Click a bar above and this shows that one rebalance: which names ' +
+        '<div class="bt-empty">Pick a rebalance above and this shows that one: which names ' +
         'were held, what each of them did, and what had to be bought or sold to get there.' +
         '</div>');
     }
@@ -536,7 +557,8 @@
       panel('Net per rebalance', '<span class="faint">after fees and slippage · click a bar to ' +
             'open it, drag across to narrow the whole report</span>',
             bars(ps.map(function (p) { return { v: p.net, label: p.as_of.slice(0, 10) }; }), 96,
-                 { clickable: !CURRENT.live, markAt: markAt, isCount: isCount })) +
+                 { clickable: !CURRENT.live, markAt: markAt, isCount: isCount }) +
+            periodKeys(ps)) +
       drillPanel() +
       panel('Monthly returns', '<span class="faint">per cent, compounded within each month</span>',
             monthGrid(byMonth(ps), ps)) +
@@ -666,7 +688,9 @@
         : '<span class="sh ' + sign(score) + '">' +
           (a.out_of_sample != null ? 'OOS ' : 'net ') + pct(score) + '</span>';
       var c = a.conditions || {};
-      return '<button type="button" class="sitem' + (PICKED === a.alpha ? ' on' : '') +
+      var canEdit = String(a.alpha).indexOf('+') < 0;
+      return '<span class="sitem-wrap">' +
+        '<button type="button" class="sitem' + (PICKED === a.alpha ? ' on' : '') +
         (a.wired ? ' wired' : '') + '" data-alpha="' + esc(a.alpha) + '" title="' +
         esc(a.alpha) + '">' +
         '<span class="r1"><span class="code">' + esc(a.name || a.alpha) + '</span>' +
@@ -676,10 +700,12 @@
         (c.decay ? ' · decay ' + c.decay : '') +
         (wiring(a) ? ' · <span class="mono faint">' + wiring(a) + '</span>' : '') + '</span>' +
         spark(a.spark, 190, 22) +
-        (String(a.alpha).indexOf('+') < 0
-          ? '<span class="edrow" data-edit="' + esc(a.alpha) + '" title="change this alpha">' +
-            'edit</span>'
-          : '') + '</button>';
+        '</button>' +
+        (canEdit
+          ? '<button type="button" class="edrow" data-edit="' + esc(a.alpha) +
+            '" title="change this alpha" aria-label="edit ' + esc(a.name || a.alpha) +
+            '">edit</button>'
+          : '') + '</span>';
     }).join('') +
       (editing
         ? '<button type="button" class="sitem add" id="book-add">＋ add an alpha</button>'
@@ -833,6 +859,7 @@
     // the rects do not take clicks any more: the whole chart handles click and drag,
     // so a drag that starts on a bar behaves the same as one that starts between them
     Array.prototype.forEach.call(el('bt-detail').querySelectorAll('[data-chart]'), wireChart);
+    wirePeriodKeys();
     Array.prototype.forEach.call(el('bt-detail').querySelectorAll('.mo[data-i]'), function (m) {
       m.onclick = function () { openPeriod(parseInt(m.getAttribute('data-i'), 10)); };
     });
@@ -1382,6 +1409,21 @@
   var LAST_STOP = null;
 
   function el(id) { return document.getElementById(id); }
+
+  //  This file holds two IIFEs, and these two live in the other one -- so `tick`
+  //  threw a ReferenceError on every call, its catch threw the same one again, and
+  //  nothing ever rescheduled. The progress poller was dead from the first tick.
+  //  Small enough to keep here rather than reach across the boundary.
+  function fetchTimeout(path, opts, ms) {
+    var c = new AbortController();
+    var t = setTimeout(function () { c.abort(); }, ms || 8000);
+    return fetch(path, Object.assign({}, opts || {}, { signal: c.signal }))
+      .finally(function () { clearTimeout(t); });
+  }
+
+  function backoff() {
+    return Math.min(2500 * Math.pow(2, Math.max(0, TICK_FAILS - 1)), 30000);
+  }
 
   // The graph draws jobs now, so it takes the whole progress snapshot and lights
   // the slabs itself -- there is nothing left for this file to translate.

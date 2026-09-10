@@ -34,6 +34,8 @@ def dump_project(project: Project) -> dict[str, Any]:
         data["retention"] = dict(project.retention)
     if project.time_columns:
         data["time_columns"] = dict(project.time_columns)
+    if project.job_timeout:
+        data["job_timeout"] = project.job_timeout
     if project.backtest is not None:
         # Anything the model holds has to be written back, or saving one step from
         # the console quietly deletes the rest of the file.
@@ -53,6 +55,8 @@ def _dump_source(s: Source) -> dict[str, Any]:
         row["key"] = list(s.key)
     if s.mode != "append":
         row["mode"] = s.mode
+    if s.timeout:
+        row["timeout"] = s.timeout
     if s.options:
         row["options"] = s.options
     return row
@@ -71,6 +75,8 @@ def _dump_step(st: Step) -> dict[str, Any]:
         row["when"] = list(st.when)
     if st.universe:
         row["universe"] = st.universe
+    if st.timeout:
+        row["timeout"] = st.timeout
     if st.rebalance:
         row["rebalance"] = st.rebalance
     if st.decay:

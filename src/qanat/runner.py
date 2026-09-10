@@ -208,6 +208,13 @@ def _check_lookahead(store: Store, project: Project, step: Step, as_of: str) -> 
     for ref in step.writes:
         col = store.time_column(ref, project.time_columns.get(ref))
         if col is None:
+            # Nothing to check against: this table has no clock, so the as-of views
+            # do not filter it either. Silence made the guard look wider than it is.
+            store.event("warn", step.id, (
+                f"{ref} has no time column, so it was not checked for lookahead and the "
+                f"as-of views do not filter it. Set time_columns['{ref}'] if a column "
+                f"there carries the date under another name"
+            ))
             continue
         newest = store.max_time(ref, project.time_columns.get(ref))
         if newest is None:

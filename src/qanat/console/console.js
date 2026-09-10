@@ -286,9 +286,13 @@
     var cols = (t.columns || []).map(function (c) { return c.name; });
     var thead = '<tr>' + (t.columns || []).map(function (c) {
       var on = t.order === c.name;
-      return '<th class="sortable' + (on ? ' on' : '') + '" data-col="' + esc(c.name) + '">' +
+      // a real control, with the sort state on the header where a screen reader
+      // looks for it -- this used to be a click handler on a <th>, mouse only
+      var aria = on ? (t.desc ? 'descending' : 'ascending') : 'none';
+      return '<th class="sortable' + (on ? ' on' : '') + '" aria-sort="' + aria + '">' +
+        '<button type="button" data-col="' + esc(c.name) + '">' +
         esc(c.name) + (on ? (t.desc ? ' ▾' : ' ▴') : '') +
-        '<i>' + esc(c.type) + '</i></th>';
+        '<i>' + esc(c.type) + '</i></button></th>';
     }).join('') + '</tr>';
     var body = (t.sample || []).map(function (r) {
       return '<tr>' + cols.map(function (c) {
@@ -351,7 +355,7 @@
         loadTable(t.ref, off, t.sortKey);
       };
     });
-    Array.prototype.forEach.call(body.querySelectorAll('th.sortable'), function (th) {
+    Array.prototype.forEach.call(body.querySelectorAll('th.sortable button'), function (th) {
       th.onclick = function () {
         var col = th.getAttribute('data-col');
         var desc = !(TABLE.order === col && TABLE.desc);
@@ -439,7 +443,9 @@
              esc(x.status || 'idle') + '</button></li>';
     }).join('');
     Array.prototype.forEach.call(host.querySelectorAll('button'), function (b) {
-      b.onclick = function () { selectNode(b.getAttribute('data-ref'), null); };
+      // selectTable takes a ref and looks the node up; selectNode wants the node
+      // itself, so passing it a string quietly opened nothing at all
+      b.onclick = function () { selectTable(b.getAttribute('data-ref')); };
     });
   }
 

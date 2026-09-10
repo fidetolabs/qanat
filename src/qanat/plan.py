@@ -47,6 +47,7 @@ def job_spec(job: Source | Step, root: Path) -> dict:
             "schedule": job.schedule,
             "mode": job.mode,
             "key": sorted(job.key),
+            "timeout": job.timeout,
             "options": job.options,
         }
     return {
@@ -64,6 +65,7 @@ def job_spec(job: Source | Step, root: Path) -> dict:
         "rebalance": job.rebalance,
         "decay": job.decay,
         "when": sorted(job.when),
+        "timeout": job.timeout,
     }
 
 
@@ -159,6 +161,7 @@ _LABEL = {
     "rebalance": "rebalance",
     "decay": "decay",
     "when": "waits on",
+    "timeout": "timeout",
 }
 
 

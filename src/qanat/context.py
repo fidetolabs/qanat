@@ -10,7 +10,7 @@ from typing import Any
 import pandas as pd
 
 from qanat.models import Project, Step
-from qanat.store import Store
+from qanat.store import Store, tables_named
 
 #: A schema-qualified reference in a step's SQL. `main.` and `qanat.` are the two
 #: names the store itself uses, and `qanat_pit.` names the as-of views directly.
@@ -115,6 +115,17 @@ class Context:
                     f"would see data from after {self.as_of}. Write the table name on its "
                     "own -- during a replay it resolves to the rows that existed then."
                 )
+        undeclared = sorted(
+            ref for ref in tables_named(query)
+            if ref in self.project.producers()
+            and ref not in self.step.reads and ref not in self.step.writes
+        )
+        if undeclared:
+            raise KeyError(
+                f"step '{self.step.id}' did not declare {', '.join(undeclared)} in reads -- "
+                "add it so the lineage stays true. `ctx.read` has always said this; naming "
+                "the table in SQL went around it, and the graph then drew the wrong arrow"
+            )
         return self.store.query(query)
 
     def universe(self, bid: str | None = None, as_of: str | None = None) -> pd.DataFrame:
