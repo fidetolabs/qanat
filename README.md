@@ -187,7 +187,7 @@ Notes on the tool surface: **[docs/agents.md](https://github.com/fidetolabs/qana
 ## How it works
 
 Everything is declared in one `qanat.yaml`: `stages`, `sources`, `steps`, schedules, `universes`.
-Nothing hides in application code. Thirteen commands act on that file:
+Nothing hides in application code. Fifteen commands act on that file:
 
 | command | |
 | --- | --- |
@@ -196,6 +196,8 @@ Nothing hides in application code. Thirteen commands act on that file:
 | `qanat plan` | what would change if this file were applied. Configuration, not row values |
 | `qanat prune` | drop tables nothing produces any more |
 | `qanat ls` | stages, tables, jobs |
+| `qanat graph` | the console's picture of the pipeline, in the terminal |
+| `qanat tui` | that console *in* the terminal: graph, alphas, charts, live replays |
 | `qanat run` | one pass over the whole graph, or one job |
 | `qanat serve` | scheduler and console |
 | `qanat backtest` | replay the pipeline and price what it held |
@@ -228,6 +230,83 @@ the step that makes it, laid out left to right by stage.
 You configure the whole pipeline from the console — sources, steps, alphas, stages, retention — and
 everything you change is written to `qanat.yaml` on disk. There is no settings panel and no edit
 mode. See **[docs/console.md](https://github.com/fidetolabs/qanat/blob/main/docs/console.md)**.
+
+### The same picture, without the server
+
+`qanat graph` draws it where you already are. Same read model as the console, same four colours, and
+the same claim: the table is the node and the step is the edge. A column per stage, left to right.
+
+```
+  raw ─────────────                normalized ─────               features ────                 weights ────              pnl ─────────────
+
+  ╭─ daily_prices ╮                ╭─ prices ─────╮               ╭─ momentum ╮
+  │ ● 3,360 rows  │──── normalize ▸│ ● 3,360 rows │─┬── momentum ▸│ ● 8 rows  │─┐
+  ╰─ 1m ago ──────╯                ╰─ 1m ago ─────╯ │             ╰─ 1m ago ──╯ │
+                                                    │                           │
+  ╭─ news ────────╮                                 │                           │
+  │ ● 57 rows     │─────────────────────────────────┼┐            ╭─ risk ────╮ │               ╭─ target ─╮              ╭─ portfolio ───╮
+  ╰─ 1m ago ──────╯                                 └┼─ risk ────▸│ ● 8 rows  │─┴─┬─ portfolio ▸│ ● 4 rows │─── backtest ▸│ ○ not written │
+                                                     │            ╰─ 1m ago ──╯   │             ╰─ 1m ago ─╯              ╰───────────────╯
+                                                     │                            │
+                                                     │            ╭─ tone ────╮   │
+                                                     └─ tone ────▸│ ● 8 rows  │───┘
+                                                                  ╰─ 1m ago ──╯
+
+  ● written   ○ not written
+
+  5 stages · 8 tables · 6,805 rows · 7 jobs
+```
+
+A box is a table, the rule under it says when the job that writes it last finished, and the word on
+the arrow is that job. Colour is the stage and nothing else. `--ascii` for a terminal that cannot
+spell box rules, `--no-labels` to leave the steps off and draw narrower, `--width` to fit a size you
+name. Piped into a file it keeps its full width and drops the colour.
+
+### The console itself, in the terminal
+
+`qanat graph` prints and exits. **`qanat tui` stays.** The graph on top, every alpha underneath with
+what it earned, and Enter on a row to open its result — arrow keys or `j`/`k` to move, `h`/`l` to
+change the chart.
+
+```
+ qanat demo  ~/work/demo                         5 stages · 17 tables · 6 alphas
+
+ neutral_momentum run 1789305656116297 · 2025-07-21 → 2026-09-13 every 5d · seed 0
+
+                                                                           ⢀⡞⢹⡀           ⢀⡖⠋ +34.6%
+                                                                           ⣸  ⢧   ⢀⣠⢤⡴⠒⠒⠲⣤⠏
+                                                                     ⡏⠉⠉⠉⠉⠳⠇  ⠸⡄⣠⠤⠏
+                                         ⣀⡀     ⢀⡟⠲⣄    ⢠⢤ ⣤        ⣸⠁         ⠛⠁
+                                      ⢀⡴⠋⠁⠙⠦⣄   ⡼  ⠈⠳⠤⠤⠤⠏⠈⠿⠉⠧⠖⠦⠴⢦⣀⣀⡴⠃
+                                    ⢰⠋⠉     ⠈⠉⠓⠚⠁
+                                   ⢀⡏
+                               ⢀⣀⡀⣀⡞
+                              ⣰⠋ ⠉⠁
+ ⠒⠒⠒⠒⠒⠒⠒⠒⠒⠒⠒⠒⠒⠒⠒⣆          ⣠⠤⠼⠁
+                ⠘⠦⣄       ⡼⠁
+                  ⠈⠓⠲⣄⣀⡤⣄⡞⠁                                                                   -9.0%
+ net +34.33%   gross +35.48%   fees -1.29%   slip -2.58%   turnover 25.82   hit 47.0%   83 periods
+
+ chart  equity   drawdown   per period   turnover   holdings
+ ──────────────────────────────────────────────────────────────────────────────────────────────────────
+   alpha                      runs       net    in samp   out samp    turn     hit curve
+ ▸ neutral_momentum              7   +34.33%          —          —   25.82   47.0% ▂▂▂▁▁▁▃▅▆▅▆▆▆▆██▇██
+   momentum                      3   +13.45%          —          —   19.00   44.6% ▄▄▄▂▁▂▂▄▅▄▆▅▆▆███▇█
+   low_vol                       1    +8.50%    +14.60%     -5.32%    7.94   50.6% ▃▂▁▁▁▂▂▄▅▅▆▆██▇▆▄▄▅
+   low_vol + momentum  blend     1    +8.49%     +6.70%     +1.67%   13.73   46.9% ▅▄▂▂▁▂▃▅▆▆▇▆████▇▇▇
+   reversal                      1    -6.38%     -8.45%     +2.26%   80.00   49.4% ██▆▅▄▄▂▁▁▂▁▁▂▃▂▁▁▂▂
+   target                        1   -13.66%          —          —   58.99   51.8% ██▄▂▁▁▁▁▂▂▂▂▄▄▅▅▃▃▄
+ j/k move   enter open   g graph   h/l chart   r re-run   R reload   q quit
+```
+
+Pick an alpha that has never been priced and Enter runs the replay instead, drawn as it happens: the
+DAG fills in from the left for each as-of date, the curve grows a point per rebalance, and the row's
+net ticks up while it goes. That is the console's own progress record — the one `qanat serve` polls
+— read from the same process that is doing the work.
+
+No new dependency and no framework: raw mode, the alternate screen, and the same character grid
+`qanat graph` draws on. Curves are braille, so a 60x8 box is really 120x32 dots. `--ascii` if your
+terminal disagrees.
 
 ## Five stages, named for what they hold
 

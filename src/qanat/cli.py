@@ -3,6 +3,8 @@
     qanat init [dir]     scaffold a project that runs green with no keys
     qanat check          hold the pipeline against the stage contract
     qanat ls             stages, tables, jobs
+    qanat graph          the console's picture of the pipeline, in the terminal
+    qanat tui            the console itself, in the terminal: graph, alphas, replays
     qanat run [job]      one pass, or one job
     qanat backtest       replay the graph over a window, and price what it held
     qanat report <id>    one backtest, period by period
@@ -263,6 +265,71 @@ def cmd_ls(args) -> int:
     store.close()
     return 0
 
+
+# ----------------------------------------------------------------------- graph
+def cmd_graph(args) -> int:
+    """The same graph `qanat serve` draws, on a character grid.
+
+    It reads the console's read model rather than the file, so an arrow here is
+    an arrow there, and a row count is a count(*) either way.
+    """
+    import shutil
+
+    from qanat.api import build_graph
+    from qanat.graph import glyphs_for, ink_for, render
+    from qanat.project import validate
+    from qanat.store import Store
+
+    project, root = _load(args)
+    rep = validate(project, root)
+    if not rep.ok:
+        # Still worth drawing: a picture of a project that does not hold is how
+        # you see *where* it does not hold. But say so, and say it on stderr, so
+        # the drawing itself still pipes clean.
+        print(c(f"the contract does not hold ({len(rep.errors)} errors). "
+                f"`qanat check` to see why -- drawing it anyway.", Y), file=sys.stderr)
+
+    if args.width is None:
+        width = shutil.get_terminal_size().columns if _TTY else 0
+    else:
+        width = args.width
+
+    store = Store(project.store_url(root))
+    try:
+        graph = build_graph(store, project, root, None)
+    finally:
+        store.close()
+
+    print(render(
+        graph, root,
+        ink=ink_for(args.color, sys.stdout),
+        g=glyphs_for(sys.stdout, args.ascii),
+        width=width or None,
+        labels=not args.no_labels,
+    ))
+    return 0 if rep.ok else 1
+
+
+# ------------------------------------------------------------------------- tui
+def cmd_tui(args) -> int:
+    """The console without the browser: the graph, the alphas, and a live replay."""
+    from qanat.graph import glyphs_for, ink_for
+    from qanat.project import validate
+    from qanat.store import Store
+    from qanat.tui import run
+
+    project, root = _load(args)
+    rep = validate(project, root)
+    if not rep.ok and not args.force:
+        print(c("the contract does not hold. `qanat check` to see why, or --force.", R_))
+        return 1
+
+    store = Store(project.store_url(root))
+    _repair_after_crash(store, project, root)
+    # `run` closes the store itself -- see why in its docstring.
+    return run(project, root, store,
+               ink=ink_for(args.color, sys.stdout),
+               g=glyphs_for(sys.stdout, args.ascii))
 
 # ------------------------------------------------------------------------- run
 def cmd_run(args) -> int:
@@ -661,6 +728,23 @@ def build_parser() -> argparse.ArgumentParser:
 
     ls = sub.add_parser("ls", help="stages, tables, jobs")
     ls.set_defaults(func=cmd_ls)
+
+    gr = sub.add_parser("graph", help="the console's picture of the pipeline, in the terminal")
+    gr.add_argument("--color", choices=("auto", "always", "never"), default="auto",
+                    help="colour the stages (default: when stdout is a terminal)")
+    gr.add_argument("--ascii", action="store_true", help="draw with - | + instead of box rules")
+    gr.add_argument("--no-labels", action="store_true", dest="no_labels",
+                    help="leave the step off each arrow, and draw narrower")
+    gr.add_argument("--width", type=int,
+                    help="fit to this many columns. 0 is unlimited (the default when piped)")
+    gr.set_defaults(func=cmd_graph)
+
+    tu = sub.add_parser("tui", help="the console in the terminal: graph, alphas, live replays")
+    tu.add_argument("--color", choices=("auto", "always", "never"), default="always",
+                    help="colour the stages (default: always -- it is a terminal by definition)")
+    tu.add_argument("--ascii", action="store_true", help="draw with - | + instead of box rules")
+    tu.add_argument("--force", action="store_true", help="open even if the contract fails")
+    tu.set_defaults(func=cmd_tui)
 
     r = sub.add_parser("run", help="one pass over the whole graph, or one job")
     r.add_argument("job", nargs="?")

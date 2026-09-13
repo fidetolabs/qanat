@@ -1,5 +1,47 @@
 # Changelog
 
+## 0.1.4 — 2026-09-13
+
+### The console itself, in the terminal
+
+`qanat tui` is the console without the browser. Three panes: the DAG on top, a chart
+selector, and every alpha this project declares or has ever priced with its last run
+beside it. Move with the arrow keys or `j`/`k`, Enter to open a result, `h`/`l` to
+change chart between equity, drawdown, per period, turnover and holdings.
+
+Enter on an alpha nobody has priced runs the replay and draws it as it happens. The
+DAG fills in from the left once per as-of date, the curve gains a point per closed
+rebalance, and the alpha's row counts up -- all off `progress.snapshot()`, the same
+in-memory record `qanat serve` polls, read from the process doing the work. Only the
+lineage the replay actually walks is drawn, so it is four boxes rather than seventeen.
+
+No new dependency. Raw mode, the alternate screen, a repaint that sends only the rows
+that moved, and the character grid `qanat graph` already draws on. Curves are braille,
+which makes a 60x8 box a 120x32 plot; `--ascii` gives that up for terminals that need
+it.
+
+`q` will not quit out from under a running replay -- `Q` abandons it, and says that
+the tables it rewrote need `qanat run`. A terminal that goes away ends the loop rather
+than spinning on it.
+
+### The console's picture, in the terminal
+
+`qanat graph` draws the pipeline where you already are: a column per stage, a box per
+table, the step that writes it on the arrow, and the four stage colours the console
+uses. It reads `build_graph` — the console's own read model — so an arrow here is an
+arrow there and a row count is the same `count(*)`.
+
+Columns are layers rather than stages, because a features stage is allowed to chain
+and an edge inside one column would have to leave it and come back. A stage owns as
+many columns as its longest chain, and the rule across the top says which. An edge
+that skips a column is given a row to pass through, and nothing else is placed on
+that row — two lines sharing a row in a character grid are one line, and would claim
+an edge that is not there.
+
+`--color auto|always|never` (and `NO_COLOR`), `--ascii`, `--no-labels`, `--width`.
+Piped, it keeps its full width and drops the colour; on a terminal too narrow for the
+step names it says so rather than wrapping.
+
 ## 0.1.3 — 2026-09-10
 
 The last nine open findings from the audit, and one regression the audit found in
