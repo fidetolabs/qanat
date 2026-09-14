@@ -25,7 +25,7 @@ from croniter import croniter
 from qanat.models import Project, Source
 from qanat.project_io import save_project
 from qanat.runner import RunResult, run_source, run_step
-from qanat.store import Store
+from qanat.store import Store, set_actor
 
 #: the job id a live replay reports under, so it shows in the log like any other
 _LIVE = "backtest"
@@ -228,8 +228,13 @@ class Scheduler:
         if row:
             self.store.end_run(row[0], status, 0, why)
 
-    def fire(self, job_id: str) -> None:
-        """Run a job now, in its own thread, unless it is already running."""
+    def fire(self, job_id: str, actor: str = "schedule") -> None:
+        """Run a job now, in its own thread, unless it is already running.
+
+        `actor` is who asked. It rides into the worker thread because a
+        ContextVar does not cross one, and the console shows it: a job that ran
+        because an agent asked reads differently from one the clock fired.
+        """
         with self._lock:
             if job_id in self._inflight:
                 self.store.event("warn", job_id, "still running -- this tick was skipped")
@@ -241,10 +246,11 @@ class Scheduler:
             secs = self.limit(job_id)
             if secs:
                 self._deadline[job_id] = time.time() + secs
-        threading.Thread(target=self._execute, args=(job_id,), daemon=True).start()
+        threading.Thread(target=self._execute, args=(job_id, actor), daemon=True).start()
 
-    def _execute(self, job_id: str) -> RunResult | None:
+    def _execute(self, job_id: str, actor: str = "schedule") -> RunResult | None:
         result: RunResult | None = None
+        set_actor(actor)          # a fresh thread starts on the default
         try:
             job = self.project.job(job_id)
             if job is None:

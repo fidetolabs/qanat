@@ -18,7 +18,7 @@ def client(tmp_path: Path):
     project, root = load(tmp_path)
     store = Store(project.store_url(root))
     state = AppState(store=store, project=project, root=root, sched=None)
-    return TestClient(create_app(state)), state
+    return TestClient(create_app(state), base_url="http://127.0.0.1:8420"), state
 
 
 def test_get_project(client):

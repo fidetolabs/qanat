@@ -46,6 +46,42 @@ CONSOLE = Path(__file__).parent / "console"
 #: Column names a price may go by, for the shelf-alpha shape check.
 PRICE_COLS = ("close", "price", "px", "adj_close", "last", "value")
 
+#: The names the console may be reached by.
+#:
+#: This API writes step scripts and runs them, so a page that can reach it can run
+#: code on the machine serving it. Binding to loopback is not enough on its own: a
+#: site the person visits can point its own domain at 127.0.0.1, and then the
+#: browser calls the console believing it is same-origin. CORS never enters into
+#: it, so the only thing that catches it is the name the browser asked for, which
+#: arrives in `Host`. Anything not in this set is refused.
+#:
+#: Serving to a real hostname is a deliberate act, so it is a deliberate setting:
+#: `QANAT_ALLOWED_HOSTS=qanat.example.com`, comma separated.
+LOOPBACK_HOSTS = frozenset({"localhost", "127.0.0.1", "::1"})
+
+
+def _hostname(value: str) -> str:
+    """The host in a `Host` header or an `Origin`, without scheme or port."""
+    v = value.strip()
+    if "//" in v:                       # http://host:port -> host:port
+        v = v.split("//", 1)[1]
+    v = v.split("/", 1)[0]
+    if v.startswith("["):               # [::1]:8420 -> ::1
+        end = v.find("]")
+        return v[1:end] if end > 0 else v
+    head, sep, tail = v.rpartition(":")
+    return head if sep and tail.isdigit() else v
+
+
+def allowed_hosts(extra: list[str] | None = None) -> set[str]:
+    """Loopback, plus whatever `QANAT_ALLOWED_HOSTS` and the caller add."""
+    import os
+
+    names = {h.lower() for h in LOOPBACK_HOSTS}
+    for source in (os.environ.get("QANAT_ALLOWED_HOSTS", "").split(","), extra or []):
+        names |= {h.strip().lower() for h in source if h and h.strip()}
+    return names
+
 
 class AlphaRequest(BaseModel):
     """What an alpha needs to exist: a name, a table to read, and a rule."""
@@ -384,12 +420,38 @@ class DropIn(BaseModel):
     force: bool = False
 
 
-def create_app(state: AppState) -> FastAPI:
+def create_app(state: AppState, allow_hosts: list[str] | None = None) -> FastAPI:
     app = FastAPI(
         title=f"qanat · {state.project.name}",
         version=__version__,
         docs_url="/api/docs",
     )
+
+    allowed = allowed_hosts(allow_hosts)
+
+    @app.middleware("http")
+    async def only_from_here(request, call_next):  # type: ignore[no-untyped-def]
+        """Refuse any request that asked for a name this console does not answer to."""
+        host = _hostname(request.headers.get("host", "")).lower()
+        if host not in allowed:
+            return JSONResponse(
+                status_code=403,
+                content={"detail":
+                         f"this console answers to {', '.join(sorted(allowed))}, not "
+                         f"{host or '(no host header)'}. Set QANAT_ALLOWED_HOSTS to serve "
+                         f"it under another name."},
+            )
+        # A same-origin GET usually sends no Origin at all; anything that does send
+        # one has to be a name we already answer to. `null` is what a sandboxed
+        # frame or a file:// page sends, and neither should be driving this.
+        origin = request.headers.get("origin")
+        if origin and _hostname(origin).lower() not in allowed:
+            return JSONResponse(
+                status_code=403,
+                content={"detail": f"request from {origin} was refused: the console only "
+                                   f"accepts its own origin."},
+            )
+        return await call_next(request)
 
     def _editor_error(exc: Exception) -> HTTPException:
         if isinstance(exc, EditorError):
@@ -874,6 +936,97 @@ def create_app(state: AppState) -> FastAPI:
     def events(limit: int = 200) -> list[dict[str, Any]]:
         return state.store.recent_events(limit)
 
+    # ------------------------------------------------------------------ ask
+    #
+    #  Plain English in, work done, an answer back. The model is whatever agent
+    #  CLI the person already installed and signed into, so nothing is held here:
+    #  no key, no account, no bill. See `agent.py` for why it reaches back into
+    #  this API rather than opening the store a second time.
+    #
+    #  This starts a process on the machine, which is exactly why the `Host` guard
+    #  above is not optional.
+
+    @app.get("/api/ask")
+    def ask_state() -> dict[str, Any]:
+        """What the current question is doing, polled while it runs."""
+        from qanat.agent import find_cli
+
+        cli = find_cli()
+        cur = getattr(state, "_ask", None)
+        return {
+            "available": bool(cli),
+            "cli": cli["label"] if cli else None,
+            "ask": cur.state() if cur else None,
+        }
+
+    @app.delete("/api/ask")
+    def ask_stop() -> dict[str, Any]:
+        """Change your mind. Whatever it already did to the project stays done."""
+        cur = getattr(state, "_ask", None)
+        if not cur or cur.done:
+            return {"stopped": False, "note": "nothing was running"}
+        stopped = cur.stop()
+        if stopped:
+            state.store.event("warn", "agent", "stopped before it finished")
+        return {"stopped": stopped}
+
+    @app.post("/api/ask")
+    def ask_start(body: dict[str, Any]) -> dict[str, Any]:
+        from qanat.agent import Ask
+        from qanat.agent import run as run_ask
+
+        question = str(body.get("question") or "").strip()
+        if not question:
+            raise HTTPException(400, "ask something first")
+        #  A new question supersedes the old one rather than being refused. Asking
+        #  again is how a person says "not that, this" -- and after a stop there is
+        #  a beat where the last one is killed but not yet marked done, which used
+        #  to come back as "already working on the last question".
+        cur = getattr(state, "_ask", None)
+        if cur and not cur.done:
+            cur.stop()
+
+        ask = Ask(question=question)
+        state._ask = ask
+        base = str(body.get("base") or "http://127.0.0.1:8420").rstrip("/")
+        root = state.root
+
+        def work() -> None:
+            # the agent is a person's hands here, not the clock's
+            from qanat.agent import diff, snapshot
+            from qanat.store import set_actor
+            set_actor("agent")
+            state.store.event("info", "agent", f"asked: {question[:120]}")
+
+            def shot() -> dict[str, Any]:
+                with state._lock:
+                    return snapshot(build_graph(state.store, state.project, state.root,
+                                                state.sched))
+
+            before = shot()
+            try:
+                run_ask(ask, root, base)
+            except Exception as exc:  # noqa: BLE001
+                ask.error = f"{type(exc).__name__}: {exc}"
+                ask.done = True
+            state.reload()
+            # What came of it, in the project's terms rather than the agent's. The
+            # lines above say what it did; these say what moved.
+            try:
+                for line in diff(before, shot()):
+                    ask.lines.append({"kind": "diff", "text": line, "detail": "",
+                                      "at": ask.state()["elapsed"]})
+            except Exception:  # noqa: BLE001, S110
+                pass
+            state.store.event(
+                "error" if ask.error else "info", "agent",
+                ask.error[:160] if ask.error else (ask.answer[:160] or "finished"),
+            )
+            ask.done = True          # last, so the diff lines are already there
+
+        threading.Thread(target=work, daemon=True).start()
+        return {"started": True}
+
     @app.get("/api/runs")
     def runs(limit: int = 60) -> list[dict[str, Any]]:
         return state.store.recent_runs(limit)
@@ -962,7 +1115,7 @@ def create_app(state: AppState) -> FastAPI:
                 raise HTTPException(404, f"no job called '{job_id}'")
             if state.sched is None:
                 raise HTTPException(409, "this server was started without a scheduler")
-            state.sched.fire(job_id)
+            state.sched.fire(job_id, "you")
         return JSONResponse({"queued": job_id})
 
     @app.delete("/api/jobs/{job_id}/run")

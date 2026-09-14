@@ -1,5 +1,59 @@
 # Changelog
 
+## 0.1.5 — 2026-09-15
+
+### Ask it in plain English
+
+The console has an input box on both pages, and it holds no key. It runs whichever
+agent CLI is already installed and signed in -- Claude Code, Cursor -- headless, in
+the project directory. Nothing to paste, nothing to bill, and the credential stays
+where the person put it.
+
+A DuckDB file takes one writer and the console is holding it, so the agent cannot
+open a second `qanat mcp` in the same project. It is pointed at the console's own
+HTTP API instead: the same service layer the MCP tools sit on, reached over the
+loopback port already serving. One process, one writer, no lock.
+
+What it did shows underneath as it happens -- the calls it made, then a `diff` of
+what actually changed in the project, `weights.momentum · 4 → 5 rows`. The panel
+floats rather than pushing the report down the page, folds away while it is still
+working (the bar keeps a one-line ticker so nothing is lost), and `ask` becomes
+`stop` while it runs. Stopping kills the process; whatever it already did stays done.
+
+### Two pages, not one screen
+
+Strategies answers "did my idea make money": the book as a table across the top,
+then the report, equity curve first. Pipeline answers "how was this built": the
+graph, the tables, the steps that wrote them. You only need the second when the
+first gives you a number worth questioning, and the run log is on both because an
+agent can be writing a step while you read a result.
+
+The backtest form asks four questions -- alpha, from, to, rebalance -- with the
+other eight under `costs and controls`. Nothing was removed; you are just not asked
+about `embargo` before you have asked anything else.
+
+### The console only answers to this machine
+
+`POST /api/steps` writes a step script and `POST /api/jobs/<id>/run` runs it, so a
+page that can reach the API can run code on the machine serving it. Binding to
+loopback does not prevent that: a site you visit can resolve its own domain to
+127.0.0.1 and call the console believing it is same-origin, and CORS never enters
+into it. Every request is now checked against the name the browser asked for.
+Anything but loopback is refused, and serving under a real hostname is a deliberate
+setting: `QANAT_ALLOWED_HOSTS=qanat.example.com`.
+
+### Who did it
+
+Every event carries an actor -- `agent`, `you`, or `schedule` -- and the run log
+shows it. A project that changes while you are reading something else should say
+who changed it.
+
+### Fixed
+
+- The console's `api()` helper accepted an options argument and ignored it, so every
+  caller that thought it was posting was quietly issuing a GET.
+- The README led with the mechanism. It now says what the thing does first.
+
 ## 0.1.4 — 2026-09-13
 
 ### The console itself, in the terminal

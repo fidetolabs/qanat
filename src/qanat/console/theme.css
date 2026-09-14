@@ -723,3 +723,240 @@ body.server-down .downbanner code {
     one that was a modal's entire content, so "run backtest" opened a blank panel.
     A panel whose only content is the warning has to keep it. */
 body.server-down .bt-empty.bad { display: none; }
+
+/* ============================================================ two pages
+
+   The console answers two questions, and they are not asked at the same time.
+   "Did my idea make money" is the strategy book and the report. "How was this
+   built" is the graph, the tables and the steps that wrote them. Showing both at
+   once is what made this window hard to read, so each gets a page.
+
+   The run log is on both. An agent driving over MCP can be writing a step while
+   you are reading a result, and you should see that wherever you are standing. */
+
+.ptabs{display:flex;gap:2px;margin-left:18px}
+.ptab{position:relative;font-family:var(--mono);font-size:11.5px;letter-spacing:.04em;
+  padding:11px 15px 12px;background:none;border:0;color:var(--fg-faint);cursor:pointer}
+.ptab:hover{color:var(--fg-dim)}
+.ptab:focus-visible{outline:2px solid var(--key);outline-offset:-3px}
+.ptab[aria-selected="true"]{color:var(--fg)}
+.ptab[aria-selected="true"]::after{content:"";position:absolute;left:9px;right:9px;bottom:0;
+  height:2px;background:var(--key)}
+
+/* --- Strategies: the book is the page, and the report fills the rest --- */
+body.page-strategies .view,
+body.page-strategies .rail-r{display:none}
+body.page-strategies .rail:first-of-type{
+  flex:0 0 var(--book-w,360px);width:var(--book-w,360px);visibility:visible}
+/* the report is the point of this page, so it is never collapsed here */
+body.page-strategies .btwrap{flex:1 1 auto;max-height:none}
+body.page-strategies .btwrap .bt-body{display:flex}
+body.page-strategies .bt-bar-h .chev,
+body.page-strategies .btwrap .grip,
+body.page-strategies #btn-bt{display:none}
+
+/* --- Pipeline: the graph, the tables, and what wrote them --- */
+body.page-pipeline .rail:first-of-type{display:none}
+body.page-pipeline .btwrap{display:none}
+body.page-pipeline .view{display:block}
+
+/* The log keeps its own height on both pages rather than being squeezed out by
+   whatever is above it. */
+body.page-strategies .logwrap,
+body.page-pipeline .logwrap{display:flex;flex:0 0 132px}
+
+/* Who caused a run. The agent column is the whole reason this log is on both
+   pages, so it is coloured rather than left to blend into the message. */
+.lrow .by{margin-left:auto;padding-left:10px;font-size:9.5px;letter-spacing:.06em;
+  color:var(--fg-faint);flex:none}
+.lrow .by.mcp{color:var(--cyan)}
+.lrow .by.console{color:var(--fg-dim)}
+.lrow .by.schedule{color:var(--fg-faint)}
+
+/* ===================================================== ask
+
+   The box is on both pages and above everything, because a question is how most
+   people will drive this. The model is the agent CLI already on the machine, so
+   there is nothing here about keys or signing in. */
+
+.askbar{border-bottom:1px solid var(--line);background:var(--panel);padding:9px 18px;
+  display:flex;flex-direction:column;gap:8px;flex:none}
+.askrow{display:flex;gap:10px;align-items:center}
+.askrow .lbl{font-family:var(--mono);font-size:9px;letter-spacing:.16em;text-transform:uppercase;
+  color:var(--fg-faint);flex:none}
+.askrow input{flex:1;background:var(--bg);border:1px solid var(--line-2);border-radius:5px;
+  color:var(--fg);font-family:var(--sans);font-size:13px;padding:8px 12px;min-width:0}
+.askrow input::placeholder{color:var(--fg-faint)}
+.askrow input:focus{outline:2px solid var(--key);outline-offset:1px;border-color:transparent}
+.askrow input:disabled{opacity:.5}
+
+.askwork{border:1px solid var(--line-2);border-radius:6px;background:var(--bg-2);overflow:hidden}
+.askhead{display:flex;align-items:center;gap:9px;padding:7px 11px;
+  border:0;border-bottom:1px solid var(--line);width:100%;text-align:left;
+  background:none;cursor:pointer;
+  font-family:var(--mono);font-size:10.5px;color:var(--fg-dim)}
+.askhead:hover{background:var(--panel-2);color:var(--fg)}
+.askhead:focus-visible{outline:2px solid var(--key);outline-offset:-3px}
+.askhead .chev{font-family:var(--mono);font-size:9px;color:var(--fg-faint);flex:none}
+.askhead .grow{flex:1}
+.spin{width:10px;height:10px;border-radius:50%;border:1.6px solid var(--line-2);
+  border-top-color:var(--key);animation:askspin .7s linear infinite;flex:none}
+@keyframes askspin{to{transform:rotate(360deg)}}
+.askwork.done .spin{animation:none;border-color:var(--green);border-top-color:var(--green)}
+
+.asklines{margin:0;padding:5px 0;list-style:none;font-family:var(--mono);font-size:10.5px;
+  max-height:150px;overflow-y:auto}
+.asklines li{display:flex;gap:9px;padding:3px 11px;color:var(--fg-dim);align-items:baseline}
+.asklines .at{color:var(--line-2);font-variant-numeric:tabular-nums;flex:none;min-width:30px}
+.asklines .k{flex:none;font-size:8.5px;letter-spacing:.08em;text-transform:uppercase;
+  padding:1px 6px;border-radius:3px;border:1px solid var(--line-2);color:var(--fg-faint)}
+.asklines .k.read{color:var(--cyan);border-color:#7fc4b444}
+.asklines .k.write{color:var(--gold);border-color:#e8c06944}
+.asklines .k.run{color:var(--fg-dim)}
+.asklines .k.think{color:var(--lilac);border-color:#c2b6d844}
+.asklines .k.done{color:var(--green);border-color:#8fce6a44}
+.asklines .x{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+
+.askanswer{padding:10px 12px;border-top:1px solid var(--line);font-size:13px;color:var(--fg-dim);
+  line-height:1.55;white-space:pre-wrap}
+.askanswer.bad{color:var(--red)}
+.asklines .k.diff{color:var(--gold);border-color:#e8c06944;background:#e8c0690f}
+.asklines li.diffrow .x{color:var(--fg)}
+
+/* ============================================ Strategies, laid out to be read
+
+   The book was a 236px rail because it used to sit beside the graph. On its own
+   page it is the page, so it goes across the top as a row per strategy, with the
+   name, what it earned and its shape in line -- and the report sits under it. */
+
+body.page-strategies .shell{flex-direction:column}
+body.page-strategies .rail:first-of-type{
+  width:auto;flex:0 0 auto;max-height:46%;border-right:0;
+  border-bottom:1px solid var(--line)}
+
+body.page-strategies .sitem{
+  display:grid;
+  grid-template-columns:minmax(170px,1.1fr) 108px minmax(200px,1.7fr) minmax(150px,220px);
+  align-items:center;gap:18px;padding:9px 14px}
+body.page-strategies .sitem .r1{display:contents}
+body.page-strategies .sitem .sh{margin-left:0;text-align:right}
+body.page-strategies .sitem .nm{margin-top:0;font-size:10px}
+body.page-strategies .sitem svg.sp{margin-top:0}
+body.page-strategies .sitem-wrap .edrow{bottom:auto;top:50%;transform:translateY(-50%)}
+
+/* The tiles read as one strip across the top. Correlation is a real question but
+   a second one, and it does not belong above the strategies it is about. */
+body.page-strategies #book-stats .htiles{display:flex;flex-wrap:nowrap}
+body.page-strategies #book-stats .tile{flex:1 1 0;min-width:0;padding:8px 14px}
+body.page-strategies #book-stats .hm,
+body.page-strategies #book-stats .kicker.sub,
+body.page-strategies #book-stats .bt-note-inline{display:none}
+/* the stats sit still and the strategies scroll under them */
+body.page-strategies .rail:first-of-type{display:flex;flex-direction:column}
+body.page-strategies #book-stats{flex:none}
+body.page-strategies #book{flex:1 1 auto;min-height:0;overflow-y:auto}
+
+/* ==================================================== the backtest form
+
+   Twelve fields, all the same size, is twelve decisions to a person who came to
+   ask one question. Four of them are the question; the rest already have answers
+   and only need changing when you know why. */
+.rform .adv-head{grid-column:1 / -1;display:flex;align-items:center;gap:9px;
+  margin-top:4px;padding-top:11px;border-top:1px solid var(--line);
+  font-family:var(--mono);font-size:10.5px;color:var(--fg-faint);cursor:pointer;
+  background:none;border-left:0;border-right:0;border-bottom:0;width:100%;text-align:left}
+.rform .adv-head:hover{color:var(--fg-dim)}
+.rform .adv-head:focus-visible{outline:2px solid var(--key);outline-offset:2px}
+.rform .adv-head .caret{transition:transform .15s}
+.rform[data-adv="1"] .adv-head .caret{transform:rotate(90deg)}
+.rform .rrow.adv{display:none}
+.rform[data-adv="1"] .rrow.adv{display:block}
+
+/* ==================================== Pipeline, with less around the graph
+
+   The graph is the page here, so the furniture around it gets out of the way:
+   the stage legend is what the colours already say, and the hint is a thing you
+   read once. Both stay for a first visit and then fold into one line. */
+
+body.page-pipeline .legend{
+  bottom:26px;gap:10px 14px;opacity:.5;transition:opacity .15s}
+body.page-pipeline .view:hover .legend{opacity:1}
+body.page-pipeline .legend .lg{font-size:9px}
+body.page-pipeline .hint{opacity:0;transition:opacity .15s}
+body.page-pipeline .view:hover .hint{opacity:.75}
+
+/* ================================================== the ask panel, capped
+
+   It streams while the agent works, so left alone it grows until it owns the
+   window. The lines scroll and the answer scrolls; the panel itself does not
+   push the page around. */
+/*  It floats, so a long run cannot push the report it is about off the bottom of
+    the window. Folding it does not blind you: the bar keeps a one-line ticker of
+    the newest step and the clock, so the work stays visible while the panel is
+    out of the way. */
+.askbar{padding:8px 18px;gap:7px;position:relative;overflow:visible;z-index:40}
+.askwork{position:absolute;left:18px;right:18px;top:calc(100% - 4px);z-index:41;
+  max-height:min(44vh,380px);display:flex;flex-direction:column;
+  background:var(--panel);box-shadow:0 20px 46px -14px #000,0 0 0 1px var(--line-2)}
+/*  `display:flex` beats the browser's own `[hidden]{display:none}`, so an empty
+    panel sat there saying "working" before anyone had asked anything. */
+.askwork[hidden],.askanswer[hidden],.askpeek[hidden]{display:none}
+.asklines{max-height:none;flex:1 1 auto;min-height:0}
+.askanswer{flex:0 1 auto;min-height:0;overflow-y:auto;max-height:170px}
+
+/*  The ticker. What the panel would be saying, on one line, while it is folded. */
+.askpeek{display:flex;align-items:center;gap:9px;width:100%;text-align:left;
+  font-family:var(--mono);font-size:10.5px;color:var(--fg-faint);cursor:pointer;
+  background:var(--bg-2);border:1px solid var(--line);border-radius:5px;padding:5px 10px}
+.askpeek:hover{border-color:var(--line-2);color:var(--fg-dim)}
+.askpeek:focus-visible{outline:2px solid var(--key);outline-offset:1px}
+.askpeek .grow{flex:1}
+.askpeek .px{color:var(--fg-dim);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;
+  min-width:0}
+.askpeek .pk{flex:none;font-size:8.5px;letter-spacing:.08em;text-transform:uppercase;
+  padding:1px 6px;border-radius:3px;border:1px solid var(--line-2)}
+.askpeek .pk.read{color:var(--cyan);border-color:#7fc4b444}
+.askpeek .pk.write,.askpeek .pk.diff{color:var(--gold);border-color:#e8c06944}
+.askpeek .pk.think{color:var(--lilac);border-color:#c2b6d844}
+.askpeek .pk.done{color:var(--green);border-color:#8fce6a44}
+.askpeek .more{flex:none;color:var(--fg-faint)}
+
+/*  Nothing below may be squeezed to nothing: the report keeps a floor, and the
+    book gives way before it does. */
+body.page-strategies .rail:first-of-type{max-height:38%}
+body.page-strategies .btwrap{min-height:220px}
+.logwrap{flex:0 0 118px;height:118px}
+
+/* ======================================== the table panel, given room to be one
+
+   A pnl table is twelve columns wide, and the panel was 400px with the rows
+   taking whatever was left after the prose above them -- four rows and a
+   horizontal scrollbar. The panel widens on the page that is about tables, and
+   the rows keep a floor of their own so the description can never crowd them
+   out. */
+body.page-pipeline{--detail-w:min(640px,46vw)}
+body.page-pipeline #sel-body .tablewrap{min-height:280px}
+body.page-pipeline #sel-body table.data th,
+body.page-pipeline #sel-body table.t th{position:sticky;top:0;background:var(--panel-2);z-index:1}
+
+/* the run log folds to its own title bar */
+.logfold{display:flex;align-items:baseline;gap:9px;width:100%;text-align:left;font:inherit;
+  background:none;border:0;border-bottom:1px solid var(--line);cursor:pointer}
+.logfold:hover h3{color:var(--fg)}
+.logfold:focus-visible{outline:2px solid var(--key);outline-offset:-3px}
+.logfold .chev{font-family:var(--mono);font-size:9px;color:var(--fg-faint);
+  transition:transform .15s;flex:none}
+.logwrap[data-open="0"] .logfold .chev{transform:rotate(-90deg)}
+/*  `body.page-strategies .logwrap` outranks a bare `.logwrap[data-open]`, so the
+    fold has to be written at the same reach or the panel keeps its 132px. */
+body.page-strategies .logwrap[data-open="0"],
+body.page-pipeline .logwrap[data-open="0"]{flex:0 0 auto;height:auto;min-height:0}
+.logwrap[data-open="0"] #log{display:none}
+/*  While the panel is open the bar is still there holding its place, just quiet:
+    removing it changed the height of the ask bar and shifted the whole page. */
+.askpeek.lifted{opacity:.45}
+.askpeek.lifted:hover{opacity:1}
+/* the ask button while it is running: the same control, now a way out */
+.btn-head.go.stop{background:var(--panel-2);border-color:var(--red);color:var(--red);
+  font-weight:400}
+.btn-head.go.stop:hover{background:#2a1714;color:#e0705c}

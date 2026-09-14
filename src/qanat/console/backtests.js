@@ -528,11 +528,10 @@
         ps[0].as_of.slice(0, 10) + '</b> → <b>' + ps[ps.length - 1].as_of.slice(0, 10) +
         '</b><button type="button" class="chip" id="bt-whole">whole period</button></div>'
       : '';
-    return head + band + tiles +
-      panel('In sample vs out of sample',
-            '<span class="faint">IS is the half the settings were chosen on · OOS is the half ' +
-            'they were not</span>', segments(seg)) +
-      panel('Equity curve',
+    //  The curve goes first. It is the answer to "what happened", and a person who
+    //  just pressed run is watching for a shape, not for four numbers -- reading
+    //  those only makes sense once you have seen the line they describe.
+    var curve = panel('Equity curve',
             '<span class="faint">what 1.00 turned into, and how far under its own high it ' +
             'went</span> · ends at <b class="' + sign(eq[eq.length - 1] - 1) + '">' +
             eq[eq.length - 1].toFixed(4) + '</b> · MDD <b class="down">' + pct(worst, 2) +
@@ -544,7 +543,12 @@
               lineSvg(dd, 74, { cls: 'down', zero: 0, hi: 0, fill: true, isCount: isCount }),
               { values: eq, fmt: 'eq', offset: 1, clickable: true,
                 labels: ['start'].concat(ps.map(function (p) { return p.as_of.slice(0, 10); })),
-                extra: { label: 'drawdown', values: dd } })) +
+                extra: { label: 'drawdown', values: dd } }));
+
+    return head + band + curve + tiles +
+      panel('In sample vs out of sample',
+            '<span class="faint">IS is the half the settings were chosen on · OOS is the half ' +
+            'they were not</span>', segments(seg)) +
       '<div class="bt-two">' +
         panel('Rolling Sharpe', '<span class="faint">return per unit of risk · ' + win +
               ' rebalances at a time, annualised from the ' + CURRENT.rebalance + ' gap</span>',
@@ -1128,35 +1132,46 @@
       row('to', '<input id="f-to" type="date" value="' +
           esc(String(fc.to || span.latest || '').slice(0, 10)) + '">',
           'last decision date' + (span.latest ? ' · data ends ' + esc(span.latest) : '')) +
-      row('universe', '<select id="f-uni">' + opt(c.universes, '', 'as the step declares') +
-          '</select>', 'hold the alpha to a different set of symbols') +
       row('rebalance', '<input id="f-reb" value="' + esc(fc.rebalance || d.rebalance || '5d') +
           '">',
           'gap between decisions, e.g. 1d, 5d, 20d') +
-      row('decay', '<input id="f-decay" type="number" min="0" value="' +
+      '<button type="button" class="adv-head" id="f-adv">' +
+        '<span class="caret">▸</span> costs and controls' +
+        '<span style="margin-left:auto">8 settings, all with sensible defaults</span>' +
+      '</button>' +
+      advRow('universe', '<select id="f-uni">' + opt(c.universes, '', 'as the step declares') +
+          '</select>', 'hold the alpha to a different set of symbols') +
+      advRow('decay', '<input id="f-decay" type="number" min="0" value="' +
           (fc.decay != null ? fc.decay : (d.decay || 0)) + '">',
           'blend the last N portfolios · 0 is off · cuts turnover') +
-      row('split', '<input id="f-split" type="date" value="' + esc(d.split || '') + '">',
+      advRow('split', '<input id="f-split" type="date" value="' + esc(d.split || '') + '">',
           'first out-of-sample date · everything before it is the half you chose on') +
-      row('seed', '<input id="f-seed" type="number" value="' +
+      advRow('seed', '<input id="f-seed" type="number" value="' +
           (fc.seed != null ? fc.seed : (d.seed || 0)) + '">',
           'same seed, same answer') +
-      row('commission', '<input id="f-fee" type="number" min="0" step="0.5" value="' +
+      advRow('commission', '<input id="f-fee" type="number" min="0" step="0.5" value="' +
           (fc.fee_bps != null ? fc.fee_bps : (c.costs.fee_bps || 0)) +
           '"> <span class="unit">bps</span>',
           'charged on turnover · raise it until the edge dies, and you know how much ' +
           'of the edge is real') +
-      row('slippage', '<input id="f-slip" type="number" min="0" step="0.5" value="' +
+      advRow('slippage', '<input id="f-slip" type="number" min="0" step="0.5" value="' +
           (fc.slippage_bps != null ? fc.slippage_bps : (c.costs.slippage_bps || 0)) +
           '"> <span class="unit">bps</span>',
           'charged on turnover too') +
-      row('embargo', '<input id="f-emb" value="' + esc(c.costs.embargo || '0d') + '">',
+      advRow('embargo', '<input id="f-emb" value="' + esc(c.costs.embargo || '0d') + '">',
           'wait this long after the as-of date before a return counts') +
-      row('purge', '<input id="f-purge" value="' + esc(c.costs.purge || '0d') + '">',
+      advRow('purge', '<input id="f-purge" value="' + esc(c.costs.purge || '0d') + '">',
           'hold rows back this long before a step may read them') +
       '</div>' +
       '<div class="rgo"><button type="button" class="btn go" id="f-go">run it</button>' +
       '<span id="f-say" class="faint"></span></div>';
+    var adv = el('f-adv');
+    if (adv) {
+      adv.onclick = function () {
+        var form = adv.closest('.rform');
+        form.setAttribute('data-adv', form.getAttribute('data-adv') === '1' ? '0' : '1');
+      };
+    }
     el('f-go').onclick = fire;
     var ea = el('f-edit-alpha');
     if (ea) {
@@ -1245,6 +1260,13 @@
   //  The label used to sit beside the control with no `for`, so the association was
   //  visual only: a screen reader read "edit text, blank" eleven times through the
   //  run form with no way to tell the seed from the commission.
+  //  A setting that already has a good answer is not a question. These are kept,
+  //  because someone does eventually need to raise the fee until the edge dies --
+  //  but they are not asked up front.
+  function advRow(label, control, hint) {
+    return row(label, control, hint).replace('class="rrow"', 'class="rrow adv"');
+  }
+
   function row(label, control, hint) {
     var m = /id="([^"]+)"/.exec(control);
     var attr = m ? ' for="' + m[1] + '"' : '';

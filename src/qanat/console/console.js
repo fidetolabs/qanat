@@ -52,10 +52,13 @@
       .finally(function () { clearTimeout(t); });
   }
 
-  async function api(path) {
+  //  `opts` used to be dropped on the floor, so every caller that thought it was
+  //  posting was quietly issuing a GET and reading the answer to a question it
+  //  had not asked.
+  async function api(path, opts) {
     var r;
     try {
-      r = await fetch(path);
+      r = await fetch(path, opts || undefined);
     } catch (e) {
       // "Failed to fetch" is the browser's phrase for "nothing answered", and on
       // its own it tells nobody anything. Say what it means once, and stop the
@@ -398,10 +401,271 @@
       var events = await api('/api/events?limit=60');
     } catch (e) { return; }
     el('log').innerHTML = events.map(function (v) {
+      //  Who caused it. This is why the log is on both pages: an agent over MCP
+      //  can change the project while you are reading a result, and the row that
+      //  says `agent` is the only place that shows. Rows written before the
+      //  column existed carry no actor, and are left unattributed rather than
+      //  credited to whoever happens to be looking.
+      var by = v.actor
+        ? '<span class="by ' + esc(v.actor === 'agent' ? 'mcp' : v.actor) + '">' +
+          esc(v.actor) + '</span>'
+        : '';
       return '<div class="lrow ' + esc(v.level) + '"><span class="t">' +
         esc(String(v.ts).slice(11, 19)) + '</span><span class="j">' + esc(v.job_id) +
-        '</span><span class="m">' + esc(v.message) + '</span></div>';
+        '</span><span class="m">' + esc(v.message) + '</span>' + by + '</div>';
     }).join('') || '<div class="bt-empty">Nothing has run yet. Run a job, or start a backtest.</div>';
+  }
+
+  // -------------------------------------------------------------------- ask
+  //
+  //  A question, answered by the agent CLI already on this machine. The console
+  //  holds no key, so there is nothing to set up: if `claude` or `cursor-agent`
+  //  is installed and signed in, the box works, and if it is not, the box says so
+  //  rather than pretending.
+
+  var ASK_TICK = null;
+  //  Set when the person folds the panel away. Sticky for the rest of that
+  //  question: a new line arriving is not a reason to reopen something they
+  //  just closed. Cleared when they ask again.
+  var ASK_FOLDED = false;
+  //  The last state we saw. Polling stops the moment a question finishes, so
+  //  anything that needs to redraw the bar afterwards -- folding, unfolding --
+  //  has to work from this rather than from the next tick, which never comes.
+  var ASK_LAST = null;
+
+  var ASK_HINTS = {
+    strategies: 'build me a momentum strategy over 3 months and back it up with a test',
+    pipeline: 'why does features.momentum only have 8 rows?',
+  };
+
+  function askPlaceholder() {
+    var page = document.body.classList.contains('page-pipeline') ? 'pipeline' : 'strategies';
+    var box = el('ask-q');
+    if (box && !box.disabled) box.placeholder = ASK_HINTS[page];
+  }
+
+  async function askSetup() {
+    var box = el('ask-q'), go = el('ask-go');
+    try {
+      var s = await api('/api/ask');
+    } catch (e) { return; }
+    if (!s.available) {
+      box.disabled = true; go.disabled = true;
+      box.placeholder = 'install Claude Code or Cursor and sign in -- qanat never holds a key';
+      el('ask-lbl').textContent = 'Ask';
+      return;
+    }
+    el('ask-lbl').textContent = 'Ask ' + s.cli;
+    askPlaceholder();
+    if (s.ask && !s.ask.done) { askButton(true); el('ask-q').disabled = true;
+                                paintAsk(s.ask); pollAsk(); }
+  }
+
+  function paintAsk(a) {
+    ASK_LAST = a;
+    var work = el('ask-work');
+    work.hidden = ASK_FOLDED;
+    peek(a);
+    work.classList.toggle('done', !!a.done);
+    //  The question, not the machinery. Once the box is cleared this is the only
+    //  place it still says what was asked.
+    var q = a.question || '';
+    el('ask-what').textContent = q.length > 96 ? q.slice(0, 95) + '…' : q;
+    el('ask-what').title = q;
+    el('ask-el').textContent = a.elapsed + 's';
+    el('ask-lines').innerHTML = (a.lines || []).map(function (l) {
+      return '<li class="' + (l.kind === 'diff' ? 'diffrow' : '') + '"><span class="at">' +
+        esc(l.at) + 's</span><span class="k ' + esc(l.kind) + '">' + esc(l.kind) +
+        '</span><span class="x">' + esc(l.text) + '</span></li>';
+    }).join('');
+    var lines = el('ask-lines');
+    lines.scrollTop = lines.scrollHeight;
+    var ans = el('ask-answer');
+    if (a.error || a.answer) {
+      ans.hidden = false;
+      ans.className = 'askanswer' + (a.error ? ' bad' : '');
+      ans.textContent = a.error || a.answer;
+    } else {
+      ans.hidden = true;
+    }
+    if (a.done) {
+      var box = el('ask-q');
+      if (box.value.trim() === (a.question || '').trim()) box.value = '';
+      box.disabled = false;
+      askButton(false);
+      //  The agent may have written a step or run a job, so the graph, the book
+      //  and the log are all potentially stale the moment it finishes.
+      poll();
+      if (window.repaintBook) window.repaintBook();
+    }
+  }
+
+  //  The newest line, the clock, and whether it is still going -- enough to know
+  //  what is happening without giving the panel the room to say it.
+  function peek(a) {
+    var bar = el('ask-peek');
+    if (!a) { bar.hidden = true; return; }
+    //  Always present once there is something to report, open or folded. It used
+    //  to appear only when folded, which changed the height of the bar and made
+    //  the whole page jump every time the panel was toggled.
+    var last = (a.lines || [])[a.lines.length - 1] || { kind: 'start', text: 'working' };
+    bar.hidden = false;
+    bar.classList.toggle('lifted', !ASK_FOLDED);
+    el('peek-more').textContent = ASK_FOLDED ? 'show' : 'hide';
+    el('peek-kind').className = 'pk ' + esc(last.kind);
+    el('peek-kind').textContent = last.kind;
+    el('peek-text').textContent = a.error ? a.error : (last.text || '');
+    el('peek-el').textContent = a.elapsed + 's';
+    el('peek-spin').style.visibility = a.done ? 'hidden' : 'visible';
+  }
+
+  function pollAsk() {
+    clearInterval(ASK_TICK);
+    ASK_TICK = setInterval(async function () {
+      try {
+        var s = await api('/api/ask');
+      } catch (e) { return; }
+      if (!s.ask) return;
+      paintAsk(s.ask);
+      if (s.ask.done) clearInterval(ASK_TICK);
+    }, 700);
+  }
+
+  var ASK_RUNNING = false;
+
+  function askButton(running) {
+    ASK_RUNNING = running;
+    var go = el('ask-go');
+    go.textContent = running ? 'stop' : 'ask';
+    go.classList.toggle('stop', running);
+    go.disabled = false;
+    go.title = running ? 'stop the agent · anything it already did stays done' : '';
+  }
+
+  function wireAsk() {
+    el('ask-form').addEventListener('submit', async function (e) {
+      e.preventDefault();
+      //  The same button, because it is the same thing at two moments: it asks,
+      //  and while it is asking it is the way to change your mind.
+      if (ASK_RUNNING) {
+        el('ask-go').disabled = true;
+        try { await api('/api/ask', { method: 'DELETE' }); } catch (err) { /* it ended */ }
+        return;
+      }
+      var box = el('ask-q'), q = box.value.trim();
+      if (!q || box.disabled) return;
+      //  The question stays in the box while it is being answered -- taking it
+      //  away the instant you press ask reads like it was thrown out. It is
+      //  cleared when the answer lands, which is also what stops the next
+      //  question being typed onto the end of this one.
+      box.disabled = true; askButton(true);
+      el('ask-lines').innerHTML = '';
+      el('ask-answer').hidden = true;
+      ASK_FOLDED = false;              // a new question opens the panel again
+      ASK_LAST = null;
+      el('ask-work').hidden = false;
+      el('ask-work').classList.remove('done');
+      el('ask-what').textContent = 'starting';
+      try {
+        await api('/api/ask', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ question: q, base: location.origin }),
+        });
+        pollAsk();
+      } catch (err) {
+        el('ask-answer').hidden = false;
+        el('ask-answer').className = 'askanswer bad';
+        el('ask-answer').textContent = String(err.message || err);
+        box.disabled = false; askButton(false);
+      }
+    });
+    var fold = function (on) {
+      ASK_FOLDED = on;
+      el('ask-work').hidden = on;
+      peek(ASK_LAST);          // not from the next tick: there may not be one
+    };
+    el('ask-fold').onclick = function () { fold(true); };
+    el('ask-peek').onclick = function () { fold(!ASK_FOLDED ? true : false); };
+
+    //  It floats over the page, so it gets out of the way like anything that
+    //  floats: click past it, or press Escape. Folding mid-run is fine now --
+    //  the bar keeps reporting, so nothing is lost by putting the panel away.
+    document.addEventListener('mousedown', function (e) {
+      if (el('ask-work').hidden) return;
+      if (!el('askbar').contains(e.target)) fold(true);
+    });
+    document.addEventListener('keydown', function (e) {
+      if (e.key === 'Escape' && !el('ask-work').hidden) fold(true);
+    });
+    askSetup();
+  }
+
+  //  The log folds. Remembered, because someone who does not want it does not
+  //  want it again on the next reload either.
+  function wireLog() {
+    var wrap = el('logwrap'), btn = el('log-fold');
+    if (!wrap || !btn) return;
+    var open = localStorage.getItem('qanat.log') !== '0';
+    var set = function (on) {
+      wrap.setAttribute('data-open', on ? '1' : '0');
+      btn.setAttribute('aria-expanded', String(on));
+      localStorage.setItem('qanat.log', on ? '1' : '0');
+      refitSoon();
+    };
+    set(open);
+    btn.onclick = function () { set(wrap.getAttribute('data-open') !== '1'); };
+  }
+
+  // ------------------------------------------------------------------ pages
+  //
+  //  Two pages, one question each. `strategies` is the book and the report;
+  //  `pipeline` is the graph, the tables and the steps. The choice is remembered,
+  //  because someone testing ideas all afternoon should not land on the graph
+  //  every time they reload.
+  //
+  //  The canvas is `display:none` on the strategies page, so it has no size to
+  //  fit into. Coming back to the pipeline has to fit again once it is visible.
+
+  var PAGES = ['strategies', 'pipeline'];
+
+  function startingPage() {
+    // `?view=backtests` is what `open_console` sends when an agent wants the
+    // person looking at results, so it decides the page rather than fighting it.
+    var q = new URLSearchParams(location.search).get('view');
+    if (q === 'backtests') return 'strategies';
+    if (q === 'pipeline') return 'pipeline';
+    var saved = localStorage.getItem('qanat.page');
+    return PAGES.indexOf(saved) >= 0 ? saved : 'strategies';
+  }
+
+  function setPage(name) {
+    if (PAGES.indexOf(name) < 0) name = 'strategies';
+    PAGES.forEach(function (p) {
+      document.body.classList.toggle('page-' + p, p === name);
+      var tab = el('pt-' + p);
+      if (tab) tab.setAttribute('aria-selected', String(p === name));
+    });
+    localStorage.setItem('qanat.page', name);
+    askPlaceholder();
+
+    if (name === 'strategies') {
+      // the report is the page, so it is never left collapsed here
+      if (window.openBacktests) window.openBacktests();
+    } else {
+      // the canvas had no size while it was hidden; give it one now
+      closeDetail();
+      [0, 60, 260].forEach(function (ms) {
+        setTimeout(function () { if (DAG) DAG.fit(true); }, ms);
+      });
+    }
+  }
+
+  function wirePages() {
+    PAGES.forEach(function (p) {
+      var tab = el('pt-' + p);
+      if (tab) tab.onclick = function () { setPage(p); };
+    });
   }
 
   // Fit once the canvas has stopped resizing. A ResizeObserver fires on every
@@ -501,20 +765,10 @@
     };
     el('sel-close').onclick = function () { closeDetail(); paintSelection(); };
 
-    // Folding the graph and the book gives the report the whole window. Both are
-    // remembered, because someone reading results wants them to stay folded.
-    ['graph', 'rail'].forEach(function (what) {
-      var key = 'qanat.fold.' + what, cls = what + '-folded';
-      if (localStorage.getItem(key) === '1') document.body.classList.add(cls);
-      var b = el('fold-' + what);
-      b.classList.toggle('on', document.body.classList.contains(cls));
-      b.onclick = function () {
-        var on = document.body.classList.toggle(cls);
-        localStorage.setItem(key, on ? '1' : '0');
-        b.classList.toggle('on', on);
-        refitSoon();
-      };
-    });
+    wireLog();
+    wirePages();
+    wireAsk();
+    setPage(startingPage());
     document.addEventListener('keydown', function (e) {
       if (e.key !== 'Escape') return;
       //  This used to close the detail rail unconditionally -- so pressing Escape

@@ -4,8 +4,8 @@ build-backend = "hatchling.build"
 
 [project]
 name = "qanat-fdtl"
-version = "0.1.4"
-description = "Agent-native workflow engine for building and backtesting alphas as DAGs."
+version = "0.1.5"
+description = "An agent-first backtesting engine that turns your raw data into portfolio weights through a pipeline of steps you define."
 readme = "README.md"
 license = { file = "LICENSE" }
 requires-python = ">=3.10"

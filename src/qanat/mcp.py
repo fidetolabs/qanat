@@ -756,6 +756,12 @@ def _text(body: str, error: bool = False) -> dict:
 
 def serve_stdio(project_path: str | None = None, read_only: bool = False) -> int:
     """Speak MCP on stdin/stdout until the client goes away."""
+    from qanat.store import set_actor
+
+    # Everything this process does is the agent doing it. A console served from
+    # here by `open_console` answers on other threads, which start on the "you"
+    # default -- so a person clicking in it is still recorded as a person.
+    set_actor("agent")
     try:
         session = Session(project_path)
         _ = session.store  # open now, so a busy database is reported before a client connects

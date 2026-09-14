@@ -120,7 +120,8 @@ def test_check_is_not_cli_only(tmp_path: Path):
     session = _session(tmp_path)
     project, root = load(tmp_path)
     store = Store(project.store_url(root))
-    client = TestClient(create_app(AppState(store=store, project=project, root=root, sched=None)))
+    client = TestClient(create_app(AppState(store=store, project=project, root=root, sched=None)),
+                        base_url="http://127.0.0.1:8420")
 
     over_http = client.get("/api/check").json()
     over_mcp = _call(session, "check")
@@ -184,7 +185,8 @@ def test_the_console_and_the_agent_agree_about_what_is_stale(tmp_path: Path):
 
     project, root = load(tmp_path)
     store = Store(project.store_url(root))
-    client = TestClient(create_app(AppState(store=store, project=project, root=root, sched=None)))
+    client = TestClient(create_app(AppState(store=store, project=project, root=root, sched=None)),
+                        base_url="http://127.0.0.1:8420")
     graph = client.get("/api/graph").json()
     over_http = {t["ref"] for t in graph["tables"] if t.get("stale")}
 

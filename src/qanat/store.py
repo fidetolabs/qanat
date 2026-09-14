@@ -12,6 +12,8 @@ anything else that opens the database.
 
 from __future__ import annotations
 
+import contextlib
+import contextvars
 import re
 import threading
 import time
@@ -40,6 +42,36 @@ META = (RUNS, EVENTS, STATE, BACKTESTS, BT_WEIGHTS, BT_PERIODS)
 #: Schema holding the as-of views a replay reads through. Named, not `asof`,
 #: because DuckDB reserves that word for ASOF JOIN.
 PIT = "qanat_pit"
+
+#: Who is causing work right now, recorded on every event.
+#:
+#: The console shows this, because a project that changes while you are reading a
+#: result should say who changed it. An agent driving over MCP is the case that
+#: matters: `qanat mcp` sets this once for its whole process, the scheduler sets
+#: it per job, and everything else is a person at the console or the CLI.
+#:
+#: A ContextVar rather than a global: the scheduler runs jobs in worker threads,
+#: and each thread gets its own value instead of racing over one.
+ACTOR: contextvars.ContextVar[str] = contextvars.ContextVar("qanat_actor", default="you")
+
+
+def current_actor() -> str:
+    return ACTOR.get()
+
+
+def set_actor(who: str) -> None:
+    """Name what is running things from here on. `you`, `agent`, or `schedule`."""
+    ACTOR.set(who)
+
+
+@contextlib.contextmanager
+def acting_as(who: str) -> Any:
+    """Name the cause for the duration of one block, then put it back."""
+    token = ACTOR.set(who)
+    try:
+        yield
+    finally:
+        ACTOR.reset(token)
 
 #: Column names a table's timestamp may go by, most specific first.
 TIME_COLS = ("as_of", "ts", "timestamp", "datetime", "date", "time", "fetched_at",
@@ -256,6 +288,14 @@ class Store:
                     job_id VARCHAR,
                     message VARCHAR
                 )""")
+            # Who caused it. An agent over MCP, the console, or the clock -- the
+            # log is the only place a person can see that their project changed
+            # under them while they were reading something else. Rows written
+            # before this existed read as NULL, and the console leaves those
+            # unattributed rather than guessing.
+            self.con.execute(
+                f"ALTER TABLE {EVENTS} ADD COLUMN IF NOT EXISTS actor VARCHAR"
+            )
             self.con.execute(f"""
                 CREATE TABLE IF NOT EXISTS {BACKTESTS} (
                     run_id      BIGINT PRIMARY KEY,
@@ -858,8 +898,12 @@ class Store:
 
     def event(self, level: str, job_id: str, message: str) -> None:
         with self._lock:
+            # Named columns, not positional: `actor` was added to this table after
+            # the fact, and a bare VALUES list would put the message in it.
             self.con.execute(
-                f"INSERT INTO {EVENTS} VALUES (now()::TIMESTAMP, ?, ?, ?)", [level, job_id, message]
+                f"INSERT INTO {EVENTS} (ts, level, job_id, message, actor) "
+                f"VALUES (now()::TIMESTAMP, ?, ?, ?, ?)",
+                [level, job_id, message, current_actor()],
             )
 
     def recent_runs(self, limit: int = 50) -> list[dict[str, Any]]:

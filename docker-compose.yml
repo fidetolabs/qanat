@@ -23,6 +23,10 @@ services:
     environment:
       QANAT_HOST: 0.0.0.0
       QANAT_PORT: 8420
+      # The console answers to localhost and 127.0.0.1 only. It binds 0.0.0.0 so
+      # the port mapping works, so reaching it by any other name -- a machine on
+      # the network, a domain -- means naming that here, comma separated.
+      QANAT_ALLOWED_HOSTS: ${QANAT_ALLOWED_HOSTS:-}
       QANAT_STORE: postgresql://qanat:qanat@postgres:5432/qanat
       QANAT_RESET: ${QANAT_RESET:-0}
     volumes:

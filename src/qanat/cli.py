@@ -588,7 +588,11 @@ def cmd_serve(args) -> int:
     sched = None if args.no_schedule else Scheduler(store, project, root, workers=args.workers)
 
     state = AppState(store=store, project=project, root=root, sched=sched)
-    app = create_app(state)
+    # Binding to an address on purpose means meaning to be reached at it, so that
+    # name is allowed. A wildcard bind names nothing, and never arrives in `Host`
+    # anyway -- serving under a real hostname stays a deliberate setting.
+    named = [] if args.host in ("0.0.0.0", "::", "") else [args.host]
+    app = create_app(state, allow_hosts=named)
     if sched:
         sched.start()
         if args.run_now:
@@ -695,7 +699,7 @@ def cmd_mcp(args) -> int:
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
         prog="qanat",
-        description="Agent-native workflow engine for building and backtesting alphas as DAGs.",
+        description="An agent-first backtesting engine that turns your raw data into portfolio weights through a pipeline of steps you define.",
     )
     p.add_argument("--version", action="version", version=f"qanat {__version__}")
     p.add_argument("-p", "--project", help="path to qanat.yaml (default: found by walking up)")
