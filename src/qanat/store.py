@@ -764,6 +764,66 @@ class Store:
         return TableInfo(ref, stage, tname, rows, [(c, t) for c, t in cols],
                          str(last) if last else None)
 
+    def profile(self, ref: str) -> dict[str, Any] | None:
+        """What is actually in a table, column by column: how much of it is filled,
+        how many distinct values, and the range it spans.
+
+        Computed as aggregates rather than by reading the table. "How many symbols,
+        over what dates, with how many holes" is the first question anyone asks of a
+        new source, and answering it by pulling rows works on a demo and falls over
+        on a real panel -- five hundred names by ten years is a million rows to move
+        so somebody can learn there are five hundred names. This costs a scan and
+        the answer is the same size whatever the table is.
+        """
+        info = self.table_info(ref)
+        if info is None:
+            return None
+        name = phys(ref)
+        cols = list(info.columns)
+
+        def query(with_range: bool) -> Any:
+            parts = ["count(*) AS n"]
+            for i, (col, _t) in enumerate(cols):
+                q = f'"{_ident(col)}"'
+                parts.append(f"count({q}) AS f{i}")
+                parts.append(f"count(DISTINCT {q}) AS d{i}")
+                if with_range:
+                    parts.append(f"CAST(min({q}) AS VARCHAR) AS lo{i}")
+                    parts.append(f"CAST(max({q}) AS VARCHAR) AS hi{i}")
+            return self.rcon.execute(
+                f'SELECT {", ".join(parts)} FROM {self._q(name)}').fetchone()
+
+        ranged = True
+        try:
+            row = query(True)
+        except Exception:  # noqa: BLE001 -- a type min/max cannot order, e.g. a blob
+            ranged = False
+            row = query(False)
+
+        per = 4 if ranged else 2
+        total = int(row[0] or 0)
+        out = []
+        for i, (col, typ) in enumerate(cols):
+            base = 1 + i * per
+            filled = int(row[base] or 0)
+            out.append({
+                "name": col,
+                "type": typ,
+                "filled": filled,
+                "nulls": total - filled,
+                # A table with no rows is not 0% filled, it is unanswerable. Saying
+                # 0 there would draw an empty bar next to a column that may be fine.
+                "fill": (filled / total) if total else None,
+                "distinct": int(row[base + 1] or 0),
+                "min": row[base + 2] if ranged else None,
+                "max": row[base + 3] if ranged else None,
+            })
+        return {
+            "ref": ref, "rows": total, "updated_at": info.updated_at,
+            "time_column": self.time_column(ref),
+            "columns": out,
+        }
+
     # ---- runs and events -----------------------------------------------------
     def start_run(self, job_id: str, kind: str, targets: list[str]) -> int:
         run_id = time.time_ns() // 1000

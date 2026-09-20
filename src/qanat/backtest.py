@@ -361,8 +361,19 @@ def totals_of(periods: list[Period]) -> dict[str, Any]:
     equity = 1.0
     for n in net:
         equity *= 1.0 + n
+    # A period that held nothing is still a period -- flat is a real result and it
+    # belongs in the money. It is not a *decision*, though, and averaging over it
+    # buries that. A lookback longer than the warm-up, or a feature table that
+    # starts late, leaves a run flat for a stretch while the headline still reads
+    # like a full year of trading: hit rate counts the flat periods as losses and
+    # the per-period figure divides a few real returns over many empty slots. Both
+    # numbers mislead, in opposite directions, so the count travels with them.
+    held = [p for p in periods if p.holdings]
+    held_net = [p.net for p in held]
     return {
         "periods": len(periods),
+        "held_periods": len(held),
+        "flat_periods": len(periods) - len(held),
         "gross": sum(p.gross for p in periods),
         "fees": sum(p.fees for p in periods),
         "slippage": sum(p.slippage for p in periods),
@@ -377,6 +388,11 @@ def totals_of(periods: list[Period]) -> dict[str, Any]:
         "turnover": sum(p.turnover for p in periods),
         "net_per_period": sum(net) / len(net),
         "hit_rate": sum(1 for n in net if n > 0) / len(net),
+        # The same two figures over the periods that actually held something. Quote
+        # these next to the ones above, never instead of them: one says what the
+        # money did, the other says how the decisions went.
+        "net_per_held_period": (sum(held_net) / len(held_net)) if held_net else 0.0,
+        "hit_rate_held": (sum(1 for n in held_net if n > 0) / len(held_net)) if held_net else 0.0,
         "equity": equity,
         "worst_period": min(net),
         "best_period": max(net),

@@ -471,7 +471,17 @@ def cmd_backtest(args) -> int:
         print(f"    {c('warn', Y)} {seg['warning']}")
 
     print(f"    per period       {_money(t['net_per_period'])}  {D}over {t['periods']} periods{X}")
-    print(f"    hit rate         {t['hit_rate'] * 100:6.1f}%")
+    # A run that spent part of its length holding nothing has a hit rate counting
+    # those periods as losses, and a per-period figure diluted by them. Saying so
+    # here is cheaper than letting somebody quote the headline and be wrong twice.
+    flat = t.get("flat_periods", 0)
+    if flat and t.get("held_periods"):
+        print(f"    hit rate         {t['hit_rate'] * 100:6.1f}%  "
+              f"{D}· {t['hit_rate_held'] * 100:.1f}% over the {t['held_periods']} it held{X}")
+        print(f"    {c('flat', Y)}             {flat:>6}   {D}periods held nothing: in the money, "
+              f"not in the two lines above{X}")
+    else:
+        print(f"    hit rate         {t['hit_rate'] * 100:6.1f}%")
     print(f"    turnover         {t['turnover']:7.2f}  {D}sum of |weight changes|{X}")
     print(f"    best / worst     {_money(t['best_period'])} / {_money(t['worst_period'])}")
     print(f"\n  {D}qanat report {res.run_id}   the periods, one by one{X}\n")
@@ -528,7 +538,9 @@ def cmd_report(args) -> int:
               f"{p_['holdings']:>5} {_money(p_['gross']):>9} {_money(-cost):>9} "
               f"{c(_money(p_['net']), G if p_['net'] > 0 else R_):>9}")
     if t:
-        print(f"\n  {c('net', B)} {_money(t['net'])}  {D}over {t['periods']} periods, "
+        flat = t.get("flat_periods", 0)
+        held = f", {flat} of them flat" if flat else ""
+        print(f"\n  {c('net', B)} {_money(t['net'])}  {D}over {t['periods']} periods{held}, "
               f"hit rate {t['hit_rate'] * 100:.0f}%{X}")
     for n in report.get("notes", [])[:10]:
         print(f"  {c('note', Y)} {n}")

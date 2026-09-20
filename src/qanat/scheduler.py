@@ -47,6 +47,11 @@ class Scheduler:
         self.next_at: dict[str, datetime] = {}
         self._last_retention = 0.0
         self._last_live = 0.0
+        #: Set when live is on but cannot be run as configured. A misconfiguration
+        #: does not get better by being retried every thirty seconds, and the log
+        #: line it writes each time buries everything else. Cleared on reload,
+        #: because editing the file is how it gets fixed.
+        self._live_halt = ""
         self._rebuild_jobs()
 
     def _rebuild_jobs(self) -> None:
@@ -61,6 +66,7 @@ class Scheduler:
         self.project = project
         with self._lock:
             running = set(self._inflight)
+        self._live_halt = ""          # the file changed; give live another go
         self._rebuild_jobs()
         self.store.event("info", "scheduler", f"reloaded · {len(self._jobs)} scheduled job(s)")
         if running:
@@ -114,6 +120,21 @@ class Scheduler:
                 self.score_forward()
             self._stop.wait(1.0)
 
+    def live_alphas(self) -> list[str] | None:
+        """Which alphas a live pass prices, or None when nothing can say.
+
+        One alpha in the project needs no instruction. Several, and the choice is
+        not ours: pricing two together is a third strategy, and picking one of them
+        silently would report a number for a portfolio nobody asked to hold.
+        """
+        bt = self.project.backtest
+        if bt is None:
+            return None
+        if bt.live_alphas:
+            return list(bt.live_alphas)
+        book = [a for a, _ in self.project.alphas]
+        return [book[0]] if len(book) == 1 else None
+
     def score_forward(self) -> bool:
         """Run a live pass if the data has reached the next rebalance date.
 
@@ -124,9 +145,28 @@ class Scheduler:
 
         if self.project.backtest is None or not self.project.backtest.live:
             return False
+        if self._live_halt:
+            return False
         with self._lock:
             if _LIVE in self._inflight:
                 return False
+        # Asked before the window, because a project that cannot say which alpha to
+        # price is not going to be able to price one when the next date arrives
+        # either. This used to be discovered inside `run_backtest`, which raised,
+        # which was logged and swallowed -- on a loop, forever, while the console
+        # went on reporting that everything was fine.
+        alpha = self.live_alphas()
+        if alpha is None:
+            book = [a for a, _ in self.project.alphas]
+            self._live_halt = "no alpha named"
+            self.store.event(
+                "error", _LIVE,
+                f"live is on, but this project has {len(book)} alphas and none is named to "
+                f"price: {', '.join(book)}. Set `live_alphas:` in the backtest block to one "
+                f"of them (or several, to hold them as one book). Nothing is being scored "
+                f"until you do.",
+            )
+            return False
         try:
             window = live_window(self.store, self.project)
         except Exception as exc:  # noqa: BLE001 -- a bad window must not stop the loop
@@ -136,7 +176,7 @@ class Scheduler:
             return False
         with self._lock:
             self._inflight.add(_LIVE)
-        threading.Thread(target=self._score, args=window, daemon=True).start()
+        threading.Thread(target=self._score, args=(*window, alpha), daemon=True).start()
         return True
 
     def note_frontier(self, to: str) -> bool:
@@ -158,13 +198,18 @@ class Scheduler:
                                         "not on disk when the alpha was chosen")
         return True
 
-    def _score(self, frm: str, to: str) -> None:
+    def _score(self, frm: str, to: str, alpha: list[str]) -> None:
         from qanat.backtest import run_backtest
 
         try:
+            self.store.event("info", _LIVE, f"scoring {frm} to {to} · {', '.join(alpha)}")
+            run_backtest(self.store, self.project, self.root, frm, to, alpha=alpha, live=True)
+            # Stamped only once a pass has landed. Written before the run, a run that
+            # then failed still moved the frontier -- and `note_frontier` writes once
+            # and never again, so the date defining out-of-sample was left pointing at
+            # a moment nothing had ever been scored at, permanently, with nothing in
+            # the file to say it was wrong.
             self.note_frontier(to)
-            self.store.event("info", _LIVE, f"scoring {frm} to {to}")
-            run_backtest(self.store, self.project, self.root, frm, to, live=True)
         except Exception as exc:  # noqa: BLE001 -- same
             self.store.event("error", _LIVE, f"{type(exc).__name__}: {exc}")
         finally:

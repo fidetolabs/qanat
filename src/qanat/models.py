@@ -189,6 +189,12 @@ class Backtest(Base):
     # `qanat serve` runs a pass each time the data reaches the next as-of date on
     # the rebalance grid, so `rebalance: 1d` gives a result per day.
     live: bool = False
+    # Which alpha, or alphas, a live pass prices. A project holding one needs no
+    # instruction and this stays empty. With several, `run_backtest` refuses to
+    # choose -- rightly, since a book of two is a different strategy from either --
+    # and the scheduler has no business guessing either. Naming them here is how
+    # the choice gets made once, in the file, where it can be read back.
+    live_alphas: list[str] = Field(default_factory=list)
     # The last date the data held when live scoring was switched on. Everything
     # after it is a period nobody could see when the alpha was chosen, which is
     # the only sense of out-of-sample that cannot be arrived at by looking.

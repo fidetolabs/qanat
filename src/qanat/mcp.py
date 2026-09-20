@@ -159,6 +159,22 @@ def _sample_table(s: Session, args: dict) -> Any:
             "sample": json.loads(df.to_json(orient="records", date_format="iso"))}
 
 
+@tool("profile_table",
+      "What is in a table, column by column: how much of each is filled, how many distinct "
+      "values it holds, and the range it spans. Use this instead of paging rows through "
+      "sample_table to answer 'how many symbols', 'what dates does this cover', 'where are the "
+      "holes' -- it is computed in the database, so it costs the same on a million rows as on a "
+      "thousand.",
+      {"properties": {"ref": {"type": "string"}}, "required": ["ref"]})
+def _profile_table(s: Session, args: dict) -> Any:
+    ref = _known_table(s, _need(args, "ref"))
+    prof = s.store.profile(ref)
+    if prof is None:
+        raise ToolError(f"{ref} has not been written yet, so there is nothing to profile. "
+                        "Run the job that writes it first.")
+    return prof
+
+
 @tool("lineage", "What feeds a table, and which alphas break if it breaks.",
       {"properties": {"ref": {"type": "string"}}, "required": ["ref"]})
 def _lineage(s: Session, args: dict) -> Any:
@@ -516,7 +532,16 @@ def _read_alpha(s: Session, args: dict) -> Any:
       {"properties": {
           "name": {"type": "string", "description": "an alpha from list_alphas"},
           "reads": {"type": "string", "description": "stage.table holding symbol, date, price"},
+          "also_reads": {"type": "array", "items": {"type": "string"},
+                         "description": "further tables the step may read. The shelf script only "
+                                        "ranks on `reads`, so these matter once you edit it -- "
+                                        "declaring them now is what lets `ctx.read()` allow them"},
           "universe": {"type": "string"},
+          "rebalance": {"type": "string",
+                        "description": "how often this alpha wants to decide, e.g. 5d. Left out, "
+                                       "a backtest falls back to the project's"},
+          "decay": {"type": "integer",
+                    "description": "hold a blend of the last N portfolios. 0 or 1 is off"},
           "options": {"type": "object", "description": "overrides, e.g. {\"lookback\": 120}"},
       }, "required": ["name", "reads"]},
       writes=True)
@@ -548,20 +573,34 @@ def _use_alpha(s: Session, args: dict) -> Any:
             "Add one to qanat.yaml (id + a csv with a `symbol` column) and pass it here."
         )
 
+    # The primary table stays first: it is what the shelf script ranks on, and what
+    # `options.reads` hands it. Anything else is declared so a later edit to the
+    # script can read it without `ctx.read()` refusing.
+    declared = [reads]
+    for extra in args.get("also_reads") or []:
+        ref = _known_table(s, extra)
+        if ref not in declared:
+            declared.append(ref)
+
     try:
         script = alphas.write_alpha(s.root, name)
         opts = dict(alphas.CATALOGUE[name]["options"])
         opts.update(args.get("options") or {})
         opts["reads"] = reads
+        decay = args.get("decay")
         written = save_step(s.project, s.root, {
-            "id": step_id, "from": [reads], "to": [target],
+            "id": step_id, "from": declared, "to": [target],
             "script": script, "universe": universe, "options": opts,
+            # Dropped on the floor before this: the field exists on `Step`, the
+            # console offers it, and an alpha installed here could not carry it.
+            "rebalance": args.get("rebalance") or None,
+            "decay": None if decay is None else int(decay),
         }, create_script=False)
     except EditorError as exc:
         raise ToolError(str(exc)) from exc
     s.reload()
     return {
-        "installed": step_id, "script": script, "reads": reads, "writes": target,
+        "installed": step_id, "script": script, "reads": declared, "writes": target,
         "universe": universe, "options": opts, "files": written,
         "book": [a for a, _ in s.project.alphas],
         "next": "run, then backtest_conditions, then backtest with alpha=" + step_id,
@@ -585,7 +624,11 @@ def _free_port(host: str, first: int) -> int:
       "shows up on the page. Call it once; calling it again returns the same URL. "
       "Use view='backtests' to land them on the charts.",
       {"properties": {
-          "view": {"type": "string", "enum": ["pipeline", "backtests"], "default": "pipeline"},
+          "view": {"type": "string",
+                   "enum": ["data", "alpha", "backtests", "live", "pipeline"],
+                   "default": "alpha",
+                   "description": "which page to land them on. `pipeline` is the old name for "
+                                  "`alpha` and still works"},
           "port": {"type": "integer", "default": 8420},
           "browser": {"type": "boolean", "default": True,
                       "description": "false serves it but does not open a window"},
@@ -596,8 +639,10 @@ def _open_console(s: Session, args: dict) -> Any:
     import time
     import webbrowser
 
-    view = args.get("view") or "pipeline"
-    suffix = "?view=backtests" if view == "backtests" else ""
+    # The console has four pages now, so this can land a person on any of them
+    # rather than only on the charts. `pipeline` still resolves, as `alpha`.
+    view = args.get("view") or "alpha"
+    suffix = f"?view={view}" if view in ("data", "alpha", "backtests", "live") else ""
 
     if s.console:
         url = s.console["url"] + suffix
@@ -647,15 +692,28 @@ def _console_status(s: Session, args: dict) -> Any:
 
 # ---- author ------------------------------------------------------------------
 @tool("save_step",
-      "Add a step, or replace one that exists. `script` is written to disk when `source` is given.",
+      "Add a step, or replace one that exists. `script` is written to disk when `source` is given. "
+      "`from` is a list and means it: a step may read several tables, across any stage earlier "
+      "than the one it writes.",
       {"properties": {
           "id": {"type": "string"},
-          "from": {"type": "array", "items": {"type": "string"}},
+          "from": {"type": "array", "items": {"type": "string"},
+                   "description": "every table this step may read. `ctx.read()` refuses anything "
+                                  "not named here, so this is the permission set as well as the "
+                                  "dependency list"},
           "to": {"type": "array", "items": {"type": "string"}},
           "script": {"type": "string", "description": "path relative to the project root"},
           "source": {"type": "string", "description": "the script body to write"},
           "universe": {"type": "string"},
           "schedule": {"type": "string"},
+          # Both of these have always been honoured; neither was in the schema, so
+          # an agent had no way to find a field the console shows in a form.
+          "rebalance": {"type": "string",
+                        "description": "how often this alpha wants to decide, e.g. 5d. A backtest "
+                                       "uses it unless told otherwise. Only meaningful on a step "
+                                       "that writes weights"},
+          "decay": {"type": "integer",
+                    "description": "hold a blend of the last N portfolios. 0 or 1 is off"},
           "options": {"type": "object"},
       }, "required": ["id", "to", "script"]},
       writes=True)
