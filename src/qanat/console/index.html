@@ -6,128 +6,205 @@
 <title>Qanat</title>
 <link rel="icon" href="/static/favicon.svg">
 <link rel="stylesheet" href="/static/theme.css">
+<script>
+//  Everything this page fetches is the page keeping itself current -- repainting a
+//  panel, filling a preview, polling the graph. None of it is anybody's intent, and
+//  the trace is a record of intent.
+//
+//  Without this the console feeds itself: a repaint issues a request, the request
+//  lands in the trace, the trace tells the console to repaint. It floods in about a
+//  second. So the page stamps its own calls and the server leaves them out.
+(function () {
+  var real = window.fetch;
+  window.fetch = function (input, init) {
+    var url = typeof input === 'string' ? input : (input && input.url) || '';
+    if (url.indexOf('/api/') === 0 || url.indexOf(location.origin + '/api/') === 0) {
+      init = Object.assign({}, init || {});
+      init.headers = Object.assign({}, init.headers || {}, { 'X-Qanat-UI': '1' });
+    }
+    return real.call(this, input, init);
+  };
+})();
+</script>
 </head>
 <body>
 
 <div class="topbar">
   <span class="brand"><b>Qanat</b> <span class="faint" id="project">—</span></span>
 
-  <!-- Two pages, because they answer two questions. Strategies is "did my idea
-       make money"; Pipeline is "how was this built". You only need the second
-       when the first gives you a number worth questioning. -->
-  <div class="ptabs" role="tablist" aria-label="console pages">
-    <button type="button" class="ptab" role="tab" id="pt-strategies" aria-selected="true"
-            aria-controls="page-strategies" title="your strategies and what they earned">
-      Strategies</button>
-    <button type="button" class="ptab" role="tab" id="pt-pipeline" aria-selected="false"
-            aria-controls="page-pipeline" title="the tables behind them, and the steps that wrote them">
-      Pipeline</button>
-  </div>
-
+  <!-- The tab row is gone. It named the same four destinations the spine below
+       already names, and two navigations for one set of places is one too many:
+       the spine reports the state *and* takes you there. You navigate by asking;
+       clicking is the fallback. -->
   <div class="spacer"></div>
+
+  <!-- Where the project stands, in the four moves it takes to get somewhere. This
+       replaced `connected · drift 0`, which was true of a project with no strategy
+       in it and of one whose live scorer had been failing for an hour. -->
+  <div class="spine" id="spine">
+    <button type="button" class="seg" id="sg-data"><span class="dot"></span><span class="k">data</span><b>—</b></button>
+    <button type="button" class="seg" id="sg-alpha"><span class="k">alpha</span><b>—</b></button>
+    <button type="button" class="seg" id="sg-bt"><span class="k">backtest</span><b>—</b></button>
+    <button type="button" class="seg" id="sg-live"><span class="dot"></span><span class="k">live</span><b>—</b></button>
+  </div>
+
+  <!-- `results` used to live here and duplicated the `backtest` segment beside it;
+       `run backtest` was one surface's action sitting in the chrome of all four. The
+       topbar says what this is and how it stands. What you can do is on the surface
+       that does it. -->
   <div class="statusline">
-    <span><span class="led" id="led"></span><span id="conn">connecting</span></span>
-    <span title="jobs whose script or settings changed since they last ran successfully">drift <b id="s-drift">—</b></span>
-    <button type="button" class="btn-head go" id="btn-run" title="Run a backtest">run backtest</button>
-    <button type="button" class="btn-head" id="btn-bt" title="Backtest results">results</button>
+    <span class="hidden-led"><span class="led" id="led"></span><span id="conn">connecting</span></span>
+    <span class="hidden-led">drift <b id="s-drift">—</b></span>
   </div>
-</div>
-
-<!-- Plain English, answered by the agent already installed on this machine. No key
-     is asked for and none is held: `claude` or `cursor-agent` is already signed in,
-     and qanat just runs it. On both pages, because both have questions worth
-     asking -- "build me a momentum strategy" and "why does this table have 8 rows". -->
-<div class="askbar" id="askbar">
-  <form class="askrow" id="ask-form" autocomplete="off">
-    <label class="lbl" for="ask-q" id="ask-lbl">Ask</label>
-    <input id="ask-q" type="text" spellcheck="false"
-           placeholder="loading…" aria-describedby="ask-lbl">
-    <button type="submit" class="btn-head go" id="ask-go">ask</button>
-  </form>
-  <div class="askwork" id="ask-work" hidden>
-    <button type="button" class="askhead" id="ask-fold" title="fold this away · the bar
-            below keeps reporting">
-      <span class="chev">▾</span>
-      <span class="spin" id="ask-spin"></span>
-      <span id="ask-what">working</span>
-      <span class="grow"></span>
-      <span class="faint" id="ask-el">0.0s</span>
-    </button>
-    <ul class="asklines" id="ask-lines"></ul>
-    <div class="askanswer" id="ask-answer" hidden></div>
-  </div>
-
-  <!-- What the panel would be saying, on one line, once it has been folded away.
-       Folding should hide the panel, not the fact that something is happening. -->
-  <button type="button" class="askpeek" id="ask-peek" hidden>
-    <span class="spin" id="peek-spin"></span>
-    <span class="pk" id="peek-kind">read</span>
-    <span class="px" id="peek-text"></span>
-    <span class="grow"></span>
-    <span id="peek-el">0.0s</span>
-    <span class="more" id="peek-more">show</span>
-  </button>
 </div>
 
 <div class="shell">
 
-  <aside class="rail">
-    <div class="kicker">Strategy book</div>
-    <div id="book-stats"></div>
-    <div id="book" class="grow"></div>
+  <!-- The conversation, and the whole session in it. This was a one-line strip
+       repeated identically on four pages -- identical because it had no relation to
+       any of them. Down the side it stops being a field and becomes the history:
+       what was asked, what the agent did about it, and what moved. -->
+  <aside class="chatrail" id="chatrail">
+    <div class="crhead">
+      <span class="crtitle">Session</span>
+      <span class="grow"></span>
+      <button type="button" class="crpin" id="cr-pin" title="stop the stage following along">
+        stage: following</button>
+    </div>
+    <div class="crthread" id="cr-thread"></div>
+
+    <!-- Plain English, answered by the agent already installed on this machine. No
+         key is asked for and none is held: `claude` or `cursor-agent` is already
+         signed in, and qanat just runs it. -->
+    <div class="askbar" id="askbar">
+      <form class="askrow" id="ask-form" autocomplete="off">
+        <label class="lbl" for="ask-q" id="ask-lbl">Ask</label>
+        <input id="ask-q" type="text" spellcheck="false"
+               placeholder="loading…" aria-describedby="ask-lbl">
+        <button type="submit" class="btn-head go" id="ask-go">ask</button>
+      </form>
+      <!-- The thread above carries the tool lines and the answer now, so all that
+           is left of the old panel is the one line saying something is running. -->
+      <div class="askwork" id="ask-work" hidden>
+        <button type="button" class="askhead" id="ask-fold">
+          <span class="chev">▾</span>
+          <span class="spin" id="ask-spin"></span>
+          <span id="ask-what">working</span>
+          <span class="grow"></span>
+          <span class="faint" id="ask-el">0.0s</span>
+        </button>
+        <ul class="asklines" id="ask-lines"></ul>
+        <div class="askanswer" id="ask-answer" hidden></div>
+      </div>
+      <button type="button" class="askpeek" id="ask-peek" hidden>
+        <span class="spin" id="peek-spin"></span>
+        <span class="pk" id="peek-kind">read</span>
+        <span class="px" id="peek-text"></span>
+        <span class="grow"></span>
+        <span id="peek-el">0.0s</span>
+        <span class="more" id="peek-more">show</span>
+      </button>
+    </div>
   </aside>
 
+  <!-- The stage. One surface at a time, and it says which and why. There are no
+       competing rails here any more: what you are looking at fills it. -->
   <main class="stage">
-    <!-- The banner used to live inside .view, which `graph-folded` sets to
-         display:none from a preference kept in localStorage. A reader who once
-         folded the graph lost the only explanation of a dead server, for good. -->
+    <div class="stagehead" id="stagehead">
+      <span class="sh-k">stage</span>
+      <b id="sh-what">—</b>
+      <span class="grow"></span>
+      <span class="sh-why" id="sh-why"></span>
+    </div>
+
     <div id="down-banner" class="downbanner">
       <b>qanat is not answering on this address.</b> The console keeps the last thing it saw, so
       what is on screen may be out of date. Start it again with
       <code>qanat serve</code> and this clears itself.
     </div>
-    <div class="view">
-      <canvas id="dagcv" role="img" aria-label="the pipeline graph"></canvas>
-      <!-- The graph is a canvas, so clicking a table is mouse-only. This is the
-           same action as a real control, one per table, for anybody on a keyboard
-           or a screen reader. -->
-      <h2 class="vh">Tables in this pipeline</h2>
-      <ul class="vh" id="dag-keys"></ul>
-      <button class="srcadd" type="button" id="b-add-src">＋ data source</button>
-      <div class="modes">
-        <button class="mb" type="button" id="b-fit">fit</button>
-      </div>
-      <div class="legend">
-        <span class="lg"><i class="k" style="color:#a2e65d;border-color:#a2e65d55">SOURCE</i>as it arrived</span>
-        <span class="lg"><i class="k" style="color:#7fc4b4;border-color:#7fc4b455">FEATURE</i>processed for a model</span>
-        <span class="lg"><i class="k" style="color:#e8c069;border-color:#e8c06955">WEIGHT</i>the portfolio</span>
-        <span class="lg"><i class="k" style="color:#c2b6d8;border-color:#c2b6d855">PNL</i>what it earned</span>
-        <span class="sp"></span>
-        <span class="lg"><i class="d" style="background:#8fce6a"></i>written</span>
-        <span class="lg"><i class="d" style="background:#a2e65d"></i>filling now</span>
-        <span class="lg"><i class="d" style="background:#c1503f"></i>failed</span>
-        <span class="lg"><i class="d" style="background:#49453f"></i>empty</span>
-      </div>
-      <div class="hint">
-        <b>every box is a table, every arrow is the step that makes it</b> · click a table ·
-        <b>drag</b> to pan · <b>scroll</b> to zoom · <b>double-click</b> to fit
-      </div>
+
+    <div class="stagebody" id="stagebody">
+
+      <!-- Data: what you connected, and what is actually in it. -->
+      <section class="pane datapage" id="page-data">
+        <div class="kicker">Connected sources <span class="grow"></span>
+          <span class="faint" id="data-note">reading…</span></div>
+        <div id="data-cards"></div>
+      </section>
+
+      <!-- Alpha: the graph, and building on it. -->
+      <section class="pane" id="page-alpha">
+        <div class="view">
+          <canvas id="dagcv" role="img" aria-label="the pipeline graph"></canvas>
+          <!-- The graph is a canvas, so clicking a table is mouse-only. This is the
+               same action as a real control, one per table, for anybody on a
+               keyboard or a screen reader. -->
+          <h2 class="vh">Tables in this pipeline</h2>
+          <ul class="vh" id="dag-keys"></ul>
+          <button class="srcadd" type="button" id="b-add-src">＋ data source</button>
+          <button class="srcadd stepadd" type="button" id="b-add-step">＋ step</button>
+          <div class="modes">
+            <button class="mb" type="button" id="b-fit">fit</button>
+          </div>
+          <div class="legend">
+            <span class="lg"><i class="k" style="color:#a2e65d;border-color:#a2e65d55">SOURCE</i>as it arrived</span>
+            <span class="lg"><i class="k" style="color:#7fc4b4;border-color:#7fc4b455">FEATURE</i>processed for a model</span>
+            <span class="lg"><i class="k" style="color:#e8c069;border-color:#e8c06955">WEIGHT</i>the portfolio</span>
+            <span class="lg"><i class="k" style="color:#c2b6d8;border-color:#c2b6d855">PNL</i>what it earned</span>
+            <span class="sp"></span>
+            <span class="lg"><i class="d" style="background:#8fce6a"></i>written</span>
+            <span class="lg"><i class="d" style="background:#a2e65d"></i>filling now</span>
+            <span class="lg"><i class="d" style="background:#c1503f"></i>failed</span>
+            <span class="lg"><i class="d" style="background:#49453f"></i>empty</span>
+          </div>
+          <div class="hint">
+            <b>every box is a table, every arrow is the step that makes it</b> · click a table ·
+            <b>drag</b> to pan · <b>scroll</b> to zoom · <b>double-click</b> to fit
+          </div>
+        </div>
+      </section>
+
+      <!-- Backtest: the book, and what the selected run earned. The book used to be
+           a rail of its own beside the stage; it belongs to this surface. -->
+      <section class="pane" id="page-backtest">
+        <aside class="rail book">
+          <div class="kicker">Strategy book
+            <span class="grow"></span>
+            <button type="button" class="btn-head go" id="btn-run"
+                    title="replay an alpha over history">run a backtest</button>
+          </div>
+          <div id="book-stats"></div>
+          <div id="book" class="grow"></div>
+        </aside>
+        <div class="btwrap" id="btwrap" data-open="0">
+          <div class="grip" id="bt-grip" title="drag to give the book more or less room"></div>
+          <div class="panel-h bt-bar-h" id="bt-h" title="what the alpha earned, after fees and slippage">
+            <h3>Results <span class="chev" id="bt-chev">▸</span> <span id="bt-title" class="mono faint">no backtest yet</span></h3>
+            <span class="r mono" id="bt-inline-sum">—</span>
+          </div>
+          <div class="bt-body">
+            <div class="bt-main" id="bt-main"><div id="bt-detail"></div></div>
+          </div>
+        </div>
+      </section>
+
+      <!-- Live: the forward half. -->
+      <section class="pane livepage" id="page-live">
+        <div id="live-body"></div>
+      </section>
+
+      <!-- Opens over whichever pane is showing, on every one of them. -->
+      <aside class="rail rail-r" id="detail">
+        <div class="selhead">
+          <h2 id="sel-head">—</h2>
+          <button type="button" class="btn sm close" id="sel-close" title="close (esc)">close</button>
+          <div class="sub" id="sel-sub">—</div>
+        </div>
+        <div id="sel-body" class="grow"></div>
+      </aside>
     </div>
 
-    <div class="btwrap" id="btwrap" data-open="0">
-      <div class="grip" id="bt-grip" title="drag to give the pipeline more or less room"></div>
-      <div class="panel-h bt-bar-h" id="bt-h" title="what the alpha earned, after fees and slippage">
-        <h3>Results <span class="chev" id="bt-chev">▸</span> <span id="bt-title" class="mono faint">no backtest yet</span></h3>
-        <span class="r mono" id="bt-inline-sum">—</span>
-      </div>
-      <div class="bt-body">
-        <div class="bt-main" id="bt-main"><div id="bt-detail"></div></div>
-      </div>
-    </div>
-
-    <!-- Folds away. It is on both pages because an agent can be writing a step
-         while you read a result, but most of the time it is a thing you glance
-         at rather than watch. -->
+    <!-- Under every surface, because a job can run while you are reading anything. -->
     <div class="logwrap" id="logwrap">
       <button type="button" class="panel-h logfold" id="log-fold" aria-expanded="true"
               aria-controls="log">
@@ -137,15 +214,6 @@
       <div id="log"></div>
     </div>
   </main>
-
-  <aside class="rail rail-r" id="detail">
-    <div class="selhead">
-      <h2 id="sel-head">—</h2>
-      <button type="button" class="btn sm close" id="sel-close" title="close (esc)">close</button>
-      <div class="sub" id="sel-sub">—</div>
-    </div>
-    <div id="sel-body" class="grow"></div>
-  </aside>
 </div>
 
 <div id="runner" class="editor" hidden>
@@ -164,5 +232,9 @@
 <script src="/static/console.js"></script>
 <script src="/static/alphaedit.js"></script>
 <script src="/static/backtests.js"></script>
+<script src="/static/data.js"></script>
+<script src="/static/live.js"></script>
+<script src="/static/conditions.js"></script>
+<script src="/static/thread.js"></script>
 </body>
 </html>

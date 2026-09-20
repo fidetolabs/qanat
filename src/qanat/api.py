@@ -6,14 +6,18 @@ says 12,043 rows, that is a count(*), and if a node is red, a run row says so.
 
 from __future__ import annotations
 
+import asyncio
+import json as _json_mod
 import math
 import threading
+import time
+from collections import deque
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
 from fastapi import FastAPI, HTTPException
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import AliasChoices, BaseModel, Field
 
@@ -92,7 +96,15 @@ class AlphaRequest(BaseModel):
     # second one beside it.
     id: str | None = None
     name: str
-    reads: str
+    #: The tables the step may read. `from:` has always been a list -- `Step` is
+    #: documented n:m and the scaffold's own `portfolio` alpha reads three feature
+    #: tables -- but every editor offered one, so a multi-input alpha could be run
+    #: and never authored. A bare string still works and means a list of one.
+    #:
+    #: The first entry is the primary: the table a shelf rule ranks on, written to
+    #: `options.reads` for its script to pick up. The rest are declared so
+    #: `ctx.read()` will allow them, which is the whole of what `from:` controls.
+    reads: str | list[str]
     universe: str | None = None
     shelf: str | None = None
     options: dict[str, Any] = Field(default_factory=dict)
@@ -420,6 +432,92 @@ class DropIn(BaseModel):
     force: bool = False
 
 
+#: What a request means, in the project's words, and which surface it is about.
+#: Returns None for anything not worth putting in front of a person -- polling, the
+#: static files, the trace itself.
+#:
+#: The console and the agent both reach the project through this API, so the request
+#: line *is* the tool call. Nothing new has to be reported: the intent was already
+#: arriving here, and the console was only ever reading the effects.
+#: The handful of GETs that mean somebody wanted to know something, as
+#: (segment, first sub-segment). Everything else read is the console polling.
+_READS_WORTH_SAYING = {("backtest", "conditions")}
+
+
+def _trace_of(method: str, path: str) -> tuple[str, str] | None:
+    p = [x for x in path.split("/") if x]
+    if len(p) < 2 or p[0] != "api":
+        return None
+    what = p[1]
+    rest = p[2:]
+    # Pure plumbing. Everything else is fair game now: the console stamps its own
+    # fetches, so a path no longer has to be excluded just because this page polls
+    # it. Filtering by path as well was hiding the agent's real reads -- it would
+    # say it had read the graph and the thread showed nothing.
+    if what in ("trace", "ask", "health", "docs", "openapi.json", "state", "next"):
+        return None
+    # The console polls its own API to stay current -- the graph every two seconds,
+    # the book and the run list beside it. Those are this page keeping up, not
+    # anybody's intent, and a thread full of `alpha_book` is a thread nobody reads.
+    #
+    # So: every write is intent, and only a short list of reads are. A read that
+    # nobody had to ask for does not belong in a history of what was asked.
+
+    if what == "profile" and len(rest) == 2:
+        return (f"profile_table · {rest[0]}.{rest[1]}", "data")
+    if what == "table" and len(rest) == 2:
+        return (f"sample_table · {rest[0]}.{rest[1]}", f"table:{rest[0]}.{rest[1]}")
+    if what == "jobs":
+        if rest[-1:] == ["run"]:
+            return (f"run · {rest[0]}", "alpha")
+        if rest:
+            return (f"read_step · {rest[0]}", f"job:{rest[0]}")
+    if what == "backtest":
+        # the tool whose whole job is to stop and ask. It gets its own surface,
+        # because the right answer to it is a question, not a panel.
+        if rest[:1] == ["conditions"]:
+            return ("backtest_conditions", "conditions")
+        if method == "POST":
+            return ("backtest · replaying", "backtest")
+    if what == "backtests":
+        if len(rest) >= 3 and rest[1] == "compare":
+            return ("compare", "backtest")
+        if rest:
+            return (f"report · {rest[0]}", "backtest")
+        return ("list_backtests", "backtest")
+    if what == "alphas":
+        if method == "POST":
+            return ("save_alpha", "alpha")
+        if method == "DELETE":
+            return (f"remove_alpha · {rest[0] if rest else ''}", "alpha")
+        return ("alpha_book", "backtest")
+    if what == "steps":
+        return (("save_step" if method == "POST" else "remove_step"), "alpha")
+    if what == "sources":
+        return (("save_source" if method == "POST" else "remove_source"), "data")
+    if what == "stages":
+        return ("edit stage", "alpha")
+    if what == "project" and method == "PUT":
+        return ("edit qanat.yaml", "alpha")
+    if what == "graph":
+        return ("list_tables · the graph", "alpha")
+    if what == "project":
+        return ("read qanat.yaml", "alpha")
+    if what == "runs":
+        return ("list_runs", "alpha")
+    if what == "events":
+        return None
+    if what == "live":
+        return ("live_status", "live")
+    if what == "check":
+        return ("check · the contract", "check")
+    if what == "plan":
+        return ("plan · what would change", "check")
+    if what == "shelf":
+        return None
+    return None
+
+
 def create_app(state: AppState, allow_hosts: list[str] | None = None) -> FastAPI:
     app = FastAPI(
         title=f"qanat · {state.project.name}",
@@ -452,6 +550,96 @@ def create_app(state: AppState, allow_hosts: list[str] | None = None) -> FastAPI
                                    f"accepts its own origin."},
             )
         return await call_next(request)
+
+    #: The session, as a list of things that were done to the project. Bounded,
+    #: in memory, and never written anywhere -- it is a view, not a record.
+    trace: deque = deque(maxlen=300)
+    seq = {"n": 0}
+
+    @app.middleware("http")
+    async def record_calls(request, call_next):  # type: ignore[no-untyped-def]
+        """Note what was asked of the project, and who asked.
+
+        Attribution is by whether an Ask is in flight rather than by a header the
+        agent would have to remember to send. While one is running the person is
+        watching rather than clicking, so the requests arriving are its; and on the
+        rare overlap a click still belongs in the thread, only labelled `you`.
+        """
+        # The console stamps its own fetches. They are this page keeping current,
+        # not a tool call, and recording them makes the console drive itself.
+        from_ui = request.headers.get("x-qanat-ui") == "1"
+        hit = None if from_ui else _trace_of(request.method, request.url.path)
+        resp = await call_next(request)
+        if hit is None:
+            return resp
+        # The page stamps its own calls, so anything reaching here unstamped came
+        # from outside it. That is the agent while one is running, and some other
+        # caller otherwise -- never the person, who acts through the page. Saying
+        # "you" for a request nobody made by hand is the kind of small lie that
+        # makes somebody distrust the whole panel.
+        cur = getattr(state, "_ask", None)
+        seq["n"] += 1
+        trace.append({
+            "seq": seq["n"],
+            "at": time.time(),
+            "by": "agent" if (cur and not cur.done) else "api",
+            "label": hit[0],
+            "surface": hit[1],
+            "ok": resp.status_code < 400,
+        })
+        return resp
+
+    @app.get("/api/ask/stream")
+    async def ask_stream(after: int = 0):
+        """The answer as it is written, and the tool calls as they happen, on one
+        connection.
+
+        Polling could not do this. At 250ms the reply landed in visible steps, and
+        the tool lines came from a second poll on its own clock -- so a sentence
+        written after a call could be drawn above it. Both now arrive in order from
+        the same place, at the rate the agent actually produces them.
+        """
+        async def gen():
+            seen = after
+            last = None
+            idle = 0
+            while True:
+                cur = getattr(state, "_ask", None)
+                rows = [x for x in trace if x["seq"] > seen]
+                if rows:
+                    seen = rows[-1]["seq"]
+                payload: dict[str, Any] = {"trace": rows, "seq": seq["n"]}
+                if cur is not None:
+                    payload["ask"] = cur.state()
+                sig = _json_mod.dumps(payload, sort_keys=True, default=str)
+                if sig != last:
+                    last = sig
+                    yield "data: " + sig + "\n\n"
+                    idle = 0
+                else:
+                    idle += 1
+                    # a comment keeps the connection from being reaped by a proxy
+                    if idle % 200 == 0:
+                        yield ": still here\n\n"
+                if cur is not None and cur.state().get("done") and not rows:
+                    yield "event: end\ndata: {}\n\n"
+                    return
+                await asyncio.sleep(0.05)
+
+        return StreamingResponse(gen(), media_type="text/event-stream", headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",
+        })
+
+    @app.get("/api/trace")
+    def call_trace(after: int = 0) -> dict[str, Any]:
+        """Everything done to this project since `after`, newest last.
+
+        The console polls this to follow along: each entry is a line for the thread
+        and a surface for the stage.
+        """
+        rows = [t for t in trace if t["seq"] > after]
+        return {"trace": rows, "seq": seq["n"]}
 
     def _editor_error(exc: Exception) -> HTTPException:
         if isinstance(exc, EditorError):
@@ -539,11 +727,42 @@ def create_app(state: AppState, allow_hosts: list[str] | None = None) -> FastAPI
 
     @app.post("/api/steps")
     def step_save(body: dict[str, Any]) -> dict[str, Any]:
+        """Add a step, or replace one. `source` writes the script; without it a stub
+        is left for you to fill in.
+
+        `source` is not a field on `Step`, and `Step` forbids extras -- so a body
+        carrying one used to die in `model_validate` with a pydantic error about
+        `extra_forbidden`. The console's only route to creating a step posted
+        exactly that shape, which is why it never made one. The agent's `save_step`
+        has always split the two; this is the same split, on the same terms.
+        """
+        body = dict(body or {})
+        src = body.pop("source", None)
         try:
             with state._lock:
-                warnings = save_step(state.project, state.root, body, create_script=True)
+                if src is not None:
+                    rel = str(body.get("script") or "")
+                    if not rel:
+                        raise HTTPException(422, "a step with a body needs a `script` path")
+                    path = state.root / rel
+                    # A step runs the file it names, so that file has to be inside
+                    # the project -- checked before anything is written, not after.
+                    try:
+                        inside = path.resolve().is_relative_to(state.root.resolve())
+                    except (OSError, ValueError):
+                        inside = False
+                    if not inside:
+                        raise HTTPException(
+                            422, f"script '{rel}' is outside the project. A step runs the file "
+                                 "it names, so it has to be a path under the project directory")
+                    path.parent.mkdir(parents=True, exist_ok=True)
+                    path.write_text(src)
+                warnings = save_step(state.project, state.root, body,
+                                     create_script=src is None)
                 state.reload()
                 return {"ok": True, "warnings": warnings}
+        except HTTPException:
+            raise
         except Exception as exc:
             raise _editor_error(exc) from exc
 
@@ -723,10 +942,21 @@ def create_app(state: AppState, allow_hosts: list[str] | None = None) -> FastAPI
             name = req.name.strip().lower().replace("-", "_").replace(" ", "_")
             if not name.replace("_", "").isalnum():
                 raise HTTPException(422, f"'{req.name}' is not a usable name")
-            if req.reads not in state.project.tables():
-                raise HTTPException(422, f"no table '{req.reads}' to read from")
+            wanted = [req.reads] if isinstance(req.reads, str) else list(req.reads)
+            wanted = [r for i, r in enumerate(wanted) if r and r not in wanted[:i]]
+            if not wanted:
+                raise HTTPException(422, "an alpha has to read at least one table")
+            known = state.project.tables()
+            for ref in wanted:
+                if ref not in known:
+                    raise HTTPException(422, f"no table '{ref}' to read from")
+            # The primary is what a shelf script ranks on, so it is the one held to
+            # having a symbol, a date and a price. The others are declared for
+            # `ctx.read()` and carry no such requirement -- a risk table or a news
+            # tone has no price in it and is not trying to.
+            primary = wanted[0]
             if req.shelf:
-                why = _cannot_price(req.reads, dict(req.options or {}))
+                why = _cannot_price(primary, dict(req.options or {}))
                 if why:
                     raise HTTPException(422, why)
             if req.universe and state.project.universe(req.universe) is None:
@@ -754,13 +984,17 @@ def create_app(state: AppState, allow_hosts: list[str] | None = None) -> FastAPI
                 if existing is None or not getattr(existing, "script", None):
                     raise HTTPException(422, "a new alpha needs a shelf entry to start from")
                 script = existing.script
-            opts["reads"] = req.reads
+            opts["reads"] = primary
             # An existing step keeps the table it writes. Renaming an alpha would
             # move its weights and PnL tables and orphan every result that names
             # them, so it is not something a settings field should do quietly.
             prior = state.project.job(step_id) if existing_id else None
             writes = list(prior.writes) if prior and prior.writes else [f"{wl.id}.{name}"]
-            reads = sorted({*(prior.reads if prior else []), req.reads}) if prior else [req.reads]
+            # What the editor sent is the set, not an addition to it. This used to
+            # union with whatever the step already read and sort the result, so a
+            # table could be granted but never withdrawn, and the primary lost its
+            # place at the front to alphabetical order.
+            reads = wanted
             try:
                 written = save_step(state.project, state.root, {
                     "id": step_id, "from": reads, "to": writes,
@@ -854,6 +1088,11 @@ def create_app(state: AppState, allow_hosts: list[str] | None = None) -> FastAPI
             row["decay"] = getattr(st, "decay", None)
             row["universe"] = getattr(st, "universe", None)
             row["reads"] = list(getattr(st, "reads", []) or [])
+            # Which of those the rule ranks on. The editor needs it separately: the
+            # others are declared for `ctx.read()` and are not what the script sorts by.
+            row["options"] = dict(getattr(st, "options", None) or {})
+            row["primary"] = row["options"].get("reads") or (
+                row["reads"][0] if row["reads"] else None)
             row.setdefault("dag", [])
         return {"wired": wired, "alphas": book, "stats": _book_stats(state.store, book)}
 
@@ -1067,6 +1306,225 @@ def create_app(state: AppState, allow_hosts: list[str] | None = None) -> FastAPI
                 {k: _plain(v) for k, v in rec.items()} for rec in df.to_dict("records")
             ],
         }
+
+    @app.get("/api/state")
+    def project_state() -> dict[str, Any]:
+        """Where this project stands, in the four moves it takes to get somewhere.
+
+        The topbar used to report `connected · drift 0` -- whether a socket was
+        open, and whether the file matched the database. Both true of a project
+        that has no strategy in it and of one whose live scorer has been failing
+        for an hour. What a person needs to see there is what is missing next.
+        """
+        p, store = state.project, state.store
+        bt = p.backtest
+        alphas = [a for a, _ in p.alphas]
+
+        newest, missing = None, 0
+        for src in p.sources:
+            info = store.table_info(src.ref)
+            if info is None or not info.rows:
+                missing += 1
+            elif info.updated_at and (newest is None or info.updated_at > newest):
+                newest = info.updated_at
+
+        runs = store.backtests(200)
+        book = store.alpha_book()
+        best = [b["out_of_sample"] for b in book if b.get("out_of_sample") is not None]
+
+        live_runs = [r for r in runs if r.get("live") and r.get("status") == "ok"]
+        halt = getattr(state.sched, "_live_halt", "") if state.sched else ""
+        live_on = bool(bt and bt.live)
+        return {
+            "data": {"sources": len(p.sources), "empty": missing, "newest": newest},
+            # Not "how many alphas" alone: a project with none has not finished, and
+            # the contract says so -- the pipeline ends in a portfolio.
+            "alpha": {"wired": len(alphas), "names": alphas,
+                      "unfinished": not alphas},
+            "backtest": {"runs": len(runs),
+                         "best_out_of_sample": max(best) if best else None},
+            "live": {
+                "on": live_on,
+                "alphas": list(bt.live_alphas) if bt else [],
+                "since": (bt.live_from or None) if bt else None,
+                "passes": len(live_runs),
+                # On, but nothing coming out of it. The state worth shouting about,
+                # and the one the old topbar had no way to say.
+                "stalled": bool(live_on and (halt or not live_runs)),
+                "why": halt or None,
+            },
+        }
+
+    @app.get("/api/live")
+    def live_view() -> dict[str, Any]:
+        """Forward scoring: whether it is running, what it has earned since it was
+        switched on, and what it is holding now.
+
+        The comparison is the point. An out-of-sample number was measured on rows
+        that were already on disk when the alpha was chosen -- the data did not
+        argue back through the fitting, but it argued back through the person. What
+        happens *after* the frontier is the only return nobody could have looked at,
+        so this shows it against the rate the backtest implied rather than alone.
+        """
+        import json as _json
+
+        from qanat.backtest import next_stop
+
+        p, store = state.project, state.store
+        bt = p.backtest
+        halt = getattr(state.sched, "_live_halt", "") if state.sched else ""
+        out: dict[str, Any] = {
+            "on": bool(bt and bt.live),
+            "alphas": list(bt.live_alphas) if bt else [],
+            "book": [a for a, _ in p.alphas],
+            "since": (bt.live_from or None) if bt else None,
+            # What the alpha being priced actually decides on, which is its own
+            # `rebalance` when it has one. Reporting the project default here said
+            # "every 5d" over an alpha that had asked for 10d.
+            "rebalance": None,
+            "why": halt or None,
+            "runs": 0, "periods": [], "segments": None, "holdings": [], "next_at": None,
+        }
+        if bt is None:
+            out["why"] = "this project has no `backtest:` block, so there is nothing to score"
+            return out
+
+        picked = out["alphas"] or [a for a, _ in p.alphas][:1]
+        own = {getattr(p.job(a), "rebalance", None) for a in picked}
+        own.discard(None)
+        # one alpha's own gap, or the project default when they disagree or say nothing
+        out["rebalance"] = own.pop() if len(own) == 1 else bt.rebalance
+
+        runs = [r for r in store.backtests(200)
+                if r.get("live") and r.get("status") == "ok"]
+        out["runs"] = len(runs)
+        out["stalled"] = bool(out["on"] and (halt or not runs))
+        if runs:
+            last = runs[0]
+            out["run_id"] = last["run_id"]
+            out["to"] = str(last["to_date"])
+            rep = store.backtest(last["run_id"])
+            if rep and rep.get("report"):
+                full = _json.loads(rep["report"])
+                out["segments"] = full.get("segments")
+                out["periods"] = full.get("periods", [])
+            # The next date on the grid the data has to reach before another pass
+            # runs. Anchored on the window's start, so live and a one-shot replay
+            # land on the same dates.
+            try:
+                out["next_at"] = next_stop(str(last["from_date"]), str(last["to_date"]),
+                                           bt.rebalance)
+            except Exception:  # noqa: BLE001
+                out["next_at"] = None
+
+        # What it is holding right now, read off the weights table rather than the
+        # replay: this is the portfolio the pipeline last wrote.
+        for name in (out["alphas"] or [a for a, _ in p.alphas][:1]):
+            found = p.alpha(name)
+            if not found:
+                continue
+            ref = found[1]
+            if not store.exists(ref):
+                continue
+            df = store.read(ref, limit=200)
+            cols = {c.lower(): c for c in df.columns}
+            sym, w = cols.get("symbol"), cols.get("weight")
+            if sym and w:
+                out["holdings"] += [
+                    {"alpha": name, "symbol": str(r[sym]), "weight": float(r[w])}
+                    for _, r in df.iterrows()
+                ]
+        out["holdings"].sort(key=lambda h: -abs(h["weight"]))
+        return out
+
+    @app.get("/api/next")
+    def next_questions() -> dict[str, Any]:
+        """What is worth asking from here.
+
+        Not a generic prompt list. A project with no strategy in it and one whose
+        live scorer has been failing for an hour are at different points of the same
+        arc, and the useful question is different in each -- so these are read off
+        the state, the way the spine is. An empty console that says nothing but
+        "ask me anything" is asking the person to guess the shape of the product.
+        """
+        p, store = state.project, state.store
+        bt = p.backtest
+        alphas = [a for a, _ in p.alphas]
+        runs = store.backtests(5)
+        prices = bt.prices if bt else "normalized.prices"
+        landed = [s for s in p.sources if (store.table_info(s.ref) or None)
+                  and (store.table_info(s.ref).rows if store.table_info(s.ref) else 0)]
+
+        def q(text: str, why: str) -> dict[str, str]:
+            return {"q": text, "why": why}
+
+        if not p.sources:
+            return {"suggestions": [
+                q("what connectors can I use to bring data in?",
+                  "nothing is connected yet"),
+                q("add a csv source from a file on this machine",
+                  "the shortest way to get real rows in"),
+            ]}
+        if not landed:
+            return {"suggestions": [
+                q("run the pipeline and tell me what landed",
+                  "the sources are declared but nothing has fetched yet"),
+                q("what will each source bring in?", "read the config back"),
+            ]}
+        if not alphas:
+            return {"suggestions": [
+                q("what data do I have, and what should I build on it?",
+                  "the graph stops before the weights stage"),
+                q(f"build a momentum alpha on {prices}, rebalance 10d",
+                  "the plainest rule there is, and the one to beat"),
+                q("are my sources lined up, or does one start late?",
+                  "a strategy across two spans holds nothing for the difference"),
+            ]}
+        if not runs:
+            return {"suggestions": [
+                q(f"back {alphas[0].removeprefix('alpha_')} up with a test, split halfway",
+                  "an alpha with no replay has never been priced"),
+                q("what would a backtest actually cover?",
+                  "the window, the universe and the gap all change the answer"),
+                q("show me what it is holding today", "read the weights table"),
+            ]}
+        last = runs[0]
+        out = [q("which rebalance lost the most, and what was it holding?",
+                 "the worst period is where a rule shows its shape")]
+        if len(alphas) < 2:
+            out.append(q("add a second alpha and tell me if it is a different bet",
+                         "one alpha is not a book"))
+        else:
+            out.append(q("are my alphas the same bet twice?",
+                         "two rules that made money on the same days are one rule"))
+        if bt and not bt.live:
+            out.append(q(f"turn live on for {alphas[0].removeprefix('alpha_')}",
+                         "score it forward on rows nobody has seen"))
+        elif bt and bt.live:
+            out.append(q("how has it done since it went live?",
+                         "the only return nobody could have looked at"))
+        if last.get("net") is not None and last["net"] < 0:
+            out.insert(0, q("why did it lose money?",
+                            "the last replay came out negative"))
+        return {"suggestions": out[:3]}
+
+    @app.get("/api/profile/{stage}/{name}")
+    def table_profile(stage: str, name: str) -> dict[str, Any]:
+        """Coverage per column: fill rate, distinct count, and the range it spans.
+
+        What the Data page draws its bars from, and the first thing worth knowing
+        about a source you have only just connected.
+        """
+        ref = f"{stage}.{name}"
+        prof = state.store.profile(ref)
+        if prof is None:
+            raise HTTPException(404, f"{ref} has not been written yet")
+        job = state.project.producers().get(ref)
+        prof["producer"] = job
+        src = next((s for s in state.project.sources if s.id == job), None)
+        prof["connector"] = getattr(src, "connector", None)
+        prof["schedule"] = getattr(src, "schedule", None)
+        return prof
 
     @app.get("/api/jobs/{job_id}")
     def job_detail(job_id: str) -> dict[str, Any]:

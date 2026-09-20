@@ -165,6 +165,25 @@
   var W = 760;
 
   // the svg body only, so several series can share one hover box
+  //  One definition, reused by every curve on the page.
+  var HATCH = '<defs><pattern id="bt-hatch" width="6" height="6" patternUnits="userSpaceOnUse" ' +
+    'patternTransform="rotate(45)"><rect width="6" height="6" fill="#e8c0690a"></rect>' +
+    '<line x1="0" y1="0" x2="0" y2="6" stroke="#e8c069" stroke-width="1" opacity=".28">' +
+    '</line></pattern></defs>';
+
+  //  Consecutive runs of periods that held nothing, as [startIndex, endIndex] pairs
+  //  on the equity series (which is one longer than the period list -- it opens at
+  //  1.00 before the first decision).
+  function flatRuns(ps) {
+    var out = [], run = null;
+    ps.forEach(function (p, i) {
+      if (!p.holdings) { if (!run) run = [i, i + 1]; else run[1] = i + 1; }
+      else if (run) { out.push(run); run = null; }
+    });
+    if (run) out.push(run);
+    return out;
+  }
+
   function lineSvg(values, h, opts) {
     opts = opts || {};
     var pts = values.filter(function (v) { return v != null; });
@@ -188,11 +207,22 @@
     var band = opts.isCount
       ? '<rect class="bt-band" x="6" y="4" width="' + Math.max(0, x(opts.isCount) - 6).toFixed(1) +
         '" height="' + (h - 8) + '"></rect>' : '';
+    //  Stretches where the alpha held nothing. Flat is in the money and not in the
+    //  averages beside it, and a line that simply runs level there looks like a
+    //  quiet market rather than an empty book. Drawn once, where people look.
+    var flat = '';
+    if (opts.flat && opts.flat.length) {
+      opts.flat.forEach(function (r) {
+        var x0 = x(r[0]), x1 = x(r[1]);
+        flat += '<rect class="bt-flat" x="' + x0.toFixed(1) + '" y="4" width="' +
+          Math.max(1, x1 - x0).toFixed(1) + '" height="' + (h - 8) + '"></rect>';
+      });
+    }
     var mark = opts.markAt != null && opts.markAt >= 0 && values[opts.markAt] != null
       ? '<circle class="bt-mark" cx="' + x(opts.markAt).toFixed(1) + '" cy="' +
         y(values[opts.markAt]).toFixed(1) + '" r="3.4"></circle>' : '';
     return '<svg class="bt-svg" style="height:' + h + 'px" viewBox="0 0 ' + W + ' ' + h +
-      '" preserveAspectRatio="none">' + band + zeroAt +
+      '" preserveAspectRatio="none">' + HATCH + band + flat + zeroAt +
       (opts.fill ? '<path class="bt-fill ' + (opts.cls || '') + '" d="' + d.trim() +
         'L' + x(values.length - 1).toFixed(1) + ' ' + y(opts.zero).toFixed(1) +
         ' L' + x(0).toFixed(1) + ' ' + y(opts.zero).toFixed(1) + ' Z"></path>' : '') +
@@ -449,6 +479,7 @@
     var eq = 1;
     net.forEach(function (n) { eq *= 1 + n; });
     var sum = function (f) { return ps.reduce(function (a, p) { return a + f(p); }, 0); };
+    var held = ps.filter(function (p) { return p.holdings; });
     return {
       periods: ps.length,
       gross: sum(function (p) { return p.gross; }),
@@ -458,6 +489,14 @@
       turnover: sum(function (p) { return p.turnover; }),
       net_per_period: net.reduce(function (a, b) { return a + b; }, 0) / net.length,
       hit_rate: net.filter(function (n) { return n > 0; }).length / net.length,
+      // Periods holding nothing count as losses in the hit rate above and dilute the
+      // per-period figure. They belong in the money and not in the averages, so the
+      // count rides along -- same fields the engine puts in `totals`, so a range the
+      // reader has zoomed into reports the same way a whole run does.
+      held_periods: held.length,
+      flat_periods: ps.length - held.length,
+      hit_rate_held: held.length
+        ? held.filter(function (p) { return p.net > 0; }).length / held.length : 0,
       equity: eq,
     };
   }
@@ -520,8 +559,18 @@
         '<div class="v">' + pct(t.net_per_period, 3) + '</div></div>' +
       '<div class="tile"><div class="k">max drawdown<i>worst fall from a high</i></div>' +
         '<div class="v down">' + pct(worst, 2) + '</div></div>' +
-      '<div class="tile"><div class="k">hit rate<i>rebalances that made money</i></div>' +
-        '<div class="v">' + (t.hit_rate * 100).toFixed(0) + '%</div></div></div>';
+      '<div class="tile"><div class="k">hit rate<i>' +
+        (t.flat_periods
+          ? (t.hit_rate_held * 100).toFixed(0) + '% over the ' + t.held_periods + ' it held'
+          : 'rebalances that made money') + '</i></div>' +
+        '<div class="v">' + (t.hit_rate * 100).toFixed(0) + '%</div></div>' +
+      // Only worth a tile when there is something to warn about. A run that held a
+      // portfolio throughout has nothing to disclose and should not carry an empty box.
+      (t.flat_periods
+        ? '<div class="tile"><div class="k">flat<i>held nothing · in the money, ' +
+          'not in the averages</i></div><div class="v warnv">' + t.flat_periods +
+          '<span class="of"> of ' + t.periods + '</span></div></div>'
+        : '') + '</div>';
 
     var band = RANGE
       ? '<div class="rangebar">showing <b>' + ps.length + '</b> rebalances · <b>' +
@@ -535,10 +584,13 @@
             '<span class="faint">what 1.00 turned into, and how far under its own high it ' +
             'went</span> · ends at <b class="' + sign(eq[eq.length - 1] - 1) + '">' +
             eq[eq.length - 1].toFixed(4) + '</b> · MDD <b class="down">' + pct(worst, 2) +
-            '</b>' + (isCount ? ' · <span class="faint">shaded = in sample</span>' : ''),
+            '</b>' + (isCount ? ' · <span class="faint">shaded = in sample</span>' : '') +
+            (flatRuns(ps).length
+              ? ' · <span class="flatkey">hatched = held nothing</span>' : ''),
             chartBox(
               lineSvg(eq, 150, { cls: eq[eq.length - 1] >= 1 ? 'up' : 'down', zero: 1,
-                                 isCount: isCount, markAt: markAt >= 0 ? markAt + 1 : -1 }) +
+                                 isCount: isCount, flat: flatRuns(ps),
+                                 markAt: markAt >= 0 ? markAt + 1 : -1 }) +
               '<p class="bt-cap under">underwater: below the previous high</p>' +
               lineSvg(dd, 74, { cls: 'down', zero: 0, hi: 0, fill: true, isCount: isCount }),
               { values: eq, fmt: 'eq', offset: 1, clickable: true,
@@ -812,7 +864,9 @@
         if (r.reads_weights && r.reads_weights.length > 1) return;   // a blend has no step
         window.AlphaEdit.open({
           id: a, name: r.name || a, writes: r.writes,
-          reads: (r.reads || [])[0] || (r.conditions || {}).reads,
+          // the whole set, not its first member: the editor ticks a list now
+          reads: r.reads || [], primary: r.primary || (r.conditions || {}).reads,
+          options: r.options || {},
           universe: r.universe, rebalance: r.rebalance, decay: r.decay,
           conditions: r.conditions || {},
         });
@@ -1181,7 +1235,9 @@
         closeRunner();
         window.AlphaEdit.open({
           id: a, name: r.name || a, writes: r.writes,
-          reads: (r.reads || [])[0] || (r.conditions || {}).reads,
+          // the whole set, not its first member: the editor ticks a list now
+          reads: r.reads || [], primary: r.primary || (r.conditions || {}).reads,
+          options: r.options || {},
           universe: r.universe, rebalance: r.rebalance, decay: r.decay,
           conditions: r.conditions || {},
         });

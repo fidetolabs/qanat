@@ -43,6 +43,17 @@
 
   function isEditing() { return EDITING; }
 
+  //  Where a new feature step lands: the LAST stage of kind `features`, which is the
+  //  one sitting closest to weights. Taking the first match instead picked
+  //  `normalized` in any project declaring both -- the scaffold does, and both are
+  //  kind `features` -- so a step the form called a feature step was written one
+  //  stage earlier than the label beside it promised. The label now reads this too,
+  //  rather than hard-coding a name nobody checked against the project.
+  function featureStage() {
+    var fs = ((SHELF && SHELF.stages) || []).filter(function (s) { return s.kind === 'features'; });
+    return (fs[fs.length - 1] || {}).id || '';
+  }
+
   function setEditing(on) {
     EDITING = !!on;
     document.body.classList.toggle('book-editing', EDITING);
@@ -72,7 +83,15 @@
 
   function form(alpha) {
     var cur = alpha ? (alpha.conditions || {}) : {};
-    var reads = (alpha && alpha.reads) || cur.reads || SHELF.reads[SHELF.reads.length - 1] || '';
+    //  What the step already reads, as a set, with the rule's own table first. A
+    //  brand new alpha starts on the last table offered, which is the furthest
+    //  along the pipeline and so the most likely to be the one worth ranking on.
+    var picked = (alpha && alpha.reads && alpha.reads.length)
+      ? alpha.reads.slice()
+      : [SHELF.reads[SHELF.reads.length - 1] || ''].filter(Boolean);
+    var primary = (alpha && alpha.primary) || cur.reads || picked[0] || '';
+    if (primary && picked.indexOf(primary) < 0) picked.unshift(primary);
+    var reads = primary;
     var uni = (alpha && alpha.universe) || (SHELF.universes[0] || {}).id || '';
     var opt = function (list, sel) {
       return list.map(function (x) {
@@ -95,13 +114,30 @@
         }).join('') + '</select>',
         'starts from one of the ready rules. You can edit the script afterwards') +
 
-      row('reads', '<select id="ae-reads">' + opt(SHELF.reads, reads) +
-        '<option value="__new">＋ a new feature step…</option></select>',
-        'the table it turns into a portfolio. Needs a symbol, a date and a price') +
+      //  `from:` is a list on `Step` and always has been -- the scaffold's own
+      //  `portfolio` alpha reads three feature tables. Offering one <select> meant
+      //  a step the engine runs happily could not be authored here at all. Tick as
+      //  many as the step should be allowed to read; the one marked `ranks on` is
+      //  what a shelf rule sorts by, and goes to `options.reads`.
+      row('reads', '<div class="readset" id="ae-readset">' +
+        SHELF.reads.map(function (t) {
+          var on = picked.indexOf(t) >= 0;
+          return '<label class="rsrow' + (on ? ' on' : '') + '">' +
+            '<input type="checkbox" class="ae-read" value="' + esc(t) + '"' +
+            (on ? ' checked' : '') + '>' +
+            '<span class="rt">' + esc(t) + '</span>' +
+            '<span class="rp"><input type="radio" name="ae-primary" class="ae-prim" value="' +
+            esc(t) + '"' + (t === primary ? ' checked' : '') +
+            (on ? '' : ' disabled') + '><i>ranks on</i></span></label>';
+        }).join('') +
+        '<button type="button" class="rsnew" id="ae-newbtn">＋ a new feature step…</button>' +
+        '</div>',
+        '<span id="ae-readnote">' + picked.length + ' selected</span> · every table this step ' +
+        'may read. <span class="mono">ctx.read()</span> refuses anything not ticked here') +
 
       '<div id="ae-newfeat" hidden>' +
       row('feature name', '<input id="nf-name" placeholder="zscore_20">',
-          'becomes features.&lt;name&gt;') +
+          'becomes <span class="mono">' + esc(featureStage()) + '.&lt;name&gt;</span>') +
       row('built from', '<select id="nf-reads">' + opt(SHELF.reads, reads) + '</select>',
           'the table this new step reads') +
       row('SQL', '<textarea id="nf-sql" rows="6"></textarea>',
@@ -143,9 +179,25 @@
   function paintOptions(alpha) {
     var pick = el('ae-shelf').value;
     var entry = SHELF.shelf.filter(function (a) { return a.name === pick; })[0];
-    var have = (alpha && alpha.conditions) || {};
+    //  What the step itself says beats whatever the last run overrode it with.
+    var have = Object.assign({}, (alpha && alpha.conditions) || {}, (alpha && alpha.options) || {});
     var host = el('ae-opts');
-    if (!entry) { host.innerHTML = ''; return; }
+    if (!entry) {
+      //  "keep the script it has" used to draw nothing, and `save` gathers options
+      //  from the fields on screen -- so opening any existing alpha and pressing
+      //  save wrote an empty options block over its lookback, top_n and window.
+      //  They are its script's settings whether or not a shelf rule is selected,
+      //  so they are shown, and shown editable.
+      var own = Object.keys(have).filter(function (k) { return k !== 'reads'; });
+      host.innerHTML = own.length
+        ? own.map(function (k) {
+            return row(k, '<input class="ae-opt" data-k="' + esc(k) + '" value="' +
+              esc(have[k]) + '">', '');
+          }).join('') +
+          '<div class="bt-note-inline">what this script is already set to.</div>'
+        : '';
+      return;
+    }
     host.innerHTML = Object.keys(entry.options).map(function (k) {
       var v = have[k] != null ? have[k] : entry.options[k];
       return row(k, '<input class="ae-opt" data-k="' + esc(k) + '" value="' + esc(v) + '">',
@@ -156,15 +208,57 @@
       '<div class="bt-note-inline">' + esc(entry.why) + '</div>';
   }
 
+  //  Ticked tables, in the order the rows are drawn, with the primary lifted to the
+  //  front -- `from[0]` is what `options.reads` will say.
+  function chosen() {
+    var out = [];
+    Array.prototype.forEach.call(document.querySelectorAll('.ae-read'), function (c) {
+      if (c.checked) out.push(c.value);
+    });
+    var p = document.querySelector('.ae-prim:checked');
+    if (p && out.indexOf(p.value) > 0) {
+      out.splice(out.indexOf(p.value), 1);
+      out.unshift(p.value);
+    }
+    return out;
+  }
+
+  function syncReadset() {
+    var on = chosen();
+    Array.prototype.forEach.call(document.querySelectorAll('.ae-read'), function (c) {
+      var radio = c.parentElement.querySelector('.ae-prim');
+      c.parentElement.classList.toggle('on', c.checked);
+      // A table cannot be what the rule ranks on unless the step may read it.
+      if (radio) {
+        radio.disabled = !c.checked;
+        if (!c.checked) radio.checked = false;
+      }
+    });
+    if (on.length && !document.querySelector('.ae-prim:checked')) {
+      var first = document.querySelector('.ae-read:checked');
+      if (first) {
+        var r = first.parentElement.querySelector('.ae-prim');
+        if (r) r.checked = true;
+      }
+    }
+    var note = el('ae-readnote');
+    if (note) note.textContent = on.length + ' selected';
+  }
+
   function wire(alpha) {
-    var shelf = el('ae-shelf'), reads = el('ae-reads');
+    var shelf = el('ae-shelf');
     shelf.onchange = function () { paintOptions(alpha); };
     paintOptions(alpha);
 
-    reads.onchange = function () {
-      var isNew = reads.value === '__new';
-      el('ae-newfeat').hidden = !isNew;
-      if (isNew && !el('nf-sql').value) {
+    Array.prototype.forEach.call(document.querySelectorAll('.ae-read, .ae-prim'), function (i) {
+      i.onchange = syncReadset;
+    });
+    syncReadset();
+
+    el('ae-newbtn').onclick = function () {
+      var box = el('ae-newfeat');
+      box.hidden = !box.hidden;
+      if (!box.hidden && !el('nf-sql').value) {
         el('nf-sql').value = 'SELECT\n    date,\n    symbol,\n    close\nFROM ' +
           (SHELF.reads[SHELF.reads.length - 1] || 'normalized__prices').replace('.', '__');
       }
@@ -185,17 +279,17 @@
     var say = el('ae-say'), go = el('ae-save');
     var name = (alpha ? alpha.name : el('ae-name').value || '').trim();
     if (!name) { say.textContent = 'it needs a name'; return; }
-    var reads = el('ae-reads').value;
+    var reads = chosen();
     go.disabled = true;
     say.textContent = 'saving…';
 
     try {
       // a new feature step is made first, because the alpha has to read something
-      // that exists
-      if (reads === '__new') {
+      // that exists. It joins the selection rather than replacing it.
+      if (!el('ae-newfeat').hidden) {
         var fname = (el('nf-name').value || '').trim();
         if (!fname) throw new Error('the new feature step needs a name');
-        var stage = (SHELF.stages.filter(function (s) { return s.kind === 'features'; })[0] || {}).id;
+        var stage = featureStage();
         if (!stage) throw new Error('this project has no features stage');
         var rel = 'steps/' + fname + '.sql';
         await api('/api/steps', {
@@ -205,8 +299,9 @@
             script: rel, source: el('nf-sql').value,
           }),
         });
-        reads = stage + '.' + fname;
+        reads.push(stage + '.' + fname);
       }
+      if (!reads.length) throw new Error('tick at least one table for it to read');
 
       var options = {};
       Array.prototype.forEach.call(document.querySelectorAll('.ae-opt'), function (i) {
@@ -441,8 +536,205 @@
     if (window.QANAT) { window.QANAT.poll(); window.QANAT.closeDetail(); }
   }
 
+  // ------------------------------------------------------------- wiring a step
+  //
+  //  One gesture for both halves of the pipeline. Qanat has a single `Step`: one
+  //  that lands in `features` is a feature step, the same one landing in `weights`
+  //  is an alpha, and `docs/words.md` has no third word because there is no third
+  //  thing. So this panel changes by exactly what the model changes by -- the
+  //  column it writes into -- and grows the alpha-only fields when that column is
+  //  the weights stage.
+  //
+  //  Inputs are ticked on the graph rather than chosen from a list, because `from:`
+  //  is a set across stages and a dropdown cannot say "these three, from two
+  //  different columns".
+
+  var WIRING = null;
+
+  function stageKind(id) {
+    var s = (SHELF.stages || []).filter(function (x) { return x.id === id; })[0];
+    return (s && s.kind) || 'features';
+  }
+
+  async function openStep(stage) {
+    var detail = el('detail');
+    detail.classList.add('open');
+    var body = el('sel-body');
+    body.innerHTML = '<div class="bt-empty">reading what this project offers…</div>';
+    el('sel-head').textContent = 'new step';
+    el('sel-sub').textContent = 'tables in, one table out';
+    try {
+      SHELF = SHELF || await api('/api/shelf');
+    } catch (e) {
+      body.innerHTML = '<div class="warnbox">' + esc(e.message) + '</div>';
+      return;
+    }
+    //  Never the raw stage: raw is landed as it arrived and a step may not write
+    //  there. Offering it would only be offering an error.
+    var targets = (SHELF.stages || []).filter(function (s) { return s.kind !== 'raw'; });
+    var start = stage || featureStage() || (targets[0] || {}).id;
+    WIRING = { stage: start, name: '', picked: {} };
+    setEditing(true);
+    if (window.QANAT) window.QANAT.dag.setWiring(WIRING);
+
+    body.innerHTML = stepForm(targets);
+    wireStep(targets);
+  }
+
+  function stepForm(targets) {
+    var kind = stageKind(WIRING.stage);
+    return '<div class="rform ae">' +
+      row('name', '<input id="st-name" placeholder="zscore_20">',
+        'becomes <span class="mono" id="st-ref">' + esc(WIRING.stage) + '.&lt;name&gt;</span>') +
+
+      row('writes into', '<select id="st-stage">' + targets.map(function (s) {
+        return '<option value="' + esc(s.id) + '"' +
+          (s.id === WIRING.stage ? ' selected' : '') + '>' + esc(s.id) +
+          ' · ' + esc(s.kind) + '</option>';
+      }).join('') + '</select>',
+        'the column it lands in. Land it in the <span class="mono">weights</span> stage and ' +
+        'you have written an alpha') +
+
+      row('reads', '<div class="wireset" id="st-reads"></div>',
+        '<b id="st-count">nothing yet</b> · click tables on the graph to feed them in. ' +
+        'This is the list <span class="mono">ctx.read()</span> will allow') +
+
+      row('script', '<select id="st-kind"><option value="sql">.sql · one SELECT</option>' +
+        '<option value="py">.py · run(ctx) returns a DataFrame</option></select>',
+        'the console used to write SQL only, so half the steps in the scaffold could ' +
+        'not be authored here') +
+      row('body', '<textarea id="st-src" rows="8"></textarea>',
+        'tables are addressed as <span class="mono">stage__table</span> in SQL, and by ' +
+        'their ordinary name in <span class="mono">ctx.read()</span>') +
+
+      //  Only meaningful on a step that writes a portfolio. Drawn for every step and
+      //  they would read as settings that do nothing.
+      '<div id="st-alpha"' + (kind === 'weights' ? '' : ' hidden') + '>' +
+      '<div class="kicker sub">because it lands in weights</div>' +
+      row('universe', '<select id="st-uni"><option value="">— none —</option>' +
+        (SHELF.universes || []).map(function (u) {
+          return '<option value="' + esc(u.id) + '">' + esc(u.id) + '</option>';
+        }).join('') + '</select>', 'the symbols it is allowed to hold') +
+      row('rebalance', '<input id="st-reb" placeholder="as the project says">',
+        'how often it decides, e.g. <span class="mono">5d</span>') +
+      row('decay', '<input id="st-decay" type="number" min="0" placeholder="0">',
+        'hold a blend of the last N portfolios') +
+      '</div>' +
+
+      '</div>' +
+      '<div class="rgo"><button type="button" class="btn go" id="st-save">wire it in</button>' +
+      '<button type="button" class="btn" id="st-cancel">cancel</button>' +
+      '<span id="st-say" class="faint"></span></div>';
+  }
+
+  function paintWired() {
+    var picked = Object.keys(WIRING.picked);
+    var host = el('st-reads');
+    if (!host) return;
+    host.innerHTML = picked.length
+      ? picked.map(function (r) {
+          return '<span class="wchip" data-ref="' + esc(r) + '">' + esc(r) +
+            '<b title="stop reading this">✕</b></span>';
+        }).join('')
+      : '<span class="faint">nothing selected</span>';
+    Array.prototype.forEach.call(host.querySelectorAll('[data-ref]'), function (chip) {
+      chip.querySelector('b').onclick = function () {
+        if (window.QANAT) window.QANAT.dag.toggleInput(chip.getAttribute('data-ref'));
+      };
+    });
+    el('st-count').textContent = picked.length
+      ? picked.length + (picked.length === 1 ? ' table' : ' tables')
+      : 'nothing yet';
+  }
+
+  function wireStep(targets) {
+    var name = el('st-name'), stage = el('st-stage');
+
+    var reref = function () {
+      WIRING.name = (name.value || '').trim().toLowerCase().replace(/[^a-z0-9_]+/g, '_');
+      el('st-ref').textContent = WIRING.stage + '.' + (WIRING.name || '<name>');
+      if (window.QANAT) window.QANAT.dag.setWiring(WIRING);
+    };
+    name.oninput = reref;
+
+    stage.onchange = function () {
+      WIRING.stage = stage.value;
+      // Moving the target can make a chosen table illegal -- data only moves
+      // forward -- so the graph re-judges and whatever it drops leaves here too.
+      if (window.QANAT) window.QANAT.dag.setWiring(WIRING);
+      el('st-alpha').hidden = stageKind(WIRING.stage) !== 'weights';
+      reref();
+      paintWired();
+    };
+
+    el('st-kind').onchange = function () {
+      var t = el('st-src');
+      if (t.value.trim()) return;
+      t.value = el('st-kind').value === 'sql'
+        ? 'SELECT\n    date,\n    symbol,\n    close\nFROM normalized__prices'
+        : 'import pandas as pd\n\n\ndef run(ctx):\n    df = ctx.read("normalized.prices")\n'
+          + '    return df\n';
+    };
+
+    if (window.QANAT) {
+      window.QANAT.dag.onWire = function () { paintWired(); };
+    }
+    paintWired();
+
+    el('st-cancel').onclick = closeStep;
+    el('st-save').onclick = saveStep;
+  }
+
+  function closeStep() {
+    WIRING = null;
+    setEditing(false);
+    if (window.QANAT) {
+      window.QANAT.dag.onWire = null;
+      window.QANAT.dag.setWiring(null);
+      window.QANAT.closeDetail();
+    }
+  }
+
+  async function saveStep() {
+    var say = el('st-say'), go = el('st-save');
+    var name = WIRING.name;
+    if (!name) { say.textContent = 'it needs a name'; return; }
+    var picked = Object.keys(WIRING.picked);
+    if (!picked.length) { say.textContent = 'click a table on the graph to feed it in'; return; }
+    var body = el('st-src').value;
+    if (!body.trim()) { say.textContent = 'it needs a body to run'; return; }
+
+    var payload = {
+      id: name, from: picked, to: [WIRING.stage + '.' + name],
+      script: 'steps/' + name + '.' + el('st-kind').value,
+      source: body,
+    };
+    if (stageKind(WIRING.stage) === 'weights') {
+      payload.universe = el('st-uni').value || null;
+      payload.rebalance = el('st-reb').value.trim() || null;
+      var d = parseInt(el('st-decay').value, 10);
+      if (d) payload.decay = d;
+    }
+    go.disabled = true;
+    say.textContent = 'saving…';
+    try {
+      await api('/api/steps', {
+        method: 'POST', headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(payload),
+      });
+    } catch (e) {
+      go.disabled = false;
+      say.innerHTML = '<span class="down">' + esc(e.message) + '</span>';
+      return;
+    }
+    go.disabled = false;
+    closeStep();
+    if (window.QANAT) window.QANAT.poll();
+    if (window.repaintBook) window.repaintBook();
+  }
+
   window.AlphaEdit = {
-    open: open, openSource: openSource, openStage: openStage,
+    open: open, openSource: openSource, openStage: openStage, openStep: openStep,
     setEditing: setEditing, isEditing: isEditing,
   };
 })();

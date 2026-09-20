@@ -44,7 +44,7 @@ body{display:flex;flex-direction:column}
     with no focus ring a keyboard user was walking through controls they could not
     see. `visibility:hidden` removes them and still animates. */
 .rail-r:not(.open){ visibility:hidden }
-.rail-folded .rail:first-of-type{ visibility:hidden }
+.rail-folded .rail.book{ visibility:hidden }
 .rail-r > *{min-width:var(--detail-w)}
 .selhead{position:relative}
 .selhead .close{position:absolute;top:10px;right:12px}
@@ -460,6 +460,219 @@ table.t.data td { white-space: nowrap; }
 .results-open .legend, .results-open .hint, .results-open .logwrap { display: none; }
 .kicker.sub { padding-top: 14px; }
 .tile .v.sm { font-size: 10.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/*  Periods that held nothing. Amber rather than red: flat is not a failure, it is
+    a thing the two averages beside it are not counting. */
+/* ---- the conversation rail --------------------------------------------------
+   The agent can reach every tool this console exposes, so the thread is not an
+   accessory to the pages -- it is the thing driving them. It gets a side, and the
+   space beside it stops being a page and becomes a response surface. */
+.chatrail{
+  flex:0 0 var(--chat-w,340px); width:var(--chat-w,340px);
+  border-right:1px solid var(--line); background:var(--panel);
+  display:flex; flex-direction:column; min-height:0; overflow:hidden;
+}
+@media(max-width:1240px){ .chatrail{ --chat-w:300px } }
+.crhead{display:flex;align-items:center;gap:8px;padding:9px 12px;
+  border-bottom:1px solid var(--line);flex:none}
+.crtitle{font-family:var(--mono);font-size:9px;letter-spacing:.16em;text-transform:uppercase;
+  color:var(--fg-faint)}
+.crhead .grow{flex:1}
+.crpin{font:inherit;font-family:var(--mono);font-size:9px;letter-spacing:.1em;
+  text-transform:uppercase;color:var(--key);background:none;border:1px solid #a2e65d44;
+  border-radius:2px;padding:3px 7px;cursor:pointer}
+/*  Following is the default, not a hijack: pin it and you stay where you were
+    reading while the thread goes on telling you what moved. */
+.crpin.pinned{color:var(--gold);border-color:#e8c06944}
+.crthread{flex:1 1 auto;min-height:0;overflow-y:auto;padding:11px 12px}
+.crthread .cm{font-size:11.5px;line-height:1.5;color:var(--fg-dim);margin:0 0 9px}
+/*  What you said, not what you could say. These were the same box as a suggestion
+    card -- same panel, same border, same radius -- so a question you had just asked
+    read as one more thing being offered to you. A message is spoken and settled;
+    a suggestion is an offer. They should not look alike. */
+.crthread .cm.me{color:var(--fg);background:transparent;border:0;
+  border-left:2px solid var(--key);border-radius:0;padding:2px 0 2px 10px;
+  margin:10px 0 9px;font-size:12.5px}
+.crthread .ct{display:flex;gap:7px;align-items:baseline;font-family:var(--mono);
+  font-size:9.5px;color:var(--fg-faint);margin:3px 0;cursor:pointer}
+.crthread .ct:hover b{color:var(--key)}
+.crthread .ct i{font-style:normal;border:1px solid var(--line-2);border-radius:2px;
+  padding:0 4px;font-size:8px;letter-spacing:.1em;text-transform:uppercase;flex:none}
+.crthread .ct.by-agent i{color:var(--cyan);border-color:#7fc4b444}
+.crthread .ct.by-api i{color:var(--fg-faint)}
+.crthread .ct.bad i{color:var(--red);border-color:#c1503f55}
+.crthread .ct b{color:var(--fg-dim);font-weight:400;overflow:hidden;text-overflow:ellipsis;
+  white-space:nowrap}
+.crempty{font-size:11.5px;color:var(--fg-faint);line-height:1.55}
+/*  The Ask form sits at the foot of the thread, where an input belongs. */
+.chatrail .askbar{flex:none;border-top:1px solid var(--line);border-bottom:0;padding:9px 12px}
+.chatrail .askrow{display:flex;gap:7px;align-items:center}
+.chatrail .askrow .lbl{display:none}
+.chatrail .askrow input{flex:1;min-width:0}
+.chatrail .askwork{max-height:210px;overflow-y:auto}
+body.page-data .chatrail, body.page-live .chatrail,
+body.page-alpha .chatrail, body.page-backtest .chatrail{display:flex}
+
+/* ---- the state spine -------------------------------------------------------
+   Four segments in the topbar, each a real piece of project state. What it
+   replaced said whether a socket was open, which is not news. */
+.spine { display: flex; align-items: stretch; height: 100%; }
+.spine .seg { display: flex; align-items: center; gap: 7px; padding: 0 13px;
+  font: inherit; font-family: var(--mono); font-size: 10.5px; letter-spacing: .04em;
+  color: var(--fg-faint); background: none; border: 0;
+  border-right: 1px solid var(--line); cursor: pointer; white-space: nowrap; }
+.spine .seg:last-child { border-right: 0; }
+.spine .seg:hover { background: var(--panel); }
+.spine .seg .k { color: var(--fg-dim); }
+.spine .seg b { color: var(--fg); font-weight: 500; }
+/*  Something is missing but nothing is wrong: an amber cue, not an alarm. */
+.spine .seg.todo .k, .spine .seg.todo b { color: var(--gold); }
+.spine .seg.warn b { color: var(--gold); }
+/*  On, and producing nothing. The state the old topbar had no way to say. */
+.spine .seg.bad { background: #c1503f12; box-shadow: inset 0 -2px 0 var(--red); }
+.spine .seg.bad .k, .spine .seg.bad b { color: var(--red); }
+/*  Which of the four you are looking at. Four destinations that all looked the
+    same was four readouts pretending to be navigation. */
+.spine .seg.here { background: var(--panel); box-shadow: inset 0 -2px 0 var(--key); }
+.spine .seg.here .k { color: var(--key); }
+.spine .dot { width: 6px; height: 6px; border-radius: 50%; background: #3a3733; flex: none; }
+.spine .dot.g { background: var(--key); box-shadow: 0 0 6px #a2e65d88; }
+.spine .dot.y { background: var(--gold); }
+.spine .dot.r { background: var(--red); box-shadow: 0 0 6px #c1503f88; }
+/*  Kept in the DOM: `serverGone()` writes to them, and the down-banner is the
+    thing that actually tells you the server stopped. */
+.statusline .hidden-led { display: none; }
+@media (max-width: 1100px) { .spine .seg .k { display: none; } }
+
+/* ---- the Live page ---------------------------------------------------------
+   The forward half. "Is it working now" is a different question from "did it work
+   then", so it is a different page. */
+.livepage { display: none; flex: 1; min-width: 0; overflow-y: auto;
+  background: var(--bg); padding: 14px 14px 40px; }
+
+
+.lvhead { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap;
+  font-family: var(--mono); margin-bottom: 11px; }
+.lvhead .lvname { font-size: 15px; color: var(--fg); }
+.lvhead .lvmeta { font-size: 10.5px; color: var(--fg-faint); }
+.lvhead .lvmeta b { color: var(--fg-dim); }
+.lvhead .grow, .lvcard-h .grow, .lvpage .grow { flex: 1; }
+.lvtiles { margin-bottom: 11px; border: 1px solid var(--line); border-radius: 3px;
+  overflow: hidden; }
+.lvcard { border: 1px solid var(--line); border-radius: 3px; background: var(--panel);
+  padding: 11px 13px; }
+.lvcard-h { display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap;
+  font-family: var(--mono); font-size: 10.5px; color: var(--fg-faint); margin-bottom: 9px; }
+.lvcard-h .t { color: var(--fg-dim); font-size: 11.5px; }
+.lvcard-h .lgd { display: inline-flex; align-items: center; gap: 5px; }
+.lvcard-h .lgd i { width: 16px; height: 0; display: inline-block; }
+.lvcard-h .lgd i.dash { border-top: 1.4px dashed var(--fg-faint); }
+.lvcard-h .lgd i.solid { border-top: 2px solid var(--key); }
+svg.lvchart { display: block; width: 100%; height: auto; }
+.lvfoot { font-family: var(--mono); font-size: 9px; color: var(--fg-faint); margin-top: 7px;
+  letter-spacing: .02em; }
+.lvempty { font-family: var(--sans); font-size: 12px; color: var(--fg-faint);
+  padding: 22px 4px; }
+.lvhold { display: flex; flex-wrap: wrap; gap: 6px; padding: 0 0 6px; }
+.lvhold span { font-family: var(--mono); font-size: 10.5px; padding: 4px 9px;
+  border: 1px solid var(--line-2); border-radius: 2px; color: var(--fg-dim);
+  background: var(--panel-2); }
+.lvhold span i { font-style: normal; color: var(--key); margin-left: 7px; }
+/*  On, and producing nothing. A failure with the fix attached, rather than a red
+    line repeating in a log nobody has open. */
+.lvbad { border: 1px solid #c1503f44; background: #c1503f0d; border-radius: 3px;
+  padding: 13px 15px; max-width: 74ch; }
+.lvbad-h { display: flex; gap: 9px; align-items: baseline; color: var(--red);
+  font-size: 13px; }
+.lvbad-h .ic { font-family: var(--mono); }
+.lvbad p, .lvoff p { font-size: 12.5px; line-height: 1.55; color: var(--fg-dim);
+  margin: 8px 0 0; }
+.lvoff { border: 1px dashed var(--line-2); border-radius: 3px; padding: 15px 17px;
+  max-width: 74ch; }
+.lvoff b { font-family: var(--mono); font-size: 13px; }
+.lvfix { display: flex; align-items: center; gap: 9px; flex-wrap: wrap; margin-top: 13px; }
+.lvfix label { font-family: var(--mono); font-size: 9px; letter-spacing: .13em;
+  text-transform: uppercase; color: var(--fg-faint); }
+.lvfix select { font: inherit; font-family: var(--mono); font-size: 11.5px; color: var(--fg);
+  background: var(--panel); border: 1px solid var(--line-2); border-radius: 3px;
+  padding: 5px 9px; }
+
+/* ---- the Data page ---------------------------------------------------------
+   The graph draws the shape of the project. This draws its contents. */
+.datapage { display: none; flex: 1; min-width: 0; overflow-y: auto;
+  background: var(--bg); padding: 0 0 40px; }
+
+
+.datapage .kicker { display: flex; align-items: baseline; gap: 9px; }
+.datapage .grow { flex: 1; }
+.dcard { border: 1px solid var(--line); border-radius: 3px; background: var(--panel);
+  margin: 0 14px 10px; padding: 11px 13px; }
+.dcard .dh { display: flex; align-items: baseline; gap: 9px; flex-wrap: wrap;
+  margin-bottom: 9px; font-family: var(--mono); }
+.dcard .dn { font-size: 12.5px; color: var(--fg); }
+.dcard .dm { font-size: 10px; color: var(--fg-faint); letter-spacing: .02em; }
+.dcard .dbuild { font-family: var(--mono); font-size: 9.5px; letter-spacing: .1em;
+  text-transform: uppercase; color: var(--cyan); background: none;
+  border: 1px solid #7fc4b444; border-radius: 2px; padding: 3px 8px; cursor: pointer; }
+.dcard .dbuild:hover { background: #101d1a; border-color: var(--cyan); }
+/*  The column is the unit, and the bar is how much of it is filled. A row count
+    alone cannot say "this barely overlaps your prices". */
+.prow { display: grid; grid-template-columns: 120px 1fr 280px; gap: 12px;
+  align-items: center; padding: 4px 0; border-top: 1px solid var(--line);
+  font-family: var(--mono); font-size: 10.5px; }
+.prow:first-of-type { border-top: 0; }
+.prow .pc { color: var(--fg-dim); overflow: hidden; text-overflow: ellipsis; }
+.prow .pv { color: var(--fg-faint); text-align: right;
+  overflow: hidden; text-overflow: ellipsis; }
+.prow .pv .miss { color: var(--gold); margin-left: 6px; }
+.pbar { height: 5px; border-radius: 2px; background: var(--panel-3); overflow: hidden; }
+.pbar i { display: block; height: 100%; background: var(--key); opacity: .62; }
+.pbar i.part { background: var(--gold); }
+.pbar i.thin { background: var(--red); }
+.dwarn { display: flex; gap: 9px; align-items: flex-start; margin: 0 14px 10px;
+  font-size: 11.5px; line-height: 1.5; color: var(--gold);
+  background: #e8c0690d; border: 1px solid #e8c06933; border-radius: 2px; padding: 9px 11px; }
+.dwarn .ic { flex: none; font-family: var(--mono); }
+.dempty { margin: 0 14px; padding: 18px; color: var(--fg-faint); font-size: 12.5px;
+  border: 1px dashed var(--line-2); border-radius: 3px; }
+@media (max-width: 900px) { .prow { grid-template-columns: 96px 1fr; }
+  .prow .pv { grid-column: 1 / -1; text-align: left; } }
+
+/*  The table set a step may read. A list rather than a <select>, because `from:` is
+    a list and an alpha reading three feature tables is ordinary. */
+.readset { display: flex; flex-direction: column; gap: 3px; }
+.readset .rsrow { display: flex; align-items: center; gap: 8px; cursor: pointer;
+  padding: 4px 7px; border: 1px solid var(--line); border-radius: 2px;
+  background: var(--panel); font-family: var(--mono); font-size: 11px; }
+.readset .rsrow:hover { border-color: var(--line-2); }
+.readset .rsrow.on { border-color: #a2e65d55; background: #a2e65d0d; }
+.readset .rsrow .rt { color: var(--fg-dim); flex: 1; min-width: 0;
+  overflow: hidden; text-overflow: ellipsis; }
+.readset .rsrow.on .rt { color: var(--fg); }
+.readset .rsrow .rp { display: flex; align-items: center; gap: 4px; flex: none; }
+.readset .rsrow .rp i { font-style: normal; font-size: 8.5px; letter-spacing: .1em;
+  text-transform: uppercase; color: var(--fg-faint); }
+/*  The marker only means something on a row that is ticked, and saying so quietly
+    beats letting somebody click a control that will not take. */
+.readset .rsrow .rp input:disabled + i { opacity: .3; }
+.readset .rsrow .rp input:checked + i { color: var(--gold); }
+/*  `.rrow input` styles every field in this form as a full-width text box, which a
+    tick is not: each checkbox took the whole row and squeezed the table name it was
+    labelling down to nothing. */
+.readset input[type="checkbox"], .readset input[type="radio"] {
+  accent-color: var(--key); margin: 0; flex: none;
+  width: 13px; height: 13px; min-width: 13px;
+  padding: 0; border: 0; border-radius: 0; background: none;
+}
+.readset .rsnew { font-family: var(--mono); font-size: 10.5px; text-align: left;
+  padding: 4px 7px; margin-top: 2px; color: var(--fg-faint); background: none;
+  border: 1px dashed var(--line-2); border-radius: 2px; cursor: pointer; }
+.readset .rsnew:hover { color: var(--key); border-color: #a2e65d55; }
+
+.tile .v.warnv { color: var(--gold); }
+/*  The stretch an alpha held nothing, on the curve rather than under it. */
+.bt-flat { fill: url(#bt-hatch); }
+.flatkey { color: var(--gold); }
+.tile .v .of { color: var(--fg-faint); font-size: 10.5px; }
 table.t.corr { table-layout: fixed; width: 100%; }
 table.t.corr td { padding: 4px 8px; font-size: 10.5px; }
 table.t.corr td.pair { overflow: hidden; }
@@ -591,7 +804,7 @@ table.t.corr td:nth-child(3) { width: 34px; }
 .graph-folded .btwrap[data-open="1"] { flex: 1 1 auto; }
 .graph-folded .btwrap[data-open="0"] ~ .logwrap { flex: 1 1 auto; }
 .graph-folded .grip { display: none; }   /* nothing above it to resize against */
-.rail-folded .rail:first-of-type { width: 0; flex-basis: 0; overflow: hidden; border-right: 0; }
+.rail-folded .rail.book { width: 0; flex-basis: 0; overflow: hidden; border-right: 0; }
 .fold {
   font: inherit; font-family: var(--mono); font-size: 9.5px; letter-spacing: .1em;
   color: var(--fg-faint); background: var(--panel); border: 1px solid var(--line-2);
@@ -704,6 +917,21 @@ body.resizing { cursor: ns-resize; user-select: none; }
   border: 1px solid var(--line-2);
 }
 .srcadd:hover { border-color: #a2e65d55; background: #1a1d13; }
+/*  Sits under "＋ data source": connecting data and building on it are the two
+    things you start from on this page, so they read as a pair. */
+.srcadd.stepadd { top: 86px; color: var(--cyan); }
+.srcadd.stepadd:hover { border-color: #7fc4b455; background: #101d1a; }
+
+/*  The tables ticked on the graph for the step being wired. A chip rather than a
+    row: the list is short, and it is a readback of clicks made elsewhere. */
+.wireset { display: flex; flex-wrap: wrap; gap: 4px; }
+.wireset .wchip { display: inline-flex; align-items: center; gap: 6px;
+  font-family: var(--mono); font-size: 10.5px; color: var(--fg-dim);
+  background: #a2e65d0d; border: 1px solid #a2e65d44; border-radius: 2px;
+  padding: 3px 7px; }
+.wireset .wchip b { color: var(--fg-faint); cursor: pointer; font-weight: 400; }
+.wireset .wchip b:hover { color: var(--red); }
+.kicker.sub { padding-left: 0; border-bottom: 0; color: var(--gold); }
 .bt-note-inline.rerun { border-left: 2px solid var(--key); padding-left: 10px; margin-bottom: 10px; }
 .bt-note-inline.rerun .chip { margin-left: 4px; }
 
@@ -744,26 +972,33 @@ body.server-down .bt-empty.bad { display: none; }
   height:2px;background:var(--key)}
 
 /* --- Strategies: the book is the page, and the report fills the rest --- */
-body.page-strategies .view,
-body.page-strategies .rail-r{display:none}
-body.page-strategies .rail:first-of-type{
+
+/*  The editor rail used to be hidden here too, and every way into it starts on this
+    page: "+ add an alpha" at the foot of the book, and the `edit` on each card. The
+    form was built, `sel-head` was filled, `book-editing` went on the body -- into an
+    element with `display:none`. The button did nothing, on the only page it appears.
+    Hiding it made sense while the rail was a column: this page lays `.shell` out in a
+    row direction of its own, so a rail taking part in that flow would land under the
+    report as a 400px-wide stub. It opens over the page instead, which is what a panel
+    summoned by a button should do anyway. */
+body.page-backtest .rail.book{
   flex:0 0 var(--book-w,360px);width:var(--book-w,360px);visibility:visible}
 /* the report is the point of this page, so it is never collapsed here */
-body.page-strategies .btwrap{flex:1 1 auto;max-height:none}
-body.page-strategies .btwrap .bt-body{display:flex}
-body.page-strategies .bt-bar-h .chev,
-body.page-strategies .btwrap .grip,
-body.page-strategies #btn-bt{display:none}
+body.page-backtest .btwrap{flex:1 1 auto;max-height:none}
+body.page-backtest .btwrap .bt-body{display:flex}
+body.page-backtest .bt-bar-h .chev,
+body.page-backtest .btwrap .grip,
+
 
 /* --- Pipeline: the graph, the tables, and what wrote them --- */
-body.page-pipeline .rail:first-of-type{display:none}
-body.page-pipeline .btwrap{display:none}
-body.page-pipeline .view{display:block}
+
+
+
 
 /* The log keeps its own height on both pages rather than being squeezed out by
    whatever is above it. */
-body.page-strategies .logwrap,
-body.page-pipeline .logwrap{display:flex;flex:0 0 132px}
+body.page-backtest .logwrap,
+body.page-alpha .logwrap{display:flex;flex:0 0 132px}
 
 /* Who caused a run. The agent column is the whole reason this log is on both
    pages, so it is coloured rather than left to blend into the message. */
@@ -779,7 +1014,7 @@ body.page-pipeline .logwrap{display:flex;flex:0 0 132px}
    people will drive this. The model is the agent CLI already on the machine, so
    there is nothing here about keys or signing in. */
 
-.askbar{border-bottom:1px solid var(--line);background:var(--panel);padding:9px 18px;
+.askbar{background:var(--panel);padding:9px 18px;
   display:flex;flex-direction:column;gap:8px;flex:none}
 .askrow{display:flex;gap:10px;align-items:center}
 .askrow .lbl{font-family:var(--mono);font-size:9px;letter-spacing:.16em;text-transform:uppercase;
@@ -829,32 +1064,32 @@ body.page-pipeline .logwrap{display:flex;flex:0 0 132px}
    page it is the page, so it goes across the top as a row per strategy, with the
    name, what it earned and its shape in line -- and the report sits under it. */
 
-body.page-strategies .shell{flex-direction:column}
-body.page-strategies .rail:first-of-type{
+
+body.page-backtest .rail.book{
   width:auto;flex:0 0 auto;max-height:46%;border-right:0;
   border-bottom:1px solid var(--line)}
 
-body.page-strategies .sitem{
+body.page-backtest .sitem{
   display:grid;
   grid-template-columns:minmax(170px,1.1fr) 108px minmax(200px,1.7fr) minmax(150px,220px);
   align-items:center;gap:18px;padding:9px 14px}
-body.page-strategies .sitem .r1{display:contents}
-body.page-strategies .sitem .sh{margin-left:0;text-align:right}
-body.page-strategies .sitem .nm{margin-top:0;font-size:10px}
-body.page-strategies .sitem svg.sp{margin-top:0}
-body.page-strategies .sitem-wrap .edrow{bottom:auto;top:50%;transform:translateY(-50%)}
+body.page-backtest .sitem .r1{display:contents}
+body.page-backtest .sitem .sh{margin-left:0;text-align:right}
+body.page-backtest .sitem .nm{margin-top:0;font-size:10px}
+body.page-backtest .sitem svg.sp{margin-top:0}
+body.page-backtest .sitem-wrap .edrow{bottom:auto;top:50%;transform:translateY(-50%)}
 
 /* The tiles read as one strip across the top. Correlation is a real question but
    a second one, and it does not belong above the strategies it is about. */
-body.page-strategies #book-stats .htiles{display:flex;flex-wrap:nowrap}
-body.page-strategies #book-stats .tile{flex:1 1 0;min-width:0;padding:8px 14px}
-body.page-strategies #book-stats .hm,
-body.page-strategies #book-stats .kicker.sub,
-body.page-strategies #book-stats .bt-note-inline{display:none}
+body.page-backtest #book-stats .htiles{display:flex;flex-wrap:nowrap}
+body.page-backtest #book-stats .tile{flex:1 1 0;min-width:0;padding:8px 14px}
+body.page-backtest #book-stats .hm,
+body.page-backtest #book-stats .kicker.sub,
+body.page-backtest #book-stats .bt-note-inline{display:none}
 /* the stats sit still and the strategies scroll under them */
-body.page-strategies .rail:first-of-type{display:flex;flex-direction:column}
-body.page-strategies #book-stats{flex:none}
-body.page-strategies #book{flex:1 1 auto;min-height:0;overflow-y:auto}
+body.page-backtest .rail.book{display:flex;flex-direction:column}
+body.page-backtest #book-stats{flex:none}
+body.page-backtest #book{flex:1 1 auto;min-height:0;overflow-y:auto}
 
 /* ==================================================== the backtest form
 
@@ -878,12 +1113,12 @@ body.page-strategies #book{flex:1 1 auto;min-height:0;overflow-y:auto}
    the stage legend is what the colours already say, and the hint is a thing you
    read once. Both stay for a first visit and then fold into one line. */
 
-body.page-pipeline .legend{
+body.page-alpha .legend{
   bottom:26px;gap:10px 14px;opacity:.5;transition:opacity .15s}
-body.page-pipeline .view:hover .legend{opacity:1}
-body.page-pipeline .legend .lg{font-size:9px}
-body.page-pipeline .hint{opacity:0;transition:opacity .15s}
-body.page-pipeline .view:hover .hint{opacity:.75}
+body.page-alpha .view:hover .legend{opacity:1}
+body.page-alpha .legend .lg{font-size:9px}
+body.page-alpha .hint{opacity:0;transition:opacity .15s}
+body.page-alpha .view:hover .hint{opacity:.75}
 
 /* ================================================== the ask panel, capped
 
@@ -894,7 +1129,7 @@ body.page-pipeline .view:hover .hint{opacity:.75}
     the window. Folding it does not blind you: the bar keeps a one-line ticker of
     the newest step and the clock, so the work stays visible while the panel is
     out of the way. */
-.askbar{padding:8px 18px;gap:7px;position:relative;overflow:visible;z-index:40}
+.askbar{gap:7px;position:relative;overflow:visible;z-index:40}
 .askwork{position:absolute;left:18px;right:18px;top:calc(100% - 4px);z-index:41;
   max-height:min(44vh,380px);display:flex;flex-direction:column;
   background:var(--panel);box-shadow:0 20px 46px -14px #000,0 0 0 1px var(--line-2)}
@@ -923,8 +1158,8 @@ body.page-pipeline .view:hover .hint{opacity:.75}
 
 /*  Nothing below may be squeezed to nothing: the report keeps a floor, and the
     book gives way before it does. */
-body.page-strategies .rail:first-of-type{max-height:38%}
-body.page-strategies .btwrap{min-height:220px}
+body.page-backtest .rail.book{max-height:38%}
+body.page-backtest .btwrap{min-height:220px}
 .logwrap{flex:0 0 118px;height:118px}
 
 /* ======================================== the table panel, given room to be one
@@ -934,10 +1169,10 @@ body.page-strategies .btwrap{min-height:220px}
    horizontal scrollbar. The panel widens on the page that is about tables, and
    the rows keep a floor of their own so the description can never crowd them
    out. */
-body.page-pipeline{--detail-w:min(640px,46vw)}
-body.page-pipeline #sel-body .tablewrap{min-height:280px}
-body.page-pipeline #sel-body table.data th,
-body.page-pipeline #sel-body table.t th{position:sticky;top:0;background:var(--panel-2);z-index:1}
+body.page-alpha{--detail-w:min(640px,46vw)}
+body.page-alpha #sel-body .tablewrap{min-height:280px}
+body.page-alpha #sel-body table.data th,
+body.page-alpha #sel-body table.t th{position:sticky;top:0;background:var(--panel-2);z-index:1}
 
 /* the run log folds to its own title bar */
 .logfold{display:flex;align-items:baseline;gap:9px;width:100%;text-align:left;font:inherit;
@@ -947,10 +1182,10 @@ body.page-pipeline #sel-body table.t th{position:sticky;top:0;background:var(--p
 .logfold .chev{font-family:var(--mono);font-size:9px;color:var(--fg-faint);
   transition:transform .15s;flex:none}
 .logwrap[data-open="0"] .logfold .chev{transform:rotate(-90deg)}
-/*  `body.page-strategies .logwrap` outranks a bare `.logwrap[data-open]`, so the
+/*  `body.page-backtest .logwrap` outranks a bare `.logwrap[data-open]`, so the
     fold has to be written at the same reach or the panel keeps its 132px. */
-body.page-strategies .logwrap[data-open="0"],
-body.page-pipeline .logwrap[data-open="0"]{flex:0 0 auto;height:auto;min-height:0}
+body.page-backtest .logwrap[data-open="0"],
+body.page-alpha .logwrap[data-open="0"]{flex:0 0 auto;height:auto;min-height:0}
 .logwrap[data-open="0"] #log{display:none}
 /*  While the panel is open the bar is still there holding its place, just quiet:
     removing it changed the height of the ask bar and shifted the whole page. */
@@ -960,3 +1195,230 @@ body.page-pipeline .logwrap[data-open="0"]{flex:0 0 auto;height:auto;min-height:
 .btn-head.go.stop{background:var(--panel-2);border-color:var(--red);color:var(--red);
   font-weight:400}
 .btn-head.go.stop:hover{background:#2a1714;color:#e0705c}
+
+/* ---- cards in the thread ----------------------------------------------------
+   Some tool results are not a panel to switch to, they are a question to answer.
+   `backtest_conditions` returns a field literally called `ask_the_person_for`. */
+.askcard{border:1px solid #e8c06944;background:#e8c0690a;border-radius:3px;
+  padding:10px 11px;margin:6px 0 10px}
+.askcard .h{font-family:var(--mono);font-size:9px;letter-spacing:.12em;text-transform:uppercase;
+  color:var(--gold);margin-bottom:9px}
+.askcard .f{display:flex;align-items:center;gap:9px;padding:3px 0}
+.askcard .f label{font-family:var(--mono);font-size:10px;color:var(--fg-faint);
+  width:74px;flex:none}
+.askcard .f input,.askcard .f select{flex:1;min-width:0;font:inherit;font-family:var(--mono);
+  font-size:11px;color:var(--fg);background:var(--panel-2);border:1px solid var(--line-2);
+  border-radius:2px;padding:4px 7px}
+.askcard .f input:focus,.askcard .f select:focus{outline:2px solid var(--key);outline-offset:1px}
+.askcard .why{font-size:10.5px;line-height:1.5;color:var(--fg-faint);margin:9px 0 0}
+.askcard .go{display:flex;align-items:center;gap:8px;margin-top:10px;flex-wrap:wrap}
+
+
+
+
+/* ---- the stage says what it is showing --------------------------------------- */
+.stagehead{display:flex;align-items:baseline;gap:9px;flex:none;
+  padding:7px 14px;border-bottom:1px solid var(--line);background:var(--bg-2);
+  font-family:var(--mono);font-size:10px;letter-spacing:.04em;color:var(--fg-faint)}
+.stagehead .sh-k{font-size:9px;letter-spacing:.16em;text-transform:uppercase}
+.stagehead b{color:var(--fg-dim);font-weight:500}
+.stagehead .grow{flex:1}
+.stagehead .sh-why{color:var(--key)}
+.stagehead .sh-why.pinned{color:var(--gold)}
+
+/*  The thread now carries the tool lines and the answer, so the old panel under
+    the input is the same information twice. What is worth keeping is the one line
+    that says something is still running. */
+.chatrail .askwork .asklines{display:none}
+.chatrail .askwork{max-height:none;border:0;background:none;padding:0}
+.chatrail .askanswer{display:none}
+.chatrail .askhead{width:100%;font-family:var(--mono);font-size:9.5px;
+  color:var(--fg-faint);background:none;border:0;padding:5px 0 0;display:flex;
+  align-items:center;gap:7px;cursor:default}
+.chatrail .askhead .chev{display:none}
+.chatrail .askpeek{width:100%;font-family:var(--mono);font-size:9.5px;
+  color:var(--fg-faint);background:none;border:0;padding:5px 0 0;display:flex;
+  align-items:center;gap:7px}
+/*  `hidden` sets display:none from the UA sheet, and an author rule saying
+    `display:flex` beats it. So the idle status line sat there with its spinner
+    turning over a question nobody had asked. Anything the page hides stays hidden. */
+.chatrail [hidden]{display:none !important}
+.chatrail .askpeek .more{display:none}
+
+/*  A write, shown before it is a thing that happened. */
+.diffcard{border:1px solid #a2e65d44;background:#a2e65d0a;border-radius:3px;
+  padding:10px 11px;margin:6px 0 10px}
+.diffcard .h{font-family:var(--mono);font-size:9px;letter-spacing:.12em;
+  text-transform:uppercase;color:var(--key);margin-bottom:8px}
+.diffcard .row{display:flex;justify-content:space-between;gap:10px;padding:3px 0;
+  border-top:1px solid var(--line);font-family:var(--mono);font-size:10px}
+.diffcard .row:first-of-type{border-top:0}
+.diffcard .row span:first-child{color:var(--fg-faint)}
+.diffcard .row span:last-child{color:var(--fg);text-align:right;
+  overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.diffcard .row.add span:first-child{color:var(--key)}
+.diffcard .go{display:flex;gap:8px;margin-top:9px;align-items:center}
+
+/*  Agent prose reads as a message, not as a caption. */
+.crthread .cm.agent{border-left:2px solid var(--line-2);padding-left:9px}
+
+
+/* ---- one shell: the conversation, and a stage of panes ----------------------
+   This replaced a shell of four siblings -- two rails, a stage and a pair of
+   floating pages -- that every page then rearranged with its own display rules.
+   There is one arrangement now: the thread has a side, and the surface you are
+   looking at fills the rest. A pane is shown or it is not. */
+.shell{display:flex;flex-direction:row}
+.stage{flex:1 1 auto;min-width:0;min-height:0;display:flex;flex-direction:column;
+  position:relative;overflow:hidden}
+.stagebody{flex:1 1 auto;min-height:0;min-width:0;display:flex;position:relative}
+
+.pane{display:none;flex:1 1 auto;min-width:0;min-height:0}
+body.page-data #page-data,
+body.page-alpha #page-alpha,
+body.page-backtest #page-backtest,
+body.page-live #page-live{display:flex}
+
+#page-data,#page-live{flex-direction:column;overflow-y:auto;background:var(--bg)}
+#page-alpha{flex-direction:column}
+#page-alpha .view{flex:1 1 auto;min-height:0}
+/*  The book was a rail beside the stage. It is part of the backtest surface: it is
+    the list of the things this surface reports on. */
+#page-backtest{flex-direction:column;overflow:hidden}
+#page-backtest .rail.book{flex:0 0 auto;max-height:40%;width:auto;border-right:0;
+  border-bottom:1px solid var(--line);overflow-y:auto;visibility:visible}
+#page-backtest .btwrap{flex:1 1 auto;min-height:0;max-height:none}
+
+/*  One detail panel, opening over whichever pane is showing. It used to be a
+    sibling of the stage that two of the four pages hid outright, which is how the
+    alpha editor came to render into something with `display:none`. */
+.rail-r{position:absolute;top:0;right:0;bottom:0;z-index:20;
+  flex:none;width:0;overflow:hidden;border-left:0;
+  transition:width .2s ease}
+.rail-r.open{width:var(--detail-w);border-left:1px solid var(--line);
+  background:var(--bg-2);box-shadow:-18px 0 44px #00000077}
+
+@media(max-width:920px){
+  /* too narrow for both: the conversation keeps the width it needs and the work
+     goes under it rather than being squeezed into a column nobody can read */
+  .shell{flex-direction:column}
+  .chatrail{flex:0 0 auto;width:auto;max-height:42%;border-right:0;
+    border-bottom:1px solid var(--line)}
+}
+
+/* ---- what a tool call returned, in the thread --------------------------------
+   A line saying `sample_table · raw.news` is a log. The rows it saw are context.
+   Each call opens onto a compact view of its own answer; the newest opens itself,
+   because context should not need a click. */
+.ctwrap{margin:3px 0}
+.crthread .ct{width:100%}
+.crthread .ct .grow{flex:1}
+.crthread .ct .cx{color:var(--line-2);font-size:8px;transition:transform .12s}
+.crthread .ct.open .cx{transform:rotate(180deg);color:var(--fg-faint)}
+.cout{border-left:1px solid var(--line-2);margin:4px 0 8px 7px;padding:6px 0 2px 9px}
+.cout .cnote{font-family:var(--mono);font-size:9px;color:var(--fg-faint);
+  letter-spacing:.03em;margin-bottom:6px}
+/*  A glance, not the table: the stage beside this is where the whole thing lives. */
+table.ctab{width:100%;border-collapse:collapse;font-family:var(--mono);font-size:9px}
+table.ctab th{text-align:left;color:var(--fg-faint);font-weight:400;padding:2px 6px 3px 0;
+  border-bottom:1px solid var(--line);white-space:nowrap}
+table.ctab td{color:var(--fg-dim);padding:2px 6px 2px 0;white-space:nowrap;
+  overflow:hidden;text-overflow:ellipsis;max-width:92px}
+.cbar{display:grid;grid-template-columns:62px 1fr auto;gap:7px;align-items:center;
+  font-family:var(--mono);font-size:9px;color:var(--fg-faint);padding:1.5px 0}
+.cbar span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--fg-dim)}
+.cbar i{height:4px;border-radius:2px;background:var(--panel-3);overflow:hidden;display:block}
+.cbar i u{display:block;height:100%;background:var(--key);opacity:.6;text-decoration:none}
+.cbar em{font-style:normal}
+.cgrid{display:grid;grid-template-columns:1fr 1fr;gap:5px 10px;font-family:var(--mono)}
+.cgrid div{display:flex;justify-content:space-between;gap:8px;font-size:9.5px}
+.cgrid span{color:var(--fg-faint)}
+.cgrid b{color:var(--fg);font-weight:500}
+.cgrid b.up{color:var(--key)} .cgrid b.down{color:var(--red)} .cgrid b.warn{color:var(--gold)}
+.cline{display:flex;gap:8px;font-family:var(--mono);font-size:9px;padding:1.5px 0;
+  color:var(--fg-dim)}
+.cline span{flex:none;min-width:66px}
+.cline em{font-style:normal;color:var(--fg-faint);overflow:hidden;text-overflow:ellipsis;
+  white-space:nowrap}
+.cline.bad em{color:var(--red)}
+.cline.warn em{color:var(--gold)}
+
+/*  The pane's own action, in its header, where `+ step` sits on the graph. */
+#page-backtest .rail.book .kicker{display:flex;align-items:center;gap:9px}
+#page-backtest .rail.book .kicker .grow{flex:1}
+#page-backtest #btn-run{flex:none}
+
+/*  The spinner reports work. With no run in flight there is no work, so it holds
+    still rather than implying one. */
+.chatrail .askwork:not(.running) .spin,
+.chatrail .askpeek:not(.running) .spin{animation:none;opacity:.35}
+
+/* ---- the agent's own markdown ------------------------------------------------
+   It answers in markdown and it uses tables -- ask for a PnL table and it returns
+   one. Rendered as escaped text in a div, that arrived as a run-on line of pipes. */
+.crthread .cm p{margin:0 0 7px;line-height:1.5}
+.crthread .cm p:last-child{margin-bottom:0}
+.crthread .cm code{font-family:var(--mono);font-size:10px;color:var(--gold);
+  background:var(--panel-2);border:1px solid var(--line-2);border-radius:2px;
+  padding:0 3px}
+.crthread .cm b{color:var(--fg)}
+.mdl{margin:0 0 7px;padding-left:15px}
+.mdl li{margin:2px 0;line-height:1.45}
+/*  A table the agent wrote scrolls in its own box: the rail is narrow and the page
+    must never scroll sideways because a reply was wide. */
+.mdtwrap{overflow-x:auto;margin:0 0 8px;border:1px solid var(--line);border-radius:2px}
+table.mdt{border-collapse:collapse;font-family:var(--mono);font-size:9px;width:100%}
+table.mdt th{text-align:left;color:var(--fg-faint);font-weight:400;white-space:nowrap;
+  padding:3px 7px;border-bottom:1px solid var(--line);background:var(--panel-2);
+  position:sticky;top:0}
+table.mdt td{color:var(--fg-dim);white-space:nowrap;padding:2px 7px;
+  border-top:1px solid var(--line)}
+table.mdt tbody tr:hover td{background:var(--panel-2)}
+
+/* ---- what to ask next --------------------------------------------------------
+   Read off the project, not a fixed list: a console with no strategy in it and one
+   whose live scorer is failing are at different points of the same arc. */
+.suggest{margin:10px 0 4px}
+.suggest .sh{font-family:var(--mono);font-size:8.5px;letter-spacing:.16em;
+  text-transform:uppercase;color:var(--fg-faint);margin-bottom:6px}
+.sq{display:block;width:100%;text-align:left;font:inherit;cursor:pointer;
+  background:var(--panel-2);border:1px solid var(--line-2);border-radius:3px;
+  padding:7px 9px;margin-bottom:5px;color:var(--fg-dim)}
+.sq:hover{border-color:#a2e65d55;background:#a2e65d0a;color:var(--fg)}
+.sq span{display:block;font-size:11.5px;line-height:1.4}
+/*  Why it is worth asking, not just what to ask. */
+.sq em{display:block;font-style:normal;font-family:var(--mono);font-size:9px;
+  color:var(--fg-faint);margin-top:3px}
+.sq:hover em{color:var(--key)}
+
+/*  The reply as it is being written. A caret so it reads as still going, and no
+    border-left yet -- it is not a finished message until it stops moving. */
+.crthread .cm.live{border-left:2px solid #a2e65d55;padding-left:9px}
+.crthread .cm.live > :last-child::after{content:'▍';color:var(--key);
+  margin-left:2px;animation:crcaret 1s steps(2) infinite}
+@keyframes crcaret{50%{opacity:0}}
+@media(prefers-reduced-motion:reduce){
+  .crthread .cm.live > :last-child::after{animation:none}
+}
+
+/* ---- one status line, and it does not reflow ---------------------------------
+   There were two rows under the input: the question, and what the agent is doing
+   now -- both with the same elapsed clock. The question is already a bubble in the
+   thread above, so repeating it was duplication, and at the rail's width it wrapped
+   to two lines. Every time the tool text changed length the row reflowed and a word
+   jumped between lines, over and over. */
+.chatrail .askwork{display:none}
+.chatrail .askpeek{
+  white-space:nowrap; overflow:hidden; min-width:0;
+  /* a status line has to hold still: fixed height, one line, clipped */
+  height:22px; align-items:center;
+}
+.chatrail .askpeek .px{
+  flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;
+}
+.chatrail .askpeek .pk{flex:none}
+.chatrail .askpeek #peek-el{flex:none;font-variant-numeric:tabular-nums}
+
+/*  Even at one decimal the readout is 4.1s then 14.1s then 124.1s. Reserve the
+    room once so a digit appearing never moves the text beside it. */
+.chatrail .askpeek #peek-el{min-width:44px;text-align:right}

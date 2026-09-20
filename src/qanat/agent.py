@@ -90,6 +90,9 @@ class Ask:
     started: float = field(default_factory=time.time)
     lines: list[dict[str, Any]] = field(default_factory=list)
     answer: str = ""
+    #: The reply so far, while it is still being written. Cleared once `answer`
+    #: holds the whole of it.
+    partial: str = ""
     error: str = ""
     done: bool = False
     cli: str = ""
@@ -114,6 +117,7 @@ class Ask:
             "question": self.question,
             "lines": list(self.lines),
             "answer": self.answer,
+            "partial": self.partial,
             "error": self.error,
             "done": self.done,
             "cli": self.cli,
@@ -191,6 +195,11 @@ def run(ask: Ask, root: Path, base: str, timeout: float = 180.0) -> None:
     cmd = [cli["path"], "-p", _brief(base, ask.question)]
     if cli["bin"] == "claude":
         cmd += ["--output-format", "stream-json", "--verbose",
+                # Without this the answer arrives in one piece when the process
+                # ends: thirty seconds of a spinner, then a wall of text. With it
+                # the reply is readable while it is being written, which is the
+                # difference between waiting for an answer and watching one.
+                "--include-partial-messages",
                 "--allowedTools", "Bash,Read,Glob,Grep,Edit,Write"]
     else:
         cmd += ["--print"]
@@ -223,6 +232,21 @@ def run(ask: Ask, root: Path, base: str, timeout: float = 180.0) -> None:
                 ev = json.loads(raw)
             except ValueError:
                 continue
+            # The reply as it is being written. `result` at the end is the same
+            # text, complete -- this is only so the console has something to show
+            # before then.
+            if ev.get("type") == "stream_event":
+                se = ev.get("event") or {}
+                if se.get("type") == "content_block_delta":
+                    d = se.get("delta") or {}
+                    if d.get("type") == "text_delta":
+                        ask.partial += str(d.get("text") or "")
+                elif se.get("type") == "content_block_start":
+                    blk = se.get("content_block") or {}
+                    # a tool call interrupts the prose: keep the paragraphs apart
+                    if blk.get("type") == "tool_use" and ask.partial:
+                        ask.partial += "\n\n"
+                continue
             if ev.get("type") == "assistant":
                 for block in (ev.get("message") or {}).get("content") or []:
                     if block.get("type") == "tool_use":
@@ -232,6 +256,7 @@ def run(ask: Ask, root: Path, base: str, timeout: float = 180.0) -> None:
                         _say(ask, "think", block["text"].strip()[:160])
             elif ev.get("type") == "result":
                 ask.answer = str(ev.get("result") or "").strip()
+                ask.partial = ""
     finally:
         proc.wait()
         if ask.stopped:

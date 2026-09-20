@@ -65,6 +65,9 @@
     return 'every month';
   }
 
+  //: the id the step being wired answers to while it has no name in the file
+  var PENDING = '__pending__';
+
   function Dag(canvas) {
     this.cv = canvas;
     this.ctx = canvas.getContext('2d');
@@ -88,9 +91,32 @@
     this.glide = null;
     this.onSelect = null;
     this.onHover = null;
+    //: while this is set the graph is an editor: clicking a table adds it to the
+    //: step being built instead of opening it. `{stage, name, picked:{ref:1}}`.
+    this.wiring = null;
+    this.onWire = null;
     this.now = 0;
     this._wire();
   }
+
+  Dag.prototype.setWiring = function (w) {
+    this.wiring = w;
+    if (this.raw) this.setGraph(this.raw);
+  };
+
+  //  Toggling from the canvas and from the panel has to be the same act, or the two
+  //  drift and the picture stops being the truth about what will be saved.
+  Dag.prototype.toggleInput = function (ref) {
+    var w = this.wiring;
+    if (!w) return null;
+    var n = this.byId[ref];
+    if (n && n.illegal) return n.illegal;
+    if (w.picked[ref]) delete w.picked[ref];
+    else w.picked[ref] = 1;
+    if (this.raw) this.setGraph(this.raw);
+    if (this.onWire) this.onWire(Object.keys(w.picked));
+    return null;
+  };
 
   // ------------------------------------------------------------------ model
   // `ids` is the lineage to light. `set` is the alphaset that was picked -- one
@@ -213,11 +239,79 @@
       return (n.table.producers || []).some(function (a) { return focus.indexOf(a) >= 0; });
     });
 
+    //  Wiring a step: the graph stops being a picture of the pipeline and becomes
+    //  the instrument for adding to it. Which tables may feed the new step is not
+    //  a matter of taste -- it is contract rule 2, data only moves forward -- so
+    //  the illegal ones stay on screen carrying the reason rather than vanishing.
+    var wiring = this.wiring;
+    if (wiring) {
+      var ti = stageIndex[wiring.stage];
+      var tkind = (this.stageMeta[wiring.stage] || {}).kind || 'features';
+      nodes.forEach(function (n) {
+        var si = stageIndex[n.table.stage];
+        var kind = n.table.stage_kind || 'features';
+        n.picked = !!wiring.picked[n.id];
+        if (si == null || ti == null) { n.illegal = 'unknown stage'; return; }
+        // Most specific reason first: "an alpha never reads another alpha" tells you
+        // more than "same stage", and both are true of a weights table.
+        if (kind === 'weights') n.illegal = 'an alpha never reads another alpha';
+        else if (kind === 'pnl') n.illegal = 'a replay writes this, not a step';
+        else if (si > ti) n.illegal = 'later in the pipeline than ' + wiring.stage;
+        else if (si === ti && tkind !== 'features') n.illegal = 'same stage, and only a feature '
+          + 'step may read its own';
+        else n.illegal = null;
+        if (n.illegal) n.picked = false;
+      });
+      var ref = wiring.stage + '.' + (wiring.name || 'new_step');
+      var pending = {
+        id: PENDING,
+        table: { ref: ref, name: wiring.name || 'new step', stage: wiring.stage,
+                 stage_kind: tkind },
+        maker: null, layer: tkind, state: 'queued', rows: 0, cols: 0,
+        computed: false, perPassBase: false, perPass: false, conn: null,
+        prog: 0, flash: 0, depth: ti == null ? 0 : ti, dim: false,
+        planned: true, pending: true, stale: false, x: 0, y: 0,
+      };
+      nodes.push(pending);
+      this.pendingNode = pending;
+    } else {
+      this.pendingNode = null;
+      nodes.forEach(function (n) { n.picked = false; n.illegal = null; });
+
+      //  The pipeline ends in a portfolio -- contract rule 3 -- and a project with
+      //  no weights table has not finished, it has stopped. `project.py` already
+      //  says as much and says it gently: not an error, a warning reading "nothing
+      //  writes into the weights stage 'weights' *yet*". A graph that simply ends
+      //  looks identical to one that is done, so the gap is drawn.
+      var wstage = (g.stages || []).filter(function (s) { return s.kind === 'weights'; })[0];
+      var hasAlpha = nodes.some(function (n) { return (n.table.stage_kind) === 'weights'; });
+      if (wstage && !hasAlpha) {
+        nodes.push({
+          id: '__noalpha__',
+          table: { ref: wstage.id + '.?', name: 'no alpha yet', stage: wstage.id,
+                   stage_kind: 'weights' },
+          maker: null, layer: 'weights', state: 'queued', rows: 0, cols: 0,
+          computed: false, perPassBase: false, perPass: false, conn: null,
+          prog: 0, flash: 0, depth: stageIndex[wstage.id], dim: false,
+          planned: true, gap: true, stale: false, x: 0, y: 0,
+        });
+      }
+    }
+
     var byId = {};
     nodes.forEach(function (n) { byId[n.id] = n; });
 
     // one edge per (input table -> output table), carrying the step that does it
     var edges = [];
+    if (wiring) {
+      // drawn live, so ticking a table shows the shape of the step as you build it
+      Object.keys(wiring.picked).forEach(function (id) {
+        if (byId[id] && byId[PENDING]) {
+          edges.push({ from: byId[id], to: byId[PENDING],
+                       step: { id: wiring.name || 'new step' }, wire: true });
+        }
+      });
+    }
     // a replay writes the pnl table, so the arrow into it is named for the thing
     // that does it rather than left off the drawing
     nodes.forEach(function (n) {
@@ -282,12 +376,12 @@
         nodes.push(way);
         byId[way.id] = way;
         routed.push({ from: prev, to: way, step: e.step, dim: e.dim, dashed: e.dashed,
-                      via: true, head: prev === e.from,
+                      via: true, head: prev === e.from, wire: e.wire,
                       src: e.from.id, dst: e.to.id });
         prev = way;
       }
       routed.push({ from: prev, to: e.to, step: e.step, dim: e.dim, dashed: e.dashed,
-                    via: true, tail: true, src: e.from.id, dst: e.to.id });
+                    via: true, tail: true, wire: e.wire, src: e.from.id, dst: e.to.id });
     });
     edges = routed;
 
@@ -712,9 +806,12 @@
       c.bezierCurveTo(mx, p.y0, mx, p.y1, p.x1, p.y1);
       var hot = self.selected && (e.src === self.selected || e.dst === self.selected);
       c.setLineDash(e.dashed ? [4, 4] : []);
-      c.strokeStyle = hot ? 'rgba(162,230,93,0.5)'
-        : (e.dim ? 'rgba(255,255,255,0.045)' : 'rgba(255,255,255,0.16)');
-      c.lineWidth = hot ? 1.6 : 1;
+      // an edge into the step being wired is the only one that is not yet a fact,
+      // so it is the one drawn in the accent
+      c.strokeStyle = e.wire ? 'rgba(162,230,93,0.85)'
+        : hot ? 'rgba(162,230,93,0.5)'
+          : (e.dim ? 'rgba(255,255,255,0.045)' : 'rgba(255,255,255,0.16)');
+      c.lineWidth = e.wire ? 1.8 : (hot ? 1.6 : 1);
       c.stroke();
       c.setLineDash([]);
     });
@@ -746,15 +843,21 @@
 
     c.save();
     if (n.dim) c.globalAlpha = 0.32;
+    // Wiring: what cannot feed the step recedes but stays legible, because the
+    // reason it cannot is worth reading. What is feeding it is lit.
+    if (n.illegal) c.globalAlpha = 0.28;
     if (n.flash > 0) {
       c.shadowColor = sk.edge;
       c.shadowBlur = 22 * n.flash;
     }
     // A planned table has no rows and no columns yet: it is where the result will
     // land. Drawn as an outline, so it reads as a place rather than a thing.
-    c.fillStyle = n.planned ? 'rgba(16,15,14,0.55)' : sk.bg;
-    c.strokeStyle = on ? '#f4f2ed' : (over ? '#6f6a60' : sk.edge);
-    c.lineWidth = on ? 1.8 : 1;
+    c.fillStyle = n.picked ? 'rgba(162,230,93,0.10)'
+      : n.planned ? 'rgba(16,15,14,0.55)' : sk.bg;
+    c.strokeStyle = n.picked ? '#a2e65d'
+      : (n.pending || n.gap) ? '#e8c069'
+        : on ? '#f4f2ed' : (over ? '#6f6a60' : sk.edge);
+    c.lineWidth = (n.picked || n.pending || n.gap) ? 1.8 : (on ? 1.8 : 1);
     if (n.planned) c.setLineDash([5 * k, 4 * k]);
     round(c, at.x, at.y, W, H, 6 * k);
     c.fill();
@@ -781,12 +884,15 @@
     c.font = '600 ' + (12 * k).toFixed(1) + 'px ui-monospace, SFMono-Regular, Menlo, monospace';
     c.fillText(clip(c, n.table.name, W - 18 * k), at.x + 9 * k, at.y + 10 * k);
 
-    c.fillStyle = '#8d8982';
+    c.fillStyle = n.illegal ? '#c1503f' : '#8d8982';
     c.font = (9.5 * k).toFixed(1) + 'px ui-monospace, SFMono-Regular, Menlo, monospace';
-    c.fillText(clip(c, n.planned ? 'not written yet'
-                       : (n.stale ? '~ ' : '') + rows(n.rows) + ' · ' + n.cols + ' cols',
-                    W - 18 * k),
-               at.x + 9 * k, at.y + 27 * k);
+    var sub = n.gap ? 'the pipeline stops here'
+      : n.pending
+        ? (this.wiring ? Object.keys(this.wiring.picked).length : 0) + ' inputs · new'
+      : n.illegal ? n.illegal
+        : n.planned ? 'not written yet'
+          : (n.stale ? '~ ' : '') + rows(n.rows) + ' · ' + n.cols + ' cols';
+    c.fillText(clip(c, sub, W - 18 * k), at.x + 9 * k, at.y + 27 * k);
 
     c.fillStyle = lay.c;
     c.font = '600 ' + (8.5 * k).toFixed(1) + 'px ui-monospace, SFMono-Regular, Menlo, monospace';
@@ -794,11 +900,18 @@
 
     c.fillStyle = '#6c6962';
     c.font = (8.5 * k).toFixed(1) + 'px ui-monospace, SFMono-Regular, Menlo, monospace';
-    var word = n.planned ? 'AFTER A BACKTEST'
-      : n.stale && !this.replaying ? 'OUT OF DATE'
-        : (this.replaying && n.perPass && this.stopsTotal)
-          ? sk.word + ' ' + this.stopNo + '/' + this.stopsTotal : sk.word;
-    if (n.planned) c.fillStyle = '#8d8982';
+    var word = n.gap ? 'NOT FINISHED'
+      : n.pending ? 'NEW STEP'
+      : n.picked ? 'FEEDS IT'
+        : n.illegal ? 'CANNOT'
+          : n.planned ? 'AFTER A BACKTEST'
+            : n.stale && !this.replaying ? 'OUT OF DATE'
+              : (this.replaying && n.perPass && this.stopsTotal)
+                ? sk.word + ' ' + this.stopNo + '/' + this.stopsTotal : sk.word;
+    if (n.pending || n.gap) c.fillStyle = '#e8c069';
+    else if (n.picked) c.fillStyle = '#a2e65d';
+    else if (n.illegal) c.fillStyle = '#c1503f';
+    else if (n.planned) c.fillStyle = '#8d8982';
     else if (n.stale && !this.replaying) c.fillStyle = '#e8c069';
     c.fillText(word, at.x + W - 9 * k - c.measureText(word).width, at.y + 41 * k);
 
@@ -1077,6 +1190,12 @@
       drag = null;
       if (!quiet) return;
       var n = self.hit(e.offsetX, e.offsetY);
+      // While wiring, a click means "feed this in", not "show me this". Opening the
+      // inspector here would bury the panel you are filling in.
+      if (self.wiring) {
+        if (n && n.id !== PENDING) self.toggleInput(n.id);
+        return;
+      }
       if (!n) {
         // clicking the band behind the graph opens the stage it names
         var band = self.bandAt(e.offsetX);

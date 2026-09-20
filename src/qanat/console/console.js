@@ -433,15 +433,22 @@
   //  has to work from this rather than from the next tick, which never comes.
   var ASK_LAST = null;
 
+  //  One per page, because the question you have depends on what you are looking at.
+  //  Keyed by the page names the rest of the file uses -- they drifted once, and a
+  //  missing key put the literal word "undefined" in the box.
   var ASK_HINTS = {
-    strategies: 'build me a momentum strategy over 3 months and back it up with a test',
-    pipeline: 'why does features.momentum only have 8 rows?',
+    data: 'how far back does raw.news go, and does it line up with prices?',
+    alpha: 'add a feature step that reads prices and risk, then wire an alpha to it',
+    backtest: 'build me a momentum strategy over 3 months and back it up with a test',
+    live: 'how has the live alpha done since it was switched on?',
   };
 
   function askPlaceholder() {
-    var page = document.body.classList.contains('page-pipeline') ? 'pipeline' : 'strategies';
+    var page = PAGES.filter(function (p) {
+      return document.body.classList.contains('page-' + p);
+    })[0] || 'backtest';
     var box = el('ask-q');
-    if (box && !box.disabled) box.placeholder = ASK_HINTS[page];
+    if (box && !box.disabled) box.placeholder = ASK_HINTS[page] || ASK_HINTS.backtest;
   }
 
   async function askSetup() {
@@ -470,9 +477,12 @@
     //  The question, not the machinery. Once the box is cleared this is the only
     //  place it still says what was asked.
     var q = a.question || '';
+    //  The question lives in the thread as a bubble now; repeating it under the
+    //  input was a second copy that wrapped and jittered as the row beside it
+    //  changed width.
     el('ask-what').textContent = q.length > 96 ? q.slice(0, 95) + '…' : q;
     el('ask-what').title = q;
-    el('ask-el').textContent = a.elapsed + 's';
+    el('ask-el').textContent = Number(a.elapsed || 0).toFixed(1) + 's';
     el('ask-lines').innerHTML = (a.lines || []).map(function (l) {
       return '<li class="' + (l.kind === 'diff' ? 'diffrow' : '') + '"><span class="at">' +
         esc(l.at) + 's</span><span class="k ' + esc(l.kind) + '">' + esc(l.kind) +
@@ -489,6 +499,17 @@
       ans.hidden = true;
     }
     if (a.done) {
+      //  The answer joins the thread once, when it lands. The poll keeps handing
+      //  back the same finished Ask until the next question, so the guard has to
+      //  outlive the response object.
+      var sig = (a.question || '') + '\u0000' + (a.error || a.answer || '');
+      if (window.Thread && sig !== ASK_SAID && (a.answer || a.error)) {
+        ASK_SAID = sig;
+        window.Thread.endStream();
+        window.Thread.said('agent', a.error || a.answer);
+        // the project moved, so what is worth asking moved with it
+        if (window.Thread.suggest) setTimeout(window.Thread.suggest, 300);
+      }
       var box = el('ask-q');
       if (box.value.trim() === (a.question || '').trim()) box.value = '';
       box.disabled = false;
@@ -515,9 +536,15 @@
     el('peek-kind').className = 'pk ' + esc(last.kind);
     el('peek-kind').textContent = last.kind;
     el('peek-text').textContent = a.error ? a.error : (last.text || '');
-    el('peek-el').textContent = a.elapsed + 's';
+    //  `13.0 + 's'` is "13s" in JavaScript -- the trailing zero is gone, the
+    //  readout drops from five characters to three, and at ten updates a second
+    //  the row beside it is shoved back and forth. Always one decimal.
+    el('peek-el').textContent = Number(a.elapsed || 0).toFixed(1) + 's';
     el('peek-spin').style.visibility = a.done ? 'hidden' : 'visible';
   }
+
+  //  The stream and the poll paint the same panel, so neither owns it.
+  window.paintAskState = function (a) { paintAsk(a); };
 
   function pollAsk() {
     clearInterval(ASK_TICK);
@@ -528,13 +555,23 @@
       if (!s.ask) return;
       paintAsk(s.ask);
       if (s.ask.done) clearInterval(ASK_TICK);
-    }, 700);
+      //  250ms while it is writing: the reply arrives in token chunks now, and at
+      //  700 it landed in paragraph-sized jumps. Slower again once it is idle --
+      //  there is nothing to see between tool calls.
+    }, 250);
   }
 
+  var ASK_SAID = null;
   var ASK_RUNNING = false;
 
   function askButton(running) {
     ASK_RUNNING = running;
+    //  The spinners follow the same flag the button does, so nothing turns while
+    //  nothing is happening.
+    ['ask-work', 'ask-peek'].forEach(function (id) {
+      var n = el(id);
+      if (n) n.classList.toggle('running', !!running);
+    });
     var go = el('ask-go');
     go.textContent = running ? 'stop' : 'ask';
     go.classList.toggle('stop', running);
@@ -559,6 +596,9 @@
       //  cleared when the answer lands, which is also what stops the next
       //  question being typed onto the end of this one.
       box.disabled = true; askButton(true);
+      //  One history, whoever drove: the question goes into the thread beside the
+      //  tool calls it is about to cause.
+      if (window.Thread) window.Thread.said('me', q);
       el('ask-lines').innerHTML = '';
       el('ask-answer').hidden = true;
       ASK_FOLDED = false;              // a new question opens the panel again
@@ -572,7 +612,9 @@
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ question: q, base: location.origin }),
         });
-        pollAsk();
+        //  One connection carries the reply and the calls it makes. The poll stays
+        //  as the fallback for a browser that cannot open it.
+        if (!(window.Thread && window.Thread.listen && window.Thread.listen())) pollAsk();
       } catch (err) {
         el('ask-answer').hidden = false;
         el('ask-answer').className = 'askanswer bad';
@@ -627,20 +669,22 @@
   //  The canvas is `display:none` on the strategies page, so it has no size to
   //  fit into. Coming back to the pipeline has to fit again once it is visible.
 
-  var PAGES = ['strategies', 'pipeline'];
+  var PAGES = ['data', 'alpha', 'backtest', 'live'];
 
   function startingPage() {
     // `?view=backtests` is what `open_console` sends when an agent wants the
     // person looking at results, so it decides the page rather than fighting it.
     var q = new URLSearchParams(location.search).get('view');
-    if (q === 'backtests') return 'strategies';
-    if (q === 'pipeline') return 'pipeline';
+    if (q === 'backtests') return 'backtest';
+    if (q === 'alpha' || q === 'pipeline') return 'alpha';
+    if (q === 'data') return 'data';
+    if (q === 'live') return 'live';
     var saved = localStorage.getItem('qanat.page');
-    return PAGES.indexOf(saved) >= 0 ? saved : 'strategies';
+    return PAGES.indexOf(saved) >= 0 ? saved : 'backtest';
   }
 
   function setPage(name) {
-    if (PAGES.indexOf(name) < 0) name = 'strategies';
+    if (PAGES.indexOf(name) < 0) name = 'backtest';
     PAGES.forEach(function (p) {
       document.body.classList.toggle('page-' + p, p === name);
       var tab = el('pt-' + p);
@@ -648,8 +692,21 @@
     });
     localStorage.setItem('qanat.page', name);
     askPlaceholder();
+    paintSpine();
+    if (window.Thread) window.Thread.showing(name);
 
-    if (name === 'strategies') {
+    var dp = el('page-data');
+    if (dp) dp.hidden = name !== 'data';
+    var lp = el('page-live');
+    if (lp) lp.hidden = name !== 'live';
+
+    if (name === 'live') {
+      closeDetail();
+      if (window.LivePage) window.LivePage.paint();
+    } else if (name === 'data') {
+      closeDetail();
+      if (window.DataPage) window.DataPage.paint();
+    } else if (name === 'backtest') {
       // the report is the page, so it is never left collapsed here
       if (window.openBacktests) window.openBacktests();
     } else {
@@ -666,6 +723,15 @@
       var tab = el('pt-' + p);
       if (tab) tab.onclick = function () { setPage(p); };
     });
+    //  Each segment is a destination, not a readout. Reporting that live has been
+    //  failing for an hour without offering the way to it is half a message.
+    var go = { 'sg-data': 'data', 'sg-alpha': 'alpha', 'sg-bt': 'backtest' };
+    Object.keys(go).forEach(function (id) {
+      var b = el(id);
+      if (b) b.onclick = function () { setPage(go[id]); };
+    });
+    var live = el('sg-live');
+    if (live) live.onclick = function () { setPage('live'); };
   }
 
   // Fit once the canvas has stopped resizing. A ResizeObserver fires on every
@@ -713,6 +779,66 @@
     });
   }
 
+
+  // ---------------------------------------------------------------- the spine
+  //  Four segments, each a real piece of project state and each a destination.
+  //  What replaced `connected · drift 0`: a socket being open is not news, and a
+  //  project with nothing in it looked identical to a finished one.
+  function pct(x) { return x == null ? null : (x * 100).toFixed(1) + '%'; }
+
+  async function paintSpine() {
+    var s;
+    try { s = await api('/api/state'); } catch (e) { return; }
+
+    // which segment is the page you are looking at
+    var here = { data: 'sg-data', alpha: 'sg-alpha', backtest: 'sg-bt', live: 'sg-live' };
+    var page = PAGES.filter(function (p) {
+      return document.body.classList.contains('page-' + p);
+    })[0] || 'backtest';
+
+    var set = function (id, text, cls, dot) {
+      var b = el(id);
+      if (!b) return;
+      b.className = 'seg' + (cls ? ' ' + cls : '') + (here[page] === id ? ' here' : '');
+      b.querySelector('b').textContent = text;
+      var d = b.querySelector('.dot');
+      if (d) d.className = 'dot' + (dot ? ' ' + dot : '');
+    };
+
+    var d = s.data;
+    set('sg-data',
+        d.sources ? d.sources + (d.sources === 1 ? ' source' : ' sources') +
+                    (d.empty ? ' · ' + d.empty + ' empty' : '')
+                  : 'none yet',
+        d.empty ? 'warn' : '', d.sources && !d.empty ? 'g' : d.sources ? 'y' : '');
+
+    // A project with no alpha has not finished, it has stopped -- which is what
+    // `project.py` means by "nothing writes into the weights stage yet".
+    set('sg-alpha',
+        s.alpha.wired ? s.alpha.wired + ' wired' : 'none yet',
+        s.alpha.unfinished ? 'todo' : '');
+
+    var oos = pct(s.backtest.best_out_of_sample);
+    set('sg-bt',
+        s.backtest.runs ? s.backtest.runs + ' runs' + (oos ? ' · best OOS ' + oos : '')
+                        : 'never run', '');
+
+    var lv = s.live;
+    set('sg-live',
+        !lv.on ? 'off'
+          : lv.stalled ? 'on, not producing'
+            : lv.alphas.length ? lv.alphas.join(' + ').replace(/alpha_/g, '')
+              : 'running',
+        lv.stalled ? 'bad' : '', !lv.on ? '' : lv.stalled ? 'r' : 'g');
+
+    var live = el('sg-live');
+    if (live) {
+      live.title = !lv.on ? 'live scoring is off'
+        : lv.stalled ? (lv.why || 'live is on but nothing has been scored')
+          : 'scoring forward since ' + (lv.since || '—') + ' · ' + lv.passes + ' passes';
+    }
+  }
+
   async function poll() {
     var led = el('led'), conn = el('conn');
     try {
@@ -727,6 +853,13 @@
     conn.textContent = 'connected';
     DAG.setGraph(GRAPH);
     paintRails(GRAPH);
+    paintSpine();
+    //  Live moves on its own -- the scheduler scores a pass whenever the data
+    //  reaches the next rebalance date. A page painted once and left alone shows
+    //  the moment you opened it, which for this page is exactly the wrong moment.
+    if (document.body.classList.contains('page-live') && window.LivePage) {
+      window.LivePage.paint();
+    }
     if (SEL && SEL.kind === 'job') DAG.select(SEL.id);
     paintLog();
   }
@@ -737,6 +870,7 @@
     paintKeyList();
     window.QANAT = {
       dag: DAG, poll: poll, selectTable: selectTable, closeDetail: closeDetail,
+      setPage: setPage, paintSpine: paintSpine,
       // the book calls this when an alpha is picked: the graph becomes that alpha
       // `set` names the alphaset, so exactly its own result table lights up
       // Picking an alphaset frames its lineage. The results panel and the side
@@ -752,6 +886,7 @@
     };
     el('b-fit').onclick = function () { DAG.fit(true); };
     el('b-add-src').onclick = function () { window.AlphaEdit.openSource(null); };
+    el('b-add-step').onclick = function () { window.AlphaEdit.openStep(null); };
     // clicking the same stage again lets go, the way clicking a table twice does
     DAG.onStage = function (band) {
       if (isOpen() && SEL && SEL.kind === 'stage' && SEL.ref === band.id) {
@@ -783,8 +918,10 @@
       if (editor && editor.id !== 'runner') { closeDetail(); paintSelection(); return; }
       closeDetail(); paintSelection();
     });
-    el('btn-bt').onclick = function () { window.toggleBacktests(); };
-    el('btn-run').onclick = function () { window.openRunner(); };
+    //  `results` is gone: the `backtest` segment in the spine is that button, and
+    //  two ways to reach one surface is one too many.
+    var run = el('btn-run');
+    if (run) run.onclick = function () { window.openRunner(); };
     paintSelection();
     poll();
     // The first layout settles a frame or two after mount, and the rails are sized
