@@ -75,9 +75,24 @@ Change:
   POST {base}/api/jobs/<id>/run         run one job now
   POST {base}/api/backtest              replay and price it
 
-Answer the person's question. Prefer reading before changing, and say plainly
-what you did. Keep the final reply short, a few sentences at most, in plain
-English with no trading jargon the person did not use first.
+  GET  {base}/api/profile/<stage>/<name>  what is in a table: fill, distinct, range
+  GET  {base}/api/check                 whether the project holds its contract
+
+Stay inside this project. Everything you need about it is behind that API --
+including the source of any step, from `GET /api/jobs/<id>`. Do not read qanat's
+own installed source, do not look through the home directory, and do not go
+outside the project folder to answer a question about the project. If something
+you need is genuinely not reachable through the API, say so rather than going
+around it.
+
+**Change only what was asked for.** Read first. If the person asked a question,
+answer it -- do not build, edit, or run anything on the way. If they asked for a
+change, make that change and no more, and say plainly what you did. "Suggest
+some ideas" is a question, not an instruction to write a strategy.
+
+Keep the final reply short, a few sentences at most, in plain English with no
+trading jargon the person did not use first. If a table is the clearest answer,
+write it as a markdown table -- the console renders those.
 
 The question: {question}"""
 
@@ -200,7 +215,14 @@ def run(ask: Ask, root: Path, base: str, timeout: float = 180.0) -> None:
                 # the reply is readable while it is being written, which is the
                 # difference between waiting for an answer and watching one.
                 "--include-partial-messages",
-                "--allowedTools", "Bash,Read,Glob,Grep,Edit,Write"]
+                # Bash only, and only really for curl. Everything about the project
+                # is behind the API now -- a step's source included -- so nothing
+                # here needs to read or write a file. Asked to reshape some ideas,
+                # this agent went from the project into qanat's own installed
+                # source and then into `~/.claude/projects`; a console whose front
+                # door is a chat box cannot leave that door that wide.
+                "--allowedTools", "Bash",
+                "--disallowedTools", "Read,Glob,Grep,Edit,Write,NotebookEdit,WebFetch,WebSearch"]
     else:
         cmd += ["--print"]
 

@@ -570,7 +570,8 @@ def _use_alpha(s: Session, args: dict) -> Any:
     if not universe:
         raise ToolError(
             "every shelf alpha holds itself to a universe, and this project declares none. "
-            "Add one to qanat.yaml (id + a csv with a `symbol` column) and pass it here."
+            "Call save_universe first -- give it an id and the symbols, and it writes the csv "
+            "-- then pass that id here."
         )
 
     # The primary table stays first: it is what the shelf script ranks on, and what
@@ -601,7 +602,7 @@ def _use_alpha(s: Session, args: dict) -> Any:
     s.reload()
     return {
         "installed": step_id, "script": script, "reads": declared, "writes": target,
-        "universe": universe, "options": opts, "files": written,
+        "universe": universe, "options": opts, "warnings": written,
         "book": [a for a, _ in s.project.alphas],
         "next": "run, then backtest_conditions, then backtest with alpha=" + step_id,
     }
@@ -731,7 +732,7 @@ def _save_step(s: Session, args: dict) -> Any:
     except EditorError as exc:
         raise ToolError(str(exc)) from exc
     s.reload()
-    return {"saved": raw["id"], "files": written}
+    return {"saved": raw["id"], "warnings": written}
 
 
 @tool("remove_step", "Delete a step from the project file. The script on disk is left alone.",
@@ -744,7 +745,47 @@ def _remove_step(s: Session, args: dict) -> Any:
     except EditorError as exc:
         raise ToolError(str(exc)) from exc
     s.reload()
-    return {"removed": args["id"], "files": written}
+    return {"removed": args["id"], "warnings": written}
+
+
+@tool("save_universe",
+      "Add or replace a universe: the symbols a portfolio may hold. Pass `symbols` and the csv "
+      "is written for you. Every shelf alpha holds itself to one, so a project with none cannot "
+      "install one until this has been called.",
+      {"properties": {
+          "id": {"type": "string", "description": "lower case, e.g. tech8"},
+          "index": {"type": "string", "description": "what to call it in front of a person"},
+          "symbols": {"type": "array", "items": {"type": "string"},
+                      "description": "the symbols it may hold. Written to a csv under the "
+                                     "project. Leave out only if the file already exists"},
+          "file": {"type": "string",
+                   "description": "where the csv lives, relative to the project. Defaults to "
+                                  "./universes/<id>.csv"},
+      }, "required": ["id"]},
+      writes=True)
+def _save_universe(s: Session, args: dict) -> Any:
+    from qanat.editor import EditorError, save_universe
+
+    uid = _need(args, "id")
+    raw = {
+        "id": uid,
+        "index": args.get("index") or "",
+        "symbols": args.get("file") or f"./universes/{uid}.csv",
+    }
+    syms = args.get("symbols")
+    if syms is not None:
+        raw["symbols_list"] = [str(x).strip() for x in syms if str(x).strip()]
+    try:
+        written = save_universe(s.project, s.root, raw)
+    except EditorError as exc:
+        raise ToolError(str(exc)) from exc
+    s.reload()
+    u = s.project.universe(uid)
+    return {"saved": uid, "symbols_file": u.symbols if u else raw["symbols"],
+            "symbols": len(syms or []), "warnings": written,
+            "note": "a list with no join and leave dates is today's membership applied to the "
+                    "past, which flatters every number built on it. Add `from` and `to` columns "
+                    "to the csv when you know them"}
 
 
 @tool("save_source", "Add or replace a source.",
@@ -762,7 +803,7 @@ def _save_source(s: Session, args: dict) -> Any:
     except EditorError as exc:
         raise ToolError(str(exc)) from exc
     s.reload()
-    return {"saved": args["id"], "files": written}
+    return {"saved": args["id"], "warnings": written}
 
 
 # ------------------------------------------------------------------- transport
