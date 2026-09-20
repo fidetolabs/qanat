@@ -121,3 +121,106 @@ def test_saving_keeps_every_field_a_job_declares(tmp_path: Path):
     assert after.job("a").when == ["raw.t"], "a step lost what it waits on"
     assert after.backtest.live is True
     assert after.backtest.live_from == "2026-06-01", "the frontier was not written back"
+
+
+COMMENTED = """\
+# What this project is, and why anybody should trust it.
+#
+#   qanat run
+project: commented
+store: ./data/qanat.duckdb
+stages:
+- id: raw
+  kind: raw
+- id: normalized
+  kind: features
+- id: weights
+  kind: weights
+sources:
+- id: bars                       # the only feed
+  to:
+  - raw.bars
+  connector: synthetic
+  # landed exactly as it arrived, never edited
+  options:
+    series: bars
+steps:
+- id: normalize
+  from:
+  - raw.bars
+  to:
+  - normalized.prices
+  script: steps/normalize.sql
+"""
+
+
+def _comments(text):
+    return [l.strip() for l in text.splitlines() if l.strip().startswith("#")]
+
+
+def test_saving_keeps_the_comments_somebody_wrote(tmp_path):
+    """An edit must not delete the notes in qanat.yaml.
+
+    `yaml.safe_dump` cannot round-trip a comment, so the first edit an agent made
+    stripped every one -- including the header on `examples/fx-bundled` saying
+    what the dataset is. A tool that deletes your notes on its way past is one you
+    cannot leave alone with the file.
+    """
+    (tmp_path / "qanat.yaml").write_text(COMMENTED)
+    (tmp_path / "steps").mkdir()
+    (tmp_path / "steps" / "normalize.sql").write_text("SELECT 1")
+    before = (tmp_path / "qanat.yaml").read_text()
+
+    project, root = load(tmp_path)
+    project.steps[0].options = {"lookback": 20}      # the smallest real edit
+    save_project(project, root)
+
+    after = (tmp_path / "qanat.yaml").read_text()
+    assert _comments(after) == _comments(before)
+    assert after.startswith("# What this project is")
+    assert "# the only feed" in after
+    assert "lookback: 20" in after
+
+
+def test_a_save_still_says_exactly_what_the_project_holds(tmp_path):
+    """Comments are kept, but never at the cost of the data being right."""
+    (tmp_path / "qanat.yaml").write_text(COMMENTED)
+    (tmp_path / "steps").mkdir()
+    (tmp_path / "steps" / "normalize.sql").write_text("SELECT 1")
+
+    project, root = load(tmp_path)
+    project.steps = []                                # removals have to land too
+    save_project(project, root)
+
+    reloaded, _ = load(root)
+    assert reloaded.steps == []
+    assert dump_project(reloaded) == dump_project(project)
+
+
+def test_repeated_saves_do_not_drift(tmp_path):
+    """An editor writes on every change, so save-load-save has to be a fixed point."""
+    (tmp_path / "qanat.yaml").write_text(COMMENTED)
+    (tmp_path / "steps").mkdir()
+    (tmp_path / "steps" / "normalize.sql").write_text("SELECT 1")
+
+    project, root = load(tmp_path)
+    save_project(project, root)
+    once = (tmp_path / "qanat.yaml").read_text()
+    project, root = load(root)
+    save_project(project, root)
+    assert (tmp_path / "qanat.yaml").read_text() == once
+
+
+def test_it_still_saves_without_ruamel(tmp_path, monkeypatch):
+    """The dependency is optional: an older install keeps working, minus comments."""
+    import qanat.project_io as pio
+
+    (tmp_path / "qanat.yaml").write_text(COMMENTED)
+    (tmp_path / "steps").mkdir()
+    (tmp_path / "steps" / "normalize.sql").write_text("SELECT 1")
+    monkeypatch.setattr(pio, "_round_tripper", lambda: None)
+
+    project, root = load(tmp_path)
+    save_project(project, root)
+    reloaded, _ = load(root)
+    assert reloaded.name == "commented"

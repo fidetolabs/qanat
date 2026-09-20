@@ -92,6 +92,96 @@ def _dump_step(st: Step) -> dict[str, Any]:
 _WRITE = threading.RLock()
 
 
+def _round_tripper() -> Any:
+    """ruamel's round-trip YAML, or None if it is not installed.
+
+    Optional on purpose. An install that predates this dependency should keep
+    saving projects rather than fail to import, and what it loses by not having it
+    is comments -- which is exactly where this file was before.
+    """
+    try:
+        from ruamel.yaml import YAML
+    except ImportError:
+        return None
+    y = YAML()
+    y.preserve_quotes = True
+    y.width = 4096          # never reflow a long line into a folded one
+    y.indent(mapping=2, sequence=2, offset=0)
+    return y
+
+
+def _merge(old: Any, new: Any) -> Any:
+    """The new value, laid onto the old node so its comments survive.
+
+    Comments live on the node, not in the model, so a dump of the model alone
+    cannot carry them. Writing the new values *into* the tree that was parsed from
+    the file keeps every comment attached to a key or a block that is still there.
+
+    Lists are matched on `id` -- a step, a stage, a source -- so editing one step
+    leaves the comments on its neighbours alone. Anything without an `id` is
+    replaced wholesale, which is right for the scalar lists in this file.
+    """
+    if isinstance(new, dict) and hasattr(old, "keys"):
+        for key in [k for k in old if k not in new]:
+            del old[key]
+        for key, value in new.items():
+            old[key] = _merge(old[key], value) if key in old else value
+        return old
+
+    if isinstance(new, list) and isinstance(old, list):
+        kept = {}
+        for item in old:
+            if isinstance(item, dict) and "id" in item:
+                kept[item["id"]] = item
+        if not kept:
+            return new
+        out = []
+        for item in new:
+            prior = kept.get(item.get("id")) if isinstance(item, dict) else None
+            out.append(_merge(prior, item) if prior is not None else item)
+        # Mutate in place: a fresh list would drop the comments ruamel stores
+        # against the sequence itself, which is where a note above a step lives.
+        old[:] = out
+        return old
+
+    return new
+
+
+def render_project(data: dict[str, Any], path: Path) -> str:
+    """The project as YAML, keeping whatever comments the file already had.
+
+    `yaml.safe_dump` cannot round-trip a comment, so the first edit an agent made
+    stripped every one of them -- including the twelve-line header on
+    `examples/fx-bundled` explaining what the dataset is and where it came from.
+    Somebody writes those to be read later, and a tool that deletes them on its
+    way past is a tool you cannot leave alone with your file.
+    """
+    plain = yaml.safe_dump(data, sort_keys=False, default_flow_style=False,
+                           allow_unicode=True)
+    y = _round_tripper()
+    if y is None or not path.is_file():
+        return plain
+    import io
+
+    try:
+        with path.open() as fh:
+            old = y.load(fh)
+        if old is None:
+            return plain
+        buf = io.StringIO()
+        y.dump(_merge(old, data), buf)
+        text = buf.getvalue()
+    except Exception:  # noqa: BLE001 -- a file we cannot round-trip still has to save
+        return plain
+    # Never hand back something that will not parse as the project it came from.
+    try:
+        if yaml.safe_load(text) != data:
+            return plain
+    except yaml.YAMLError:
+        return plain
+    return text
+
+
 def save_project(project: Project, root: Path) -> Path:
     """Write qanat.yaml, atomically, keeping the last good copy.
 
@@ -102,7 +192,7 @@ def save_project(project: Project, root: Path) -> Path:
     """
     path = root / "qanat.yaml"
     data = dump_project(project)
-    text = yaml.safe_dump(data, sort_keys=False, default_flow_style=False, allow_unicode=True)
+    text = render_project(data, path)
     with _WRITE:
         if path.is_file():
             try:
