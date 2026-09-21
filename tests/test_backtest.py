@@ -11,10 +11,19 @@ from qanat.runner import run_all
 from qanat.scaffold import write_project
 from qanat.store import Store
 
+#: The scaffold ships 420 days. A replay re-runs the whole pipeline once per
+#: rebalance date inside the window, so what this file costs is stops, not rows --
+#: and `_window` takes half the history, which at `rebalance: 5d` was ~39 of them
+#: per test, 36 times over. A shorter feed leaves enough stops for every assertion
+#: here at a fraction of the work. Pass `days=` if a test needs a longer history.
+TEST_DAYS = 150
 
-def _ready(tmp_path: Path) -> tuple[Store, object, Path]:
+
+def _ready(tmp_path: Path, days: int = TEST_DAYS) -> tuple[Store, object, Path]:
     """A scaffolded project, run once. `qanat init` ships the backtest block."""
     write_project(tmp_path, "demo")
+    cfg = tmp_path / "qanat.yaml"
+    cfg.write_text(cfg.read_text().replace("days: 420", f"days: {days}"))
     project, root = load(tmp_path)
     assert project.backtest is not None, "the scaffold should ship a backtest block"
     store = Store(project.store_url(root))
@@ -584,7 +593,9 @@ def test_a_replay_stops_holding_a_name_the_day_it_leaves(tmp_path: Path):
     a replay across a delisting must actually stop holding the name."""
     from qanat import mcp
 
-    store, project, root = _ready(tmp_path)
+    # names a delisting on 2026-03-01 and replays across it, so it needs a feed
+    # that reaches back that far rather than the short one the rest of us use
+    store, project, root = _ready(tmp_path, days=420)
     csv = root / "universes" / "demo8.csv"
     rows = [ln.split(",") for ln in csv.read_text().strip().split("\n")]
     head, body = rows[0], rows[1:]
@@ -689,7 +700,8 @@ def test_a_live_run_is_marked_as_one(tmp_path: Path):
     or the next live window is computed from the wrong `to`."""
     from qanat.backtest import run_backtest
 
-    store, project, root = _ready(tmp_path)
+    # the windows below are written as dates, not derived from the feed
+    store, project, root = _ready(tmp_path, days=420)
     _live(root)
     project, root = load(tmp_path)
 
