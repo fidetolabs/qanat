@@ -986,8 +986,14 @@ body.page-backtest .rail.book{
 /* the report is the point of this page, so it is never collapsed here */
 body.page-backtest .btwrap{flex:1 1 auto;max-height:none}
 body.page-backtest .btwrap .bt-body{display:flex}
+/* Neither affordance means anything here: the report is never collapsed on this
+   page, and the book is sized by --book-w rather than dragged. This rule used to
+   end in a comma and no block, so it ran on until the run-log rule eleven lines
+   below and took its `display:flex;flex:0 0 132px` -- which un-hid the grip over
+   the book and turned the chevron into a 132px box inside a 26px header, stacking
+   the Results title onto three lines that spilled over the strategies above it. */
 body.page-backtest .bt-bar-h .chev,
-body.page-backtest .btwrap .grip,
+body.page-backtest .btwrap .grip{display:none}
 
 
 /* --- Pipeline: the graph, the tables, and what wrote them --- */
