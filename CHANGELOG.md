@@ -1,5 +1,82 @@
 # Changelog
 
+## 0.2.0 — 2026-09-21
+
+### The conversation is the console
+
+The Ask box was one line, repeated identically on four pages -- identical because it
+had no relationship to any of them. A text field above an interface you drive
+yourself is the wrong shape for a console whose agent can already reach every tool
+it exposes.
+
+The thread has a side now, and the space beside it stopped being a page and became
+a response surface: ask about a table and the table opens, ask for a replay and the
+equity curve is what you are looking at when the answer lands. The tab row is gone,
+because it named the same four destinations the state spine already names.
+
+Nothing new is reported to make that work. The agent talks to the console's own HTTP
+API, so every tool call was already a request arriving at this server; a middleware
+notes what was asked and which surface it is about. The page stamps its own fetches
+so they stay out of it -- without that the console feeds itself, a repaint landing in
+the trace that tells the console to repaint.
+
+The reply streams. Server-sent events carry the text and the tool calls on one
+connection, so their order is the order they happened in, and the client walks toward
+the text a few characters a frame because a model emits a clause at a time.
+
+### Four surfaces, and one of them was missing
+
+**Data** profiles what you connected: fill, distinct count and the span each column
+covers, computed in the database rather than by paging rows. The coverage bar is the
+point -- it turns "57 rows" into "this reaches across a seventh of your history".
+
+**Alpha** is the graph, and steps are wired on it by clicking the tables that feed
+them. `from:` has always been a list and the scaffold's own `portfolio` alpha reads
+three, but every editor offered one.
+
+**Live** had an engine nobody could reach. It has a page: the forward return drawn
+against the rate the out-of-sample half implied, the next pass date, and what it is
+holding now.
+
+### Fixed
+
+- Live scoring never ran in a project with more than one alpha. The scheduler called
+  `run_backtest` with no alpha, the refusal went to the event log, and the pass was
+  retried every thirty seconds forever while the console said everything was fine.
+  `live_alphas:` names the choice; a project that cannot say gets one error and stops.
+- `live_from` was stamped before the run, and it writes once ever -- so a pass that
+  then failed left the date defining out-of-sample pointing at a moment nothing was
+  ever scored at. It is stamped after the pass lands.
+- Periods that held nothing were counted as losses in the hit rate and as zeroes in
+  the per-period average. `totals` now carries `held_periods` and `flat_periods`
+  alongside both figures recomputed over the periods that held something.
+- `POST /api/steps` passed its body straight to `Step`, which forbids extras, so
+  `source` died in pydantic -- the console had never once created a step.
+- Opening any alpha and pressing save wrote an empty options block over its
+  `lookback` and `top_n`, because those fields were only drawn for a shelf rule.
+- `save_project` was `yaml.safe_dump`, so the first edit anything made deleted every
+  comment in `qanat.yaml`. Values are laid onto the tree parsed from the file now.
+- The Ask agent wandered: asked to reshape some ideas it read qanat's own installed
+  source and then `~/.claude/projects`. It runs with `Bash` alone and a brief that
+  says where the project ends, and it no longer builds when asked not to.
+- `use_alpha` refused on a project with no universe and said to edit `qanat.yaml` by
+  hand, which an agent over MCP cannot do. `save_universe` is the tool that error
+  now names.
+- The four MCP write tools returned `{"files": [...]}` that never held files -- it
+  was `rep.warnings` the whole time.
+- The Results header on the backtest surface spilled over the strategies above it.
+  Its rule ended in a comma and no block, so it ran on to the run log's rule and
+  took `display:flex;flex:0 0 132px` -- which stacked the header onto three lines
+  inside a bar 26px tall and un-hid the drag grip over the book.
+- `qanat --version` and the banner `qanat serve` prints both said 0.1.3, because
+  `__version__` was a literal that two releases bumped `pyproject.toml` without.
+  It is read from the installed metadata now, so it cannot drift again.
+
+### Added
+
+- `profile_table` and `save_universe`, bringing the agent surface to 29 tools.
+- `ruamel.yaml`, so an edit keeps the comments somebody wrote.
+
 ## 0.1.5 — 2026-09-15
 
 ### Ask it in plain English

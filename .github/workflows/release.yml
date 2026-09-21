@@ -75,7 +75,8 @@ jobs:
           uv run python - <<'PY'
           import glob, zipfile
           names = zipfile.ZipFile(sorted(glob.glob("dist/*.whl"))[-1]).namelist()
-          want = {"index.html", "dag.js", "console.js", "backtests.js", "alphaedit.js", "theme.css"}
+          want = {"index.html", "dag.js", "console.js", "backtests.js", "alphaedit.js", "theme.css",
+                  "thread.js", "data.js", "live.js", "conditions.js"}
           have = {n.rsplit("/", 1)[-1] for n in names if "/console/" in n}
           missing = want - have
           assert not missing, f"the wheel is missing {missing} -- it would install a blank console"
