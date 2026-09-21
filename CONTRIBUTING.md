@@ -23,6 +23,19 @@ uv run pytest
 uv run ruff check src tests
 ```
 
+The suite takes about eighty seconds serially, nearly all of it `test_backtest.py`
+replaying a pipeline at every rebalance date. CI runs it across cores instead, and
+so can you:
+
+```bash
+uv run pytest -q -n auto --dist loadgroup
+```
+
+`loadgroup` is not optional. `tests/test_postgres.py` shares one database and
+resets by emptying it, so it carries an `xdist_group` mark that keeps the whole
+file on one worker; plain `--dist load` lets two of those tests drop each other's
+tables and the failures move around between runs.
+
 ### Testing against Postgres
 
 `tests/test_postgres.py` skips itself unless it can reach a server. Start one — this is the
