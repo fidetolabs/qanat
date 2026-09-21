@@ -65,7 +65,12 @@ jobs:
       # a release is not the place to find out the tests fail
       - run: uv sync --frozen --extra dev
       - run: uv run ruff check src tests
-      - run: uv run pytest -q
+      # -n auto spreads a test at a time across the runner's cores. The suite is
+      # dominated by test_backtest.py, where every test replays a pipeline at each
+      # of its rebalance dates -- 36 independent replays that were running one
+      # after another. loadgroup keeps the Postgres file on a single worker; it
+      # shares one database and resets by emptying it.
+      - run: uv run pytest -q -n auto --dist loadgroup
         env:
           QANAT_TEST_PG: postgresql://qanat:qanat@127.0.0.1:5433/qanat
 

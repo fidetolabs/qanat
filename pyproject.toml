@@ -36,7 +36,7 @@ dependencies = [
 
 [project.optional-dependencies]
 sql = ["sqlalchemy>=2.0"]
-dev = ["pytest>=8.0", "ruff>=0.4"]
+dev = ["pytest>=8.0", "pytest-xdist>=3.5", "ruff>=0.4"]
 
 [project.scripts]
 qanat = "qanat.cli:main"

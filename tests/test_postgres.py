@@ -37,10 +37,17 @@ def _reachable(dsn: str) -> bool:
         return False
 
 
-pytestmark = pytest.mark.skipif(
-    not _reachable(DSN),
-    reason=f"no Postgres at {DSN} — `docker compose up -d postgres` to run these",
-)
+# One server, one `public` schema, and the reset below empties it -- so two of
+# these on different xdist workers would drop each other's tables mid-test. The
+# group keeps the whole file on one worker under `--dist loadgroup`, while every
+# other file still spreads a test at a time. Without xdist the mark does nothing.
+pytestmark = [
+    pytest.mark.skipif(
+        not _reachable(DSN),
+        reason=f"no Postgres at {DSN} — `docker compose up -d postgres` to run these",
+    ),
+    pytest.mark.xdist_group("postgres"),
+]
 
 
 @pytest.fixture
