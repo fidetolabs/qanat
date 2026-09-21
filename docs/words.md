@@ -30,6 +30,9 @@ Four more words belong to `qanat backtest`:
 | **net** | What the money did: the periods compounded. The number a backtest reports as its answer. |
 | **net sum** | The same periods added instead of compounded. Gross minus fees minus slippage reconciles against this one. |
 | **decay** | Holding a blend of the last N portfolios, newest heaviest, to stop paying fees for noise. |
+| **live** | Scoring forward as data arrives, instead of once over a window that already happened. |
+| **frontier** | The last date the data held when live scoring was switched on. Stamped once. Everything after it is a return nobody could have looked at while choosing the alpha. |
+| **held** | A period the alpha held something. A period that held nothing is still a period and still in the money -- it is not a decision, so the averages say both. |
 
 Three more words belong to `qanat plan`:
 

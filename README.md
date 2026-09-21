@@ -53,12 +53,13 @@ institutional hedge fund on speed, and with a longer horizon, you don't need to.
 
 <p align="center">
   <img src="https://raw.githubusercontent.com/fidetolabs/qanat/main/assets/console.gif" width="720"
-       alt="The Qanat console. Columns left to right: raw sources, normalized prices, feature tables, weights tables, and PnL tables. Arrows between them are named for the step that does the work.">
+       alt="The Qanat console. The session runs down the left -- what was asked, what the agent did. Beside it the surface follows along: connected data, the pipeline graph, a replay and its equity curve.">
 </p>
 
 <p align="center">
-  <sub>Four strategies in one project. Each writes its own <code>weights</code> table, and each has
-  a <code>pnl</code> table beside it holding what it earned.</sub>
+  <sub>One session, and the surfaces it moved through. Each strategy writes its own <code>weights</code>
+  table, and each has a <code>pnl</code> table beside it holding what it earned. The session runs
+  down the left; the surface follows what the agent is doing.</sub>
 </p>
 
 ## Quick start
@@ -127,10 +128,20 @@ Things you can ask for:
   compares instead of speculating.
 - **"Why did it lose money in March?"** It opens that period and shows what was held, what each
   name returned, and what was traded to get there.
+- **"Does my news table line up with my prices?"** It profiles both in the database and answers in
+  spans, not row counts -- which is how you find out a strategy across the two would hold nothing
+  for eleven months before it earns a cent.
 
 The console and the agent are two views of the same project, so they can never disagree about its
-state. The full tool list is in
-**[docs/agents.md](https://github.com/fidetolabs/qanat/blob/main/docs/agents.md)**.
+state -- and in the console they are one view. The agent talks to the console's own API, so what it
+reads and changes appears in the thread as it happens and the panel beside it follows along: ask
+about a table and the table opens, ask for a replay and the equity curve is what you are looking at
+when the answer lands.
+
+The full tool list is in
+**[docs/agents.md](https://github.com/fidetolabs/qanat/blob/main/docs/agents.md)**, and what the
+console does with it is in
+**[docs/console.md](https://github.com/fidetolabs/qanat/blob/main/docs/console.md)**.
 
 ## How it works
 
@@ -177,6 +188,8 @@ backtest:                          # what prices the portfolio, and what it cost
   prices: normalized.prices
   fee_bps: 5
   slippage_bps: 10
+  live: false                      # true, and `qanat serve` keeps scoring it forward
+  live_alphas: []                  # which one to price: not ours to guess once you have two
 ```
 
 A step is a `.sql` file, or a `.py` file with a `run(ctx)` function:
@@ -331,8 +344,13 @@ else has run it yet. If something breaks or looks wrong, open an
 Working end to end: the pipeline and its rules, the DuckDB and Postgres store, the console, cron
 scheduling, Docker, the point-in-time replay engine with its net-edge report, and the MCP server.
 
-Not implemented: backfills, incremental windows, and live trading. Qanat produces a portfolio. It
-does not place an order.
+Scoring forward is implemented: switch `live: true` on, name the alpha in `live_alphas:`, and
+`qanat serve` prices a pass every time the data reaches the next rebalance date. It stamps the
+frontier once, so what happens after it is the one sense of out-of-sample that cannot be arrived at
+by looking.
+
+Not implemented: backfills, incremental windows, and live trading. Qanat produces a portfolio, on
+history and going forward. It does not place an order.
 
 **One limit worth knowing before you trust a number.** There is no benchmark. Nothing separates
 your edge from the market's own move, so a long-only strategy in a rising market looks good and

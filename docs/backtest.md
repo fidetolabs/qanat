@@ -65,3 +65,46 @@ edge was real.
 
 Each pass rewrites the derived tables from a slice of the past, so the last thing a backtest does
 is one ordinary pass to restore them. A backtest never leaves your data truncated.
+
+## Periods that held nothing are counted, and said so
+
+A lookback longer than the warm-up, or a feature table that starts late, leaves a run holding
+nothing for a stretch. Those periods are real and they belong in the money -- flat is a result.
+They are not decisions, though, and averaging over them buries that: the hit rate counts them as
+misses and the per-period figure divides a few real returns over many empty slots.
+
+So `totals` carries `held_periods` and `flat_periods` alongside `hit_rate_held` and
+`net_per_held_period`, and every surface that quotes the headline can qualify it. The report says
+both, the console hatches the flat stretches on the equity curve, and neither figure is quoted
+without the other. One alpha here reported `net +5.61%` and a `6.1%` hit rate having held a
+portfolio in three periods out of thirty-three; both numbers mislead, in opposite directions.
+
+## Scoring forward
+
+A replay prices a window that already happened. Live scoring keeps going: `qanat serve` runs a pass
+each time the data reaches the next as-of date on the rebalance grid, so `rebalance: 10d` gives a
+result every ten days.
+
+```yaml
+backtest:
+  live: true
+  live_alphas: [alpha_momentum]     # which one, or which ones, to price
+```
+
+`live_alphas` is not optional once a project holds more than one alpha. Pricing two together is a
+third strategy, so the choice is not the scheduler's to make -- a project that cannot say gets one
+error and stops trying, rather than failing every thirty seconds into a log nobody has open.
+
+`live_from` is stamped by qanat, once, on the first pass that lands. It is the last date the data
+held when scoring was switched on, and everything after it is a return nobody could have looked at
+while choosing the alpha. Worked out fresh each time it would move forward daily and mean nothing;
+stamped by a pass that then failed it would name a moment nothing was ever scored at, which is why
+it is written after the run rather than before.
+
+That is the one sense of out-of-sample that cannot be arrived at by looking. An out-of-sample half
+was measured on rows that were already on disk when the alpha was picked: the data did not argue
+back through the fitting, but it argued back through the person, because you knew how that year
+went. The console draws the forward return against the rate that half implied, and the gap between
+them is the number worth reading.
+
+Live produces a portfolio. It does not place an order.
