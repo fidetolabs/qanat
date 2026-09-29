@@ -84,11 +84,48 @@ A window nobody chose produces a number nobody should act on. This tool returns 
 actually covers, the universes declared, the current defaults for `rebalance` and `decay`, and an
 explicit `ask_the_person_for` list. It is the one tool whose job is to make the agent stop and ask.
 
-## `--read-only`
+## `--scope`
 
-Keeps the 21 tools that read, drops the 8 that write: `run`, `backtest`, `use_alpha`, `save_step`,
-`remove_step`, `save_source`, `save_universe`, `open_console`. Worth using when an agent is
-exploring a project whose numbers somebody else depends on.
+Three scopes, nested. Each one contains the one before it, and `full` is the default.
+
+```bash
+qanat mcp --scope data       #  6 tools
+qanat mcp --scope research   # 19 tools
+qanat mcp                    # 33 tools
+```
+
+| scope | adds | tools |
+| --- | --- | --- |
+| `data` | read the tables | `list_tables` `describe_table` `sample_table` `profile_table` `lineage` `stale_tables` |
+| `research` | run a replay, read its result, compare runs | `backtest_conditions` `backtest` `report` `period` `weights` `compare` `list_backtests` `alpha_book` `list_alphas` `read_alpha` `read_bar` `record_trial` `list_trials` |
+| `full` | author, ingest, schedule | `list_steps` `read_step` `check` `plan` `run` `list_runs` `use_alpha` `save_step` `remove_step` `save_source` `save_universe` `set_bar` `open_console` `console_status` |
+
+**It is one server and one service layer.** The scope decides which tools are listed, nothing
+else. Three separate servers would drift apart, and parity with the console is the thing this
+package refuses to break.
+
+Two reasons for the split, and the second is the larger one.
+
+**What has to be defended.** A server that reads and a server that runs jobs on request are
+different things, and the difference starts to cost money the day the server is hosted and
+answering to more than one project.
+
+**What a tool list costs.** Every definition is sent on every request. An agent that wants rows
+out of one table should not carry thirty-three descriptions to use four, and a long list makes it
+worse at picking from the list.
+
+**`set_bar` is in `full`, and `record_trial` is in `research`.** That is the boundary doing work
+rather than describing itself: a caller can record what it tried and what it concluded, and cannot
+lower the line those trials are held to. `backtest` and `record_trial` are the only two tools in
+`research` that write anything, and neither touches `qanat.yaml`.
+
+**Each scope is a contract.** Adding a tool to `data` changes what somebody has already built
+against, so the line moves on purpose or not at all. A tool that exists above your scope says so
+by name instead of pretending not to exist -- if that message keeps appearing for the same tool,
+the line is drawn in the wrong place.
+
+`--read-only` is gone. It split the tools 23 and 10, which is a fact about the implementation and
+not a promise anybody could build on.
 
 ## `from:` is a list, and the tools treat it as one
 

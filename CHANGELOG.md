@@ -1,5 +1,32 @@
 # Changelog
 
+## Unreleased
+
+### The tool list is scoped to whoever connected
+
+`--read-only` kept 23 tools and dropped 10, which describes how the code is written
+and promises nothing anybody could build against. It is replaced by `--scope`, and
+there are three: `data` reads the tables, `research` adds replays and their results,
+`full` adds authoring, ingest and scheduling. Each contains the one before it.
+
+One server and one service layer still. The scope only decides which tools are
+listed, because three servers would drift apart and parity with the console is the
+thing this package will not break.
+
+Two reasons it is worth having. A server that reads and a server that runs jobs on
+request are different things to defend, which starts to matter the day one is hosted.
+And every tool definition is sent on every request, so an agent that wants rows out of
+one table should not carry thirty-three descriptions to use four.
+
+`set_bar` sits in `full` and `record_trial` in `research`, so a caller can record what
+it tried and cannot lower the line those trials are held to. `backtest` and
+`record_trial` are the only tools in `research` that write, and neither one touches
+`qanat.yaml`.
+
+A tool above your scope now says which scope it is in, rather than answering that no
+such tool exists. Each scope is a contract, so if that message keeps coming back for
+the same tool, the line is in the wrong place.
+
 ## 0.2.0 — 2026-09-21
 
 ### The conversation is the console

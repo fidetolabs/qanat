@@ -8,7 +8,7 @@
     qanat run [job]      one pass, or one job
     qanat backtest       replay the graph over a window, and price what it held
     qanat report <id>    one backtest, period by period
-    qanat mcp            serve the same tools to an agent over stdio
+    qanat mcp            serve the same tools to an agent over stdio, at one of three scopes
     qanat serve          scheduler + console
 """
 
@@ -19,6 +19,7 @@ import sys
 from pathlib import Path
 
 from qanat import __version__
+from qanat.mcp import SCOPES  # the three scope names, for --scope's choices
 
 _TTY = sys.stdout.isatty()
 G, R_, Y, B, D, X = (
@@ -732,7 +733,12 @@ def cmd_alphas(args) -> int:
 def cmd_mcp(args) -> int:
     from qanat.mcp import serve_stdio
 
-    return serve_stdio(getattr(args, "project", None), read_only=args.read_only)
+    if getattr(args, "read_only", False):
+        print("qanat mcp: --read-only is gone. It split 33 tools into 23 and 10, which is "
+              "too blunt to be a promise. Use --scope data to read tables, or --scope "
+              "research to add replays. See docs/agents.md.", file=sys.stderr)
+        return 2
+    return serve_stdio(getattr(args, "project", None), scope=args.scope)
 
 
 # ------------------------------------------------------------------------ main
@@ -842,7 +848,11 @@ def build_parser() -> argparse.ArgumentParser:
     al.set_defaults(func=cmd_alphas)
 
     mc = sub.add_parser("mcp", help="serve this project to an agent over MCP (stdio)")
-    mc.add_argument("--read-only", action="store_true", help="expose no tool that writes")
+    mc.add_argument("--scope", choices=list(SCOPES), default="full",
+                    help="which tools to offer: data reads tables, research adds replays, "
+                         "full adds authoring and ingest (default: full)")
+    # Removed, and kept only so it can say what replaced it rather than die in argparse.
+    mc.add_argument("--read-only", action="store_true", help=argparse.SUPPRESS)
     mc.set_defaults(func=cmd_mcp)
 
     s = sub.add_parser("serve", help="scheduler and console")

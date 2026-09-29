@@ -2,6 +2,8 @@
 
 from pathlib import Path
 
+import pytest
+
 from qanat import mcp
 from qanat.api import AppState, create_app
 from qanat.project import load
@@ -33,11 +35,65 @@ def test_every_tool_declares_a_schema():
             assert req in schema["properties"], f"{t['name']}: '{req}' required but not described"
 
 
-def test_read_only_hides_every_tool_that_writes():
-    writers = {t["name"] for t in mcp.TOOLS if t["writes"]}
-    assert {"run", "backtest", "save_step"} <= writers
-    readers = {t["name"] for t in mcp.TOOLS if not t["writes"]}
-    assert writers.isdisjoint(readers)
+# ---------------------------------------------------------------------- scopes
+def test_every_tool_names_one_of_the_three_scopes():
+    assert mcp.SCOPES == ("data", "research", "full")
+    for t in mcp.TOOLS:
+        assert t["scope"] in mcp.SCOPES, f"{t['name']}: scope {t['scope']!r}"
+
+
+def test_a_tool_cannot_be_declared_without_a_scope():
+    with pytest.raises(TypeError):
+        mcp.tool("nope", "no scope given", {"properties": {}})
+
+
+def test_an_unknown_scope_says_what_the_three_are():
+    with pytest.raises(mcp.ScopeError) as exc:
+        mcp.tools_for("readonly")
+    assert "data, research, full" in str(exc.value)
+
+
+def test_the_scopes_nest():
+    data, research, full = (
+        [t["name"] for t in mcp.tools_for(s)] for s in mcp.SCOPES)
+    assert set(data) < set(research) < set(full)
+    assert len(full) == len(mcp.TOOLS)
+    # whatever the scope, the order a caller sees is the declaration order
+    assert data == [n for n in full if n in set(data)]
+    assert research == [n for n in full if n in set(research)]
+
+
+def test_data_offers_nothing_that_writes():
+    assert not [t["name"] for t in mcp.tools_for("data") if t["writes"]]
+
+
+def test_research_writes_results_and_never_the_project_file():
+    writers = {t["name"] for t in mcp.tools_for("research") if t["writes"]}
+    assert writers == {"backtest", "record_trial"}
+    # set_bar edits qanat.yaml, so it is authoring: a hosted research caller
+    # must not be able to lower the bar the trials it records are held to
+    assert {"set_bar", "save_step", "save_source", "run"} <= {
+        t["name"] for t in mcp.TOOLS if t["scope"] == "full"}
+
+
+def test_a_tool_above_the_scope_says_so_instead_of_denying_it_exists(tmp_path: Path):
+    session = _session(tmp_path)
+    reply = mcp._dispatch(session, {"jsonrpc": "2.0", "id": 9, "method": "tools/call",
+                                    "params": {"name": "save_step", "arguments": {}}},
+                          mcp.tools_for("data"))
+    body = reply["result"]["content"][0]["text"]
+    assert reply["result"]["isError"] is True
+    assert "'full' scope" in body and "--scope full" in body
+    session.close()
+
+
+def test_a_tool_that_does_not_exist_still_says_that(tmp_path: Path):
+    session = _session(tmp_path)
+    reply = mcp._dispatch(session, {"jsonrpc": "2.0", "id": 9, "method": "tools/call",
+                                    "params": {"name": "teleport", "arguments": {}}},
+                          mcp.tools_for("data"))
+    assert "no tool called 'teleport'" in reply["result"]["content"][0]["text"]
+    session.close()
 
 
 def test_initialize_and_list_speak_the_protocol(tmp_path: Path):

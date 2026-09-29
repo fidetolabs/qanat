@@ -115,8 +115,19 @@ Add it to any MCP client:
 { "mcpServers": { "qanat": { "command": "qanat", "args": ["mcp"], "cwd": "/path/to/my-alpha" } } }
 ```
 
-For Claude Code, `claude mcp add qanat -- qanat mcp`. Add `--read-only` and the agent can look at
-everything but change nothing.
+For Claude Code, `claude mcp add qanat -- qanat mcp`.
+
+`--scope` decides which tools the agent is offered. Three of them, nested:
+
+| | | |
+| --- | --- | --- |
+| `--scope data` | 6 tools | read the tables, including as-of |
+| `--scope research` | 19 tools | adds replays, their results, and the trial ledger |
+| *(default)* | 33 tools | adds authoring, ingest and scheduling |
+
+Every tool definition is sent on every request, so a narrower scope is cheaper and leaves the
+agent with a shorter list to pick from. [docs/agents.md](docs/agents.md#--scope) has the whole
+table.
 
 Things you can ask for:
 

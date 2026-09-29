@@ -14,7 +14,18 @@ Six things this tries to be, because an agent needs them and a person does not:
   * **structured** -- results are JSON with numbers in them, never a screenshot
   * **repeatable** -- `backtest` takes a seed, and the same seed is the same answer
   * **honest in failure** -- an error says what to do next, not only what broke
-  * **read-only on request** -- `--read-only` removes every tool that writes
+  * **scoped to the caller** -- `--scope` decides which tools are offered at all
+
+Three scopes, nested: `data` reads tables, `research` adds replays and their
+results, `full` adds authoring, ingest and scheduling. One server and one service
+layer; the scope only picks which tools are listed. Two reasons, and the second is
+the larger one. A server that reads and a server that runs jobs on request are
+different things to defend, which starts to matter the day this is hosted. And
+every tool definition is sent on every request, so an agent that wants filing rows
+should not carry thirty-three definitions to use four.
+
+Each scope is a **published contract**. Adding a tool to `data` later changes what
+somebody has already built against, so the line moves deliberately or not at all.
 
 Transport is newline-delimited JSON-RPC 2.0 on stdin/stdout, which is what an MCP
 stdio client speaks. Nothing is written to stdout except protocol messages.
@@ -80,8 +91,44 @@ class Session:
 # ----------------------------------------------------------------------- tools
 TOOLS: list[dict[str, Any]] = []
 
+#: The three scopes, narrowest first. Each one contains the one before it, so a
+#: server started at `research` offers the `data` tools too. The order in this
+#: tuple *is* the nesting; nothing else encodes it.
+SCOPES: tuple[str, ...] = ("data", "research", "full")
 
-def tool(name: str, description: str, schema: dict[str, Any], writes: bool = False):
+_RANK = {name: i for i, name in enumerate(SCOPES)}
+
+
+class ScopeError(ValueError):
+    """A scope name that is not one of the three."""
+
+
+def rank(scope: str) -> int:
+    """The nesting position of a scope name, or a message naming the three."""
+    try:
+        return _RANK[scope]
+    except KeyError:
+        raise ScopeError(
+            f"no scope called '{scope}'. The three are: {', '.join(SCOPES)}") from None
+
+
+def tools_for(scope: str) -> list[dict[str, Any]]:
+    """Every tool a caller connecting at `scope` may see, in declaration order."""
+    ceiling = rank(scope)
+    return [t for t in TOOLS if _RANK[t["scope"]] <= ceiling]
+
+
+def tool(name: str, description: str, schema: dict[str, Any], scope: str,
+         writes: bool = False):
+    """Register one tool. `scope` has no default on purpose.
+
+    A new tool has to answer two questions before it exists: rule 3 -- does it
+    need Qanat's data or Qanat's engine at all -- and this one, which caller is
+    allowed to see it. Leaving the second to a default would quietly put every
+    new tool in front of an institution that connected at `data`.
+    """
+    rank(scope)
+
     def wrap(fn: Callable[[Session, dict], Any]):
         TOOLS.append({
             "name": name,
@@ -90,6 +137,7 @@ def tool(name: str, description: str, schema: dict[str, Any], writes: bool = Fal
                             "required": schema.get("required", [])},
             "handler": fn,
             "writes": writes,
+            "scope": scope,
         })
         return fn
 
@@ -112,7 +160,8 @@ def _known_table(s: Session, ref: str) -> str:
 
 # ---- discover ----------------------------------------------------------------
 @tool("list_tables", "Every table this project declares, with its stage, producer and row count.",
-      {"properties": {}})
+      {"properties": {}},
+      scope="data")
 def _list_tables(s: Session, args: dict) -> Any:
     out = []
     producers = s.project.producers()
@@ -131,7 +180,8 @@ def _list_tables(s: Session, args: dict) -> Any:
 
 
 @tool("describe_table", "One table's columns, types, row count and time column.",
-      {"properties": {"ref": {"type": "string", "description": "stage.table"}}, "required": ["ref"]})
+      {"properties": {"ref": {"type": "string", "description": "stage.table"}}, "required": ["ref"]},
+      scope="data")
 def _describe_table(s: Session, args: dict) -> Any:
     ref = _known_table(s, _need(args, "ref"))
     info = s.store.table_info(ref)
@@ -150,7 +200,8 @@ def _describe_table(s: Session, args: dict) -> Any:
 @tool("sample_table", "Rows from a table. With as_of, only rows that existed at that timestamp.",
       {"properties": {"ref": {"type": "string"}, "limit": {"type": "integer", "default": 20},
                       "as_of": {"type": "string", "description": "ISO timestamp"}},
-       "required": ["ref"]})
+       "required": ["ref"]},
+      scope="data")
 def _sample_table(s: Session, args: dict) -> Any:
     ref = _known_table(s, _need(args, "ref"))
     limit = int(args.get("limit") or 20)
@@ -165,7 +216,8 @@ def _sample_table(s: Session, args: dict) -> Any:
       "sample_table to answer 'how many symbols', 'what dates does this cover', 'where are the "
       "holes' -- it is computed in the database, so it costs the same on a million rows as on a "
       "thousand.",
-      {"properties": {"ref": {"type": "string"}}, "required": ["ref"]})
+      {"properties": {"ref": {"type": "string"}}, "required": ["ref"]},
+      scope="data")
 def _profile_table(s: Session, args: dict) -> Any:
     ref = _known_table(s, _need(args, "ref"))
     prof = s.store.profile(ref)
@@ -176,7 +228,8 @@ def _profile_table(s: Session, args: dict) -> Any:
 
 
 @tool("lineage", "What feeds a table, and which alphas break if it breaks.",
-      {"properties": {"ref": {"type": "string"}}, "required": ["ref"]})
+      {"properties": {"ref": {"type": "string"}}, "required": ["ref"]},
+      scope="data")
 def _lineage(s: Session, args: dict) -> Any:
     from qanat.project import edges
 
@@ -203,7 +256,8 @@ def _lineage(s: Session, args: dict) -> Any:
 
 
 @tool("list_steps", "Every job in the graph -- sources and steps -- in dependency order.",
-      {"properties": {}})
+      {"properties": {}},
+      scope="full")
 def _list_steps(s: Session, args: dict) -> Any:
     from qanat.runner import order
 
@@ -217,7 +271,8 @@ def _list_steps(s: Session, args: dict) -> Any:
 
 
 @tool("read_step", "The script a step runs.",
-      {"properties": {"id": {"type": "string"}}, "required": ["id"]})
+      {"properties": {"id": {"type": "string"}}, "required": ["id"]},
+      scope="full")
 def _read_step(s: Session, args: dict) -> Any:
     sid = _need(args, "id")
     step = next((x for x in s.project.steps if x.id == sid), None)
@@ -232,7 +287,8 @@ def _read_step(s: Session, args: dict) -> Any:
 
 # ---- validate and plan -------------------------------------------------------
 @tool("check", "Hold the project against the stage contract. Errors block a run.",
-      {"properties": {}})
+      {"properties": {}},
+      scope="full")
 def _check(s: Session, args: dict) -> Any:
     from qanat.project import validate
 
@@ -242,7 +298,8 @@ def _check(s: Session, args: dict) -> Any:
 
 
 @tool("plan", "What would change if the file were applied: adds, drift, orphans.",
-      {"properties": {}})
+      {"properties": {}},
+      scope="full")
 def _plan(s: Session, args: dict) -> Any:
     from qanat.plan import plan as plan_project
 
@@ -258,7 +315,8 @@ def _plan(s: Session, args: dict) -> Any:
 @tool("run", "Run the graph once, or one job. With as_of, replay that single pass.",
       {"properties": {"job": {"type": "string", "description": "one job id; omit for the whole graph"},
                       "as_of": {"type": "string"}, "seed": {"type": "integer"}}},
-      writes=True)
+      writes=True,
+      scope="full")
 def _run(s: Session, args: dict) -> Any:
     from qanat.runner import run_all, run_job
 
@@ -285,7 +343,8 @@ def _run(s: Session, args: dict) -> Any:
       "What has to be decided before a backtest means anything: the window, the universe, "
       "the rebalance gap and the decay. Call this FIRST, show the person the choices, and "
       "ask them -- these change the answer, so they are not yours to assume.",
-      {"properties": {}})
+      {"properties": {}},
+      scope="research")
 def _backtest_conditions(s: Session, args: dict) -> Any:
     bt = s.project.backtest
     if bt is None:
@@ -374,7 +433,8 @@ def _backtest_conditions(s: Session, args: dict) -> Any:
                                                  "return counts, e.g. 1d"},
                       "seed": {"type": "integer", "default": 0}},
        "required": ["from", "to"]},
-      writes=True)
+      writes=True,
+      scope="research")
 def _backtest(s: Session, args: dict) -> Any:
     from qanat.backtest import BacktestError, run_backtest
 
@@ -401,7 +461,8 @@ def _backtest(s: Session, args: dict) -> Any:
       "Tables whose rows were computed by a job that has changed since. Nothing is deleted when "
       "a step is edited -- the rows simply stop being current. Anything reading them is reading "
       "yesterday's answer until the pipeline is run again.",
-      {"properties": {}, "required": []})
+      {"properties": {}, "required": []},
+      scope="data")
 def _stale_tables(s: Session, args: dict) -> Any:
     from qanat.plan import plan as plan_project
 
@@ -417,7 +478,8 @@ def _stale_tables(s: Session, args: dict) -> Any:
 @tool("alpha_book",
       "Every alpha this project has already backtested, and how each one did. Show this when "
       "someone asks what has been tried, or wants to go back to one.",
-      {"properties": {}})
+      {"properties": {}},
+      scope="research")
 def _alpha_book(s: Session, args: dict) -> Any:
     book = s.store.alpha_book()
     wl = s.project.weights_stage
@@ -433,13 +495,15 @@ def _alpha_book(s: Session, args: dict) -> Any:
 
 
 @tool("list_backtests", "Every replay this project has run, newest first.",
-      {"properties": {"limit": {"type": "integer", "default": 25}}})
+      {"properties": {"limit": {"type": "integer", "default": 25}}},
+      scope="research")
 def _list_backtests(s: Session, args: dict) -> Any:
     return {"backtests": s.store.backtests(int(args.get("limit") or 25))}
 
 
 @tool("report", "One backtest in full: totals and every period.",
-      {"properties": {"run_id": {"type": "integer"}}, "required": ["run_id"]})
+      {"properties": {"run_id": {"type": "integer"}}, "required": ["run_id"]},
+      scope="research")
 def _report(s: Session, args: dict) -> Any:
     row = s.store.backtest(int(_need(args, "run_id")))
     if row is None:
@@ -454,7 +518,8 @@ def _report(s: Session, args: dict) -> Any:
       "One point on the curve, opened up: what was held at that rebalance, what each name "
       "returned over the period, what was traded to get there, and whether it was in-sample.",
       {"properties": {"run_id": {"type": "integer"}, "as_of": {"type": "string"}},
-       "required": ["run_id", "as_of"]})
+       "required": ["run_id", "as_of"]},
+      scope="research")
 def _period(s: Session, args: dict) -> Any:
     from qanat.backtest import BacktestError, period_detail
 
@@ -466,7 +531,8 @@ def _period(s: Session, args: dict) -> Any:
 
 @tool("weights", "The portfolio a backtest held, for one as-of date or all of them.",
       {"properties": {"run_id": {"type": "integer"}, "as_of": {"type": "string"}},
-       "required": ["run_id"]})
+       "required": ["run_id"]},
+      scope="research")
 def _weights(s: Session, args: dict) -> Any:
     run_id = int(_need(args, "run_id"))
     rows = s.store.bt_weights(run_id, args.get("as_of") or None)
@@ -480,7 +546,8 @@ def _weights(s: Session, args: dict) -> Any:
 
 
 @tool("compare", "What moved between two backtests, and whether they asked the same question.",
-      {"properties": {"a": {"type": "integer"}, "b": {"type": "integer"}}, "required": ["a", "b"]})
+      {"properties": {"a": {"type": "integer"}, "b": {"type": "integer"}}, "required": ["a", "b"]},
+      scope="research")
 def _compare(s: Session, args: dict) -> Any:
     from qanat.backtest import compare
 
@@ -492,7 +559,8 @@ def _compare(s: Session, args: dict) -> Any:
 
 
 @tool("list_runs", "Recent job runs, with status and row counts.",
-      {"properties": {"limit": {"type": "integer", "default": 30}}})
+      {"properties": {"limit": {"type": "integer", "default": 30}}},
+      scope="full")
 def _list_runs(s: Session, args: dict) -> Any:
     return {"runs": s.store.recent_runs(int(args.get("limit") or 30))}
 
@@ -501,7 +569,8 @@ def _list_runs(s: Session, args: dict) -> Any:
 @tool("list_alphas",
       "The alphas that ship with Qanat, ready to wire up and replay. Show these to the person "
       "and let them pick one -- then call backtest_conditions before running anything.",
-      {"properties": {}})
+      {"properties": {}},
+      scope="research")
 def _list_alphas(s: Session, args: dict) -> Any:
     from qanat import alphas
 
@@ -514,7 +583,8 @@ def _list_alphas(s: Session, args: dict) -> Any:
 
 
 @tool("read_alpha", "The script an alpha on the shelf would install, before installing it.",
-      {"properties": {"name": {"type": "string"}}, "required": ["name"]})
+      {"properties": {"name": {"type": "string"}}, "required": ["name"]},
+      scope="research")
 def _read_alpha(s: Session, args: dict) -> Any:
     from qanat import alphas
 
@@ -544,7 +614,8 @@ def _read_alpha(s: Session, args: dict) -> Any:
                     "description": "hold a blend of the last N portfolios. 0 or 1 is off"},
           "options": {"type": "object", "description": "overrides, e.g. {\"lookback\": 120}"},
       }, "required": ["name", "reads"]},
-      writes=True)
+      writes=True,
+      scope="full")
 def _use_alpha(s: Session, args: dict) -> Any:
     from qanat import alphas
     from qanat.editor import EditorError, save_step
@@ -634,7 +705,8 @@ def _free_port(host: str, first: int) -> int:
           "browser": {"type": "boolean", "default": True,
                       "description": "false serves it but does not open a window"},
       }},
-      writes=True)
+      writes=True,
+      scope="full")
 def _open_console(s: Session, args: dict) -> Any:
     import threading
     import time
@@ -684,7 +756,8 @@ def _open_console(s: Session, args: dict) -> Any:
 
 
 @tool("console_status", "Whether the console is being served from this session, and where.",
-      {"properties": {}})
+      {"properties": {}},
+      scope="full")
 def _console_status(s: Session, args: dict) -> Any:
     if not s.console:
         return {"open": False, "note": "call open_console to serve it"}
@@ -717,7 +790,8 @@ def _console_status(s: Session, args: dict) -> Any:
                     "description": "hold a blend of the last N portfolios. 0 or 1 is off"},
           "options": {"type": "object"},
       }, "required": ["id", "to", "script"]},
-      writes=True)
+      writes=True,
+      scope="full")
 def _save_step(s: Session, args: dict) -> Any:
     from qanat.editor import EditorError, save_step
 
@@ -736,7 +810,8 @@ def _save_step(s: Session, args: dict) -> Any:
 
 
 @tool("remove_step", "Delete a step from the project file. The script on disk is left alone.",
-      {"properties": {"id": {"type": "string"}}, "required": ["id"]}, writes=True)
+      {"properties": {"id": {"type": "string"}}, "required": ["id"]}, writes=True,
+      scope="full")
 def _remove_step(s: Session, args: dict) -> Any:
     from qanat.editor import EditorError, delete_step
 
@@ -753,7 +828,8 @@ def _remove_step(s: Session, args: dict) -> Any:
       "and what the bar currently does to the newest run. Read this before claiming a strategy "
       "works: the same Sharpe means opposite things at one attempt and at fifty, and nothing "
       "inside a backtest can tell you which you are looking at.",
-      {"properties": {}, "required": []})
+      {"properties": {}, "required": []},
+      scope="research")
 def _read_bar(s: Session, args: dict) -> Any:
     bt = s.project.backtest
     bar = getattr(bt, "bar", None) if bt else None
@@ -786,7 +862,8 @@ def _read_bar(s: Session, args: dict) -> Any:
           "gate": {"type": "boolean",
                    "description": "whether failing this stops anything, or only reports"},
       }, "required": ["rule"]},
-      writes=True)
+      writes=True,
+      scope="full")
 def _set_bar(s: Session, args: dict) -> Any:
     from qanat.editor import EditorError, set_bar
 
@@ -838,7 +915,8 @@ def _set_bar(s: Session, args: dict) -> Any:
                           "description": "which model suggested it. Two runs proposed by "
                                          "different models are not the same trial"},
       }, "required": ["run_id"]},
-      writes=True)
+      writes=True,
+      scope="research")
 def _record_trial(s: Session, args: dict) -> Any:
     run_id = int(_need(args, "run_id"))
     if s.store.backtest(run_id) is None:
@@ -879,7 +957,8 @@ def _record_trial(s: Session, args: dict) -> Any:
                                    "is the size of the set the winner was chosen from: leave "
                                    "this out when comparing several strategies"},
           "limit": {"type": "integer", "description": "how many rows, newest first"},
-      }, "required": []})
+      }, "required": []},
+      scope="research")
 def _list_trials(s: Session, args: dict) -> Any:
     alpha = str(args.get("alpha") or "").strip()
     return {
@@ -903,7 +982,8 @@ def _list_trials(s: Session, args: dict) -> Any:
                    "description": "where the csv lives, relative to the project. Defaults to "
                                   "./universes/<id>.csv"},
       }, "required": ["id"]},
-      writes=True)
+      writes=True,
+      scope="full")
 def _save_universe(s: Session, args: dict) -> Any:
     from qanat.editor import EditorError, save_universe
 
@@ -935,7 +1015,8 @@ def _save_universe(s: Session, args: dict) -> Any:
                       "connector": {"type": "string", "enum": ["rest", "sql", "csv", "synthetic"]},
                       "mode": {"type": "string", "enum": ["append", "replace"]},
                       "schedule": {"type": "string"}, "options": {"type": "object"}},
-       "required": ["id", "to", "connector"]}, writes=True)
+       "required": ["id", "to", "connector"]}, writes=True,
+      scope="full")
 def _save_source(s: Session, args: dict) -> Any:
     from qanat.editor import EditorError, save_source
 
@@ -969,6 +1050,14 @@ def _dispatch(session: Session, msg: dict, tools: list[dict]) -> dict | None:
         name = params.get("name")
         entry = next((t for t in tools if t["name"] == name), None)
         if entry is None:
+            # A tool that exists but sits above this scope gets its own answer.
+            # "no such tool" would be a lie, and the person operating the client
+            # needs to know it is the connection that is narrow, not the server.
+            above = next((t for t in TOOLS if t["name"] == name), None)
+            if above is not None:
+                return _ok(mid, _text(
+                    f"'{name}' is a tool in the '{above['scope']}' scope, and this server was "
+                    f"started below it. Reconnect at --scope {above['scope']}.", error=True))
             return _ok(mid, _text(
                 f"no tool called '{name}'. Available: {', '.join(t['name'] for t in tools)}",
                 error=True))
@@ -994,9 +1083,15 @@ def _text(body: str, error: bool = False) -> dict:
     return {"content": [{"type": "text", "text": body}], "isError": error}
 
 
-def serve_stdio(project_path: str | None = None, read_only: bool = False) -> int:
+def serve_stdio(project_path: str | None = None, scope: str = "full") -> int:
     """Speak MCP on stdin/stdout until the client goes away."""
     from qanat.store import set_actor
+
+    try:
+        offered = tools_for(scope)
+    except ScopeError as exc:
+        print(f"qanat mcp: {exc}", file=sys.stderr)
+        return 2
 
     # Everything this process does is the agent doing it. A console served from
     # here by `open_console` answers on other threads, which start on the "you"
@@ -1009,9 +1104,9 @@ def serve_stdio(project_path: str | None = None, read_only: bool = False) -> int
         print(f"qanat mcp: {exc}", file=sys.stderr)
         return 1
 
-    tools = [t for t in TOOLS if not (read_only and t["writes"])]
-    print(f"qanat mcp: {session.project.name} · {len(tools)} tools"
-          f"{' (read-only)' if read_only else ''}", file=sys.stderr)
+    tools = offered
+    print(f"qanat mcp: {session.project.name} · scope {scope} · {len(tools)} of "
+          f"{len(TOOLS)} tools", file=sys.stderr)
 
     try:
         for line in sys.stdin:
@@ -1038,4 +1133,5 @@ def serve_stdio(project_path: str | None = None, read_only: bool = False) -> int
     return 0
 
 
-__all__ = ["PROTOCOL", "TOOLS", "Session", "ToolError", "serve_stdio"]
+__all__ = ["PROTOCOL", "SCOPES", "TOOLS", "ScopeError", "Session", "ToolError",
+           "rank", "serve_stdio", "tools_for"]
