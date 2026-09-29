@@ -84,10 +84,11 @@ Full table in **[docs/agents.md](https://github.com/fidetolabs/qanat/blob/main/d
 ## Serving it to something that is not on this machine
 
 ```bash
-qanat mcp --http --port 8421 --scope research --token "$QANAT_MCP_TOKEN"
+qanat mcp --http --port 8421 --scope research --token "$QANAT_MCP_TOKEN"   # server only
+qanat serve --port 8421 --scope research --token "$QANAT_MCP_TOKEN"        # and the scheduler
 ```
 
-This speaks MCP's Streamable HTTP transport on `/mcp`. The scope is fixed by the flag that started
+Both speak MCP's Streamable HTTP transport on `/mcp`. The scope is fixed by the flag that started
 the server, so nothing in a request can widen it.
 
 One process serves one project, because the store takes one writer. Two projects means two
@@ -210,10 +211,10 @@ Beta. It does what this page says on my own work, and few other people have run 
 breaks, open an [issue](https://github.com/fidetolabs/qanat/issues) or say so on
 [Discord](https://discord.gg/JUmwATScS8).
 
-**There is no screen, on purpose.** What you install is the engine, the CLI and the MCP server.
-Your agent client is the screen. `qanat serve` runs the scheduler for sources and steps on a
-clock, and `qanat tui` draws the graph and the replays in the terminal if you want to look at
-something.
+**MCP is the only door.** What you install is the engine, the CLI that operates it, and the MCP
+server. There is no screen and no second HTTP API: your agent client is the screen. `qanat serve`
+runs the scheduler and serves this same MCP over HTTP from the process holding the store, which is
+also how the unattended pass reaches the project.
 
 Not implemented: backfills, incremental windows, and live trading. Qanat produces a portfolio, on
 history and going forward. **It does not place an order.**

@@ -993,6 +993,21 @@ def _run_backtest(
     # cost time and prove nothing about the one being priced.
     needed = set().union(*(_upstream_of(project, a) for a in alpha_ids))
 
+    # Costs are a condition of the run rather than of the file -- "where does this
+    # edge die?" -- but only upwards. A negative cost pays you to trade, so
+    # turnover becomes profit and the run lands in the strategy book looking like
+    # a discovery: -9999 bps once put +1938% into it with nothing marking it.
+    #
+    # This used to be a `ge=0` on the console's request model, which meant it held
+    # for exactly one caller. It is here so it holds for all of them.
+    for name, value in (("fee_bps", fee_bps), ("slippage_bps", slippage_bps)):
+        if value is not None and float(value) < 0:
+            raise BacktestError(
+                f"{name} is {value}. A negative cost pays you to trade, which turns "
+                f"turnover into profit. Costs go up from the file's figure, not down "
+                f"through zero."
+            )
+
     costs = Costs(
         bt.fee_bps if fee_bps is None else float(fee_bps),
         bt.slippage_bps if slippage_bps is None else float(slippage_bps),

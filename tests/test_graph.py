@@ -83,7 +83,7 @@ def test_a_replay_written_pnl_table_is_still_attached_to_its_alpha():
 
 
 def test_the_drawing_names_every_table_and_every_step(tmp_path: Path):
-    from qanat.api import build_graph
+    from qanat.graph import build_graph
     from qanat.project import load
     from qanat.scaffold import write_project
     from qanat.store import Store
@@ -104,7 +104,7 @@ def test_the_drawing_names_every_table_and_every_step(tmp_path: Path):
 
 
 def test_every_box_in_a_column_starts_at_the_same_place(tmp_path: Path):
-    from qanat.api import build_graph
+    from qanat.graph import build_graph
     from qanat.project import load
     from qanat.scaffold import write_project
     from qanat.store import Store

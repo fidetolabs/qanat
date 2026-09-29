@@ -134,7 +134,7 @@ def test_a_source_key_upserts_on_the_server(project):
 
 def test_the_console_can_draw_the_graph(project):
     """Every 500 the container logged came through here."""
-    from qanat.api import build_graph
+    from qanat.graph import build_graph
 
     store, proj, root = project
     run_all(store, proj, root)

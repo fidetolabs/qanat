@@ -136,6 +136,7 @@ child process, and the client is somewhere else entirely.
 
 ```bash
 qanat mcp --http --port 8421 --scope research --token "$QANAT_MCP_TOKEN"
+qanat serve    --port 8421 --scope research --token "$QANAT_MCP_TOKEN"   # plus the scheduler
 ```
 
 This is MCP's Streamable HTTP transport on `/mcp`. `POST` carries JSON-RPC and gets JSON back.
@@ -153,6 +154,13 @@ the name of the scope it needs instead of pretending not to exist.
 **One project per process.** The store takes one writer, so every session on a server shares one
 store behind a lock. Two projects means two processes. Many tenants means Postgres and a store
 each. This is the real limit on how far the HTTP transport goes today.
+
+**`qanat serve` is this server with a clock.** It opens the store, starts the scheduler, and
+mounts the same endpoint, so one process holds the store and everything reaches the project
+through it. That includes the unattended falsification pass, which used to be handed a dozen curl
+endpoints and is now given `--scope research` and the tools that go with it. The scope is what
+stops the pass editing the strategy it is meant to be attacking; it used to be a sentence in a
+prompt.
 
 **Who may connect.** It binds to 127.0.0.1 and refuses any other address without `--token` or
 `QANAT_MCP_TOKEN`, because binding somewhere reachable and then answering anybody is not a default

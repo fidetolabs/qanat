@@ -43,6 +43,42 @@ from qanat.mcp import PROTOCOL, TOOLS, ScopeError, Session, _dispatch, rank, too
 # Importing web things at module scope is safe because nothing imports this
 # module unless `--http` was asked for.
 
+#: The names this server may be reached by.
+#:
+#: At `full` this server writes step scripts and runs them, so anything that can
+#: reach it can run code on the machine serving it. Binding to loopback is not
+#: enough on its own: a site the person visits can point its own domain at
+#: 127.0.0.1, and the browser then calls this server believing it is same-origin.
+#: CORS never enters into it. The name the browser asked for does, in `Host`.
+#:
+#: Serving under a real hostname is a deliberate act, so it is a deliberate setting:
+#: `QANAT_ALLOWED_HOSTS=qanat.example.com`, comma separated.
+LOOPBACK_HOSTS = frozenset({"localhost", "127.0.0.1", "::1"})
+
+
+def _hostname(value: str) -> str:
+    """The host in a `Host` header or an `Origin`, without scheme or port."""
+    v = value.strip()
+    if "//" in v:                       # http://host:port -> host:port
+        v = v.split("//", 1)[1]
+    v = v.split("/", 1)[0]
+    if v.startswith("["):               # [::1]:8420 -> ::1
+        end = v.find("]")
+        return v[1:end] if end > 0 else v
+    head, sep, tail = v.rpartition(":")
+    return head if sep and tail.isdigit() else v
+
+
+def allowed_hosts(extra: list[str] | None = None) -> set[str]:
+    """Loopback, plus whatever `QANAT_ALLOWED_HOSTS` and the caller add."""
+    import os
+
+    names = {h.lower() for h in LOOPBACK_HOSTS}
+    for source in (os.environ.get("QANAT_ALLOWED_HOSTS", "").split(","), extra or []):
+        names |= {h.strip().lower() for h in source if h and h.strip()}
+    return names
+
+
 #: How long a session may sit idle before it is forgotten. The client is told to
 #: start again with `initialize`, which costs it one round trip and costs us
 #: nothing to keep.
@@ -96,9 +132,14 @@ def create_app(
     scope: str,
     token: str | None = None,
     allow_hosts: list[str] | None = None,
+    state: Any = None,
 ):
-    """A FastAPI app that answers MCP on one endpoint."""
-    from qanat.api import _hostname, allowed_hosts
+    """A FastAPI app that answers MCP on one endpoint.
+
+    `state` is how `qanat serve` hands over a store it has already opened, along
+    with the scheduler running against it. Without it this opens the project
+    itself, which is the plain `qanat mcp --http` case.
+    """
     from qanat.store import set_actor
 
     rank(scope)  # fail before binding a port rather than on the first call
@@ -106,8 +147,16 @@ def create_app(
 
     # Everything this process does is an agent doing it, exactly as on stdio.
     set_actor("agent")
-    session = Session(project_path)
-    _ = session.store  # open now, so a busy database is reported at startup
+    if state is not None:
+        # One store, already open, with a scheduler on it. Opening a second one
+        # here is what StoreBusy is for.
+        session = Session.__new__(Session)
+        session.path = str(state.root)
+        session.project, session.root = state.project, state.root
+        session._store = state.store
+    else:
+        session = Session(project_path)
+        _ = session.store  # open now, so a busy database is reported at startup
 
     sessions = Sessions()
     allowed = allowed_hosts(allow_hosts)
@@ -247,6 +296,7 @@ def create_app(
 
     app.state.qanat_session = session
     app.state.scope = scope
+    app.state.qanat_state = state
     return app
 
 

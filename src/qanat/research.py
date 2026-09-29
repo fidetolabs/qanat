@@ -215,7 +215,7 @@ def start(state: Any, goal: str = "", base: str = "") -> Pass | None:
     alpha has nothing to falsify, and a pass that woke up to find that should say
     so rather than inventing something to do.
     """
-    from qanat.api import _agent_pref
+    from qanat.headless import _agent_pref
 
     running = getattr(state, "_research", None)
     if running is not None and not running.done:

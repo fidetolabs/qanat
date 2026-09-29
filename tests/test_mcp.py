@@ -5,7 +5,6 @@ from pathlib import Path
 import pytest
 
 from qanat import mcp
-from qanat.api import AppState, create_app
 from qanat.project import load
 from qanat.runner import run_all
 from qanat.scaffold import write_project
@@ -170,20 +169,20 @@ def test_lineage_knows_what_breaks_the_portfolio(tmp_path: Path):
 
 
 def test_check_is_not_cli_only(tmp_path: Path):
-    """Parity: the same answer through MCP and through the HTTP API."""
-    from fastapi.testclient import TestClient
+    """Parity: the tool answers exactly what the contract check answers.
+
+    This used to compare MCP against the console's `/api/check`. There is one
+    door now, so the thing worth comparing against is the function underneath --
+    which is what the API was calling too.
+    """
+    from qanat.project import validate
 
     session = _session(tmp_path)
-    project, root = load(tmp_path)
-    store = Store(project.store_url(root))
-    client = TestClient(create_app(AppState(store=store, project=project, root=root, sched=None)),
-                        base_url="http://127.0.0.1:8420")
-
-    over_http = client.get("/api/check").json()
+    rep = validate(session.project, session.root)
     over_mcp = _call(session, "check")
-    assert over_http == over_mcp
-    assert over_http["ok"] is True
-    store.close()
+
+    assert over_mcp == {"ok": rep.ok, "errors": rep.errors, "warnings": rep.warnings}
+    assert over_mcp["ok"] is True
     session.close()
 
 
@@ -227,10 +226,14 @@ def test_conditions_are_asked_for_not_assumed(tmp_path: Path):
     session.close()
 
 
-def test_the_console_and_the_agent_agree_about_what_is_stale(tmp_path: Path):
-    """Two doors on one engine. If they can disagree about which tables stopped
-    being current, one of them is lying to somebody."""
-    from fastapi.testclient import TestClient
+def test_the_picture_and_the_agent_agree_about_what_is_stale(tmp_path: Path):
+    """Two readers of one engine. If they can disagree about which tables stopped
+    being current, one of them is lying to somebody.
+
+    `build_graph` is what `qanat graph` draws from. It used to be reached through
+    the console's `/api/graph`; the comparison is the same one either way.
+    """
+    from qanat.graph import build_graph
 
     session = _session(tmp_path)
     script = tmp_path / "steps" / "normalize.sql"
@@ -241,12 +244,10 @@ def test_the_console_and_the_agent_agree_about_what_is_stale(tmp_path: Path):
 
     project, root = load(tmp_path)
     store = Store(project.store_url(root))
-    client = TestClient(create_app(AppState(store=store, project=project, root=root, sched=None)),
-                        base_url="http://127.0.0.1:8420")
-    graph = client.get("/api/graph").json()
-    over_http = {t["ref"] for t in graph["tables"] if t.get("stale")}
+    graph = build_graph(store, project, root, None)
+    in_the_picture = {t["ref"] for t in graph["tables"] if t.get("stale")}
 
-    assert over_mcp == over_http, f"mcp says {over_mcp}, the console says {over_http}"
+    assert over_mcp == in_the_picture, f"mcp says {over_mcp}, the graph says {in_the_picture}"
     assert "normalized.prices" in over_mcp
     store.close()
     session.close()

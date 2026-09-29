@@ -8,17 +8,17 @@ The module is called `headless` and not `agent` because the filename was making
 a claim. Qanat is an MCP server. It does not ship an agent, and a file called
 `agent.py` sitting in the package told everyone who opened the repo otherwise.
 
-**Why it talks HTTP and not MCP.** A DuckDB file takes one writer and `qanat
-serve` is holding it, so a second `qanat mcp` in the same project cannot open
-the store. The pass is pointed at the API this same process is already serving.
-`qanat mcp --http` now serves MCP from a process that holds the store, so this
-can move onto MCP and get the scope contract with it; until then the tool fence
-below is the only thing bounding what the pass may do.
+**How it reaches the project.** A DuckDB file takes one writer and `qanat serve`
+is holding it, so a second `qanat mcp` cannot open the store. The pass is pointed
+at the MCP endpoint that same process serves, at the `research` scope. The scope
+is what stops the pass editing the strategy it is meant to be attacking. That
+used to be a sentence in a prompt.
 """
 
 from __future__ import annotations
 
 import json
+import os
 import shutil
 import subprocess
 import threading
@@ -92,68 +92,60 @@ def find_cli(prefer: str = "") -> dict[str, str] | None:
     return None
 
 
-def _brief(base: str, question: str, carried: str = "") -> str:
-    """What the agent is told: the project it is in, and the door into it.
+def _agent_pref(state: Any) -> str:
+    """Which installed CLI the project asked for, if it asked for one."""
+    cfg = getattr(state.project, "agent", None)
+    return str(getattr(cfg, "cli", "") or "") if cfg else ""
 
-    The API is described rather than wrapped. It is already the service layer the
-    console draws from, so an agent that can read it can answer anything the
-    console can show, and an agent that can post to it can change anything the
-    console can change.
+
+def _mcp_config_file(base: str) -> str:
+    """Point the CLI at the MCP endpoint `qanat serve` is already offering."""
+    import tempfile
+
+    token = os.environ.get("QANAT_MCP_TOKEN", "")
+    server: dict[str, Any] = {"type": "http", "url": base.rstrip("/") + "/mcp"}
+    if token:
+        server["headers"] = {"Authorization": f"Bearer {token}"}
+    fd, path = tempfile.mkstemp(prefix="qanat-mcp-", suffix=".json")
+    with os.fdopen(fd, "w") as fh:
+        json.dump({"mcpServers": {"qanat": server}}, fh)
+    return path
+
+
+def _brief(question: str, carried: str = "") -> str:
+    """What the agent is told. The tools come from MCP, so they are not listed.
+
+    The old brief spelled out a dozen curl endpoints because the console's HTTP
+    API was the only door. MCP hands the agent its own tool list with schemas, so
+    repeating them here would be a second copy to keep in step with the first.
+
+    What is left is what MCP cannot say: what this project is, what the pass is
+    for, and that an attempt nobody wrote down did not happen.
     """
-    return f"""You are working inside a qanat project. qanat builds trading
-strategies as a pipeline of tables and replays them over history.
+    carry = f"\n\nEarlier in this session:\n{carried}\n" if carried else ""
+    return f"""You are working inside a qanat project. qanat builds trading strategies
+as a pipeline of tables and replays them over history.
 
-The console for THIS project is already running at {base} and is holding the
-database open, so do NOT run the `qanat` CLI and do NOT start `qanat mcp` -- both
-would fail on a locked store. Use the console's HTTP API with curl instead. It
-only answers to 127.0.0.1, which is where you are.
+Your tools reach this project directly. Use them. Do not run the `qanat` CLI and
+do not start another `qanat mcp`: this project's store is already open in the
+process serving those tools, and a second one cannot have it.
 
-Read:
-  GET  {base}/api/graph                 stages, tables, jobs, edges
-  GET  {base}/api/project               the whole qanat.yaml, and whether it is valid
-  GET  {base}/api/alphas                every strategy with what it earned
-  GET  {base}/api/jobs/<id>             one step: from, to, options, and its source
-  GET  {base}/api/table/<stage>/<name>  rows, columns and types
-  GET  {base}/api/backtests             every replay this project has run
-  GET  {base}/api/backtest/conditions   what a replay can cover, and what to ask about
+You are connected at the `research` scope. You can read the data, run a replay,
+read what it earned, and compare runs. You cannot edit a strategy, and that is
+deliberate: a pass that improves the thing it was measuring has measured nothing.
 
-Change:
-  POST {base}/api/alphas                add or edit a strategy
-  POST {base}/api/steps                 add a step
-  POST {base}/api/jobs/<id>/run         run one job now
-  POST {base}/api/backtest              replay and price it
-  POST {base}/api/trials                say what a replay was an attempt at
+**Record the attempt, not only the result.** After every replay call
+`record_trial` with its `run_id` and a one-line `hypothesis` saying what you were
+testing, and `parent_run_id` when it varies an earlier run. Do this whether it
+worked or not, and especially when it did not. What was tried and failed is the
+count that makes a surviving number mean anything, and it is the one thing nobody
+writes down.
 
-**Record the attempt, not only the result.** After a replay, POST to
-/api/trials with its `run_id` and a one-line `hypothesis` saying what you were
-testing, and `parent_run_id` when it is a variation of an earlier run. Do this
-whether it worked or not -- especially when it did not. What was tried and
-rejected is the count that makes a surviving number mean anything, and it is the
-one thing nobody ever writes down.
+Read `read_bar` before calling any result good. The same figure means opposite
+things at one attempt and at fifty. You cannot move the bar from here. If a
+result does not clear it, say so.{carry}
 
-Do not write a conclusion the run did not reach. One replay that lost money is a
-result for that configuration, not evidence the idea is wrong.
-
-  GET  {base}/api/profile/<stage>/<name>  what is in a table: fill, distinct, range
-  GET  {base}/api/check                 whether the project holds its contract
-
-Stay inside this project. Everything you need about it is behind that API --
-including the source of any step, from `GET /api/jobs/<id>`. Do not read qanat's
-own installed source, do not look through the home directory, and do not go
-outside the project folder to answer a question about the project. If something
-you need is genuinely not reachable through the API, say so rather than going
-around it.
-
-**Change only what was asked for.** Read first. If the person asked a question,
-answer it -- do not build, edit, or run anything on the way. If they asked for a
-change, make that change and no more, and say plainly what you did. "Suggest
-some ideas" is a question, not an instruction to write a strategy.
-
-Keep the final reply short, a few sentences at most, in plain English with no
-trading jargon the person did not use first. If a table is the clearest answer,
-write it as a markdown table -- the console renders those.
-
-{carried}The question: {question}"""
+{question}"""
 
 
 @dataclass
@@ -334,7 +326,12 @@ def summarise(session_id: str, root: Path, prefer: str = "",
 def run(ask: Ask, root: Path, base: str, timeout: float = 180.0,
         prefer: str = "", session_id: str = "", resume: bool = False,
         carried: str = "") -> None:
-    """Drive the CLI headless and turn its stream into lines the console shows."""
+    """Drive the CLI headless against this project's MCP server.
+
+    `base` is where `qanat serve` is listening. The pass reaches the project
+    through the MCP endpoint there, because that process is the one holding the
+    store open.
+    """
     cli = find_cli(prefer)
     if not cli:
         ask.error = ("No agent CLI found on this machine. Install Claude Code or Cursor "
@@ -344,8 +341,9 @@ def run(ask: Ask, root: Path, base: str, timeout: float = 180.0,
 
     ask.cli = cli["label"]
     _say(ask, "start", f"asking {cli['label']}")
+    mcp_config = _mcp_config_file(base)
 
-    cmd = [cli["path"], "-p", _brief(base, ask.question, carried)]
+    cmd = [cli["path"], "-p", _brief(ask.question, carried)]
     if cli["bin"] == "claude":
         #  We mint the id and hand it over, rather than reading back whichever one
         #  the CLI generated. One value then names the same conversation on both
@@ -360,14 +358,16 @@ def run(ask: Ask, root: Path, base: str, timeout: float = 180.0,
                 # the reply is readable while it is being written, which is the
                 # difference between waiting for an answer and watching one.
                 "--include-partial-messages",
-                # Bash only, and only really for curl. Everything about the project
-                # is behind the API now -- a step's source included -- so nothing
-                # here needs to read or write a file. Asked to reshape some ideas,
-                # this agent went from the project into qanat's own installed
-                # source and then into `~/.claude/projects`; a console whose front
-                # door is a chat box cannot leave that door that wide.
-                "--allowedTools", "Bash",
-                "--disallowedTools", "Read,Glob,Grep,Edit,Write,NotebookEdit,WebFetch,WebSearch"]
+                # The project is reached over MCP and nowhere else. The fence used
+                # to be "Bash only, for curl", which is a wide door: asked to
+                # reshape some ideas, this agent walked out of the project into
+                # qanat's own installed source and then into `~/.claude/projects`.
+                # Now it holds the tools its scope offers and nothing besides.
+                "--mcp-config", mcp_config,
+                "--strict-mcp-config",
+                "--allowedTools", "mcp__qanat",
+                "--disallowedTools",
+                "Bash,Read,Glob,Grep,Edit,Write,NotebookEdit,WebFetch,WebSearch,Task,ToolSearch"]
     else:
         #  Unreachable while CLIS holds one entry, and kept deliberately: it is the
         #  seam a second CLI would be added at, and it says out loud that plain

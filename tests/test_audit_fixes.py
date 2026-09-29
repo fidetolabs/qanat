@@ -85,14 +85,29 @@ def test_f01_a_table_name_is_a_name(ref):
         Step(id="x", reads=[], writes=[ref], script="x.sql")
 
 
-def test_u01_a_negative_cost_is_refused():
+def test_u01_a_negative_cost_is_refused(tmp_path):
     """A negative commission pays you to trade, so turnover becomes profit: -9999
-    bps put +1938% into the strategy book with nothing marking it."""
-    from qanat.api import BacktestRequest
+    bps put +1938% into the strategy book with nothing marking it.
 
-    with pytest.raises(ValueError):
-        BacktestRequest(**{"from": "2024-01-01", "to": "2024-02-01", "fee_bps": -1})
-    BacktestRequest(**{"from": "2024-01-01", "to": "2024-02-01", "fee_bps": 0})
+    The guard used to be a `ge=0` on the console's request model, so it held for
+    one caller. It is in the engine now, which is why this test reaches for the
+    engine rather than for a web framework.
+    """
+    from qanat.backtest import BacktestError, run_backtest
+    from qanat.project import load
+    from qanat.runner import run_all
+    from qanat.scaffold import write_project
+    from qanat.store import Store
+
+    write_project(tmp_path, "demo")
+    project, root = load(str(tmp_path))
+    store = Store(project.store_url(root))
+    assert all(r.ok for r in run_all(store, project, root))
+
+    for bad in ({"fee_bps": -1}, {"slippage_bps": -0.5}):
+        with pytest.raises(BacktestError, match="negative cost"):
+            run_backtest(store, project, root, "2024-01-01", "2024-02-01", **bad)
+    store.close()
 
 
 def test_f12_an_absurd_replay_is_refused_before_it_is_built():

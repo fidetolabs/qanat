@@ -2,6 +2,41 @@
 
 ## Unreleased
 
+### MCP is the only door
+
+There is no way to sit and operate qanat, so the parts that existed to be
+operated are gone. `tui.py` and `chart.py` went with the web console: a terminal
+app you watch is still a screen, and this package does not ship one.
+
+`api.py` went too, and that is the larger half. It was 1,592 lines of read model
+for a console that no longer exists, kept alive by one caller: the unattended
+pass, which was handed a dozen curl endpoints and `--allowedTools Bash`. That is
+a wide door. Asked once to reshape some ideas, the agent walked out of the
+project into qanat's own installed source and then into `~/.claude/projects`.
+
+The pass now reaches the project the same way everything else does, over MCP at
+`--scope research`. It gets the tools that scope offers and nothing besides. The
+scope is also what stops it editing the strategy it is supposed to be attacking;
+that used to be a sentence in a prompt.
+
+**`qanat serve` is the MCP server with a clock.** It opens the store, starts the
+scheduler, and mounts the same `/mcp` endpoint, so one process holds the store
+and everything reaches the project through it. It takes `--scope` and `--token`,
+and refuses a non-loopback bind without one.
+
+`AppState` moved to `runtime.py` and `build_graph` to `graph.py`, next to the
+thing that draws it. The `Host` and `Origin` guard moved to `mcp_http.py`.
+
+**One guard was nearly lost with the API and is now stronger.** `ge=0` on the
+request model was the only thing refusing a negative fee, and a negative cost
+pays you to trade: -9999 bps once put +1938% into the strategy book with nothing
+marking it. It is in the engine now, so it holds for every caller rather than for
+the one that went through pydantic.
+
+The parity tests compared MCP against the HTTP API. With one door they compare it
+against the functions underneath, which is what the API was calling anyway.
+
+
 ### The console leaves the package
 
 Someone opened the repo, saw a chat window and a dashboard, and decided what

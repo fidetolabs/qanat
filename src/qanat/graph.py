@@ -19,10 +19,22 @@ columns those are.
 
 from __future__ import annotations
 
+import math
 import os
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from typing import Any
+from pathlib import Path
+from typing import TYPE_CHECKING, Any
+
+from qanat import __version__
+from qanat.plan import plan as plan_project
+from qanat.project import edges as graph_edges
+from qanat.runner import order as run_order
+
+if TYPE_CHECKING:
+    from qanat.models import Project
+    from qanat.scheduler import Scheduler
+    from qanat.store import Store
 
 # ---------------------------------------------------------------- the key
 #: the stage a table belongs to, which is the only thing its colour says.
@@ -621,3 +633,188 @@ def _plain(s: str) -> str:
         else:
             out.append(ch)
     return "".join(out)
+
+
+# --------------------------------------------------------------------- read model
+#
+# The shape of the pipeline as data: stages, tables, jobs and the edges between
+# them. This lived in `api.py` because the console drew it. The console is gone
+# and `qanat graph` still wants the same answer, so it moved here, next to the
+# thing that draws it.
+
+def _plain(v: Any) -> Any:
+    if isinstance(v, float) and math.isnan(v):
+        return None
+    if hasattr(v, "isoformat"):
+        return v.isoformat(sep=" ", timespec="seconds")
+    if hasattr(v, "item"):
+        try:
+            return v.item()
+        except Exception:  # noqa: BLE001
+            return str(v)
+    return v
+
+
+def _status_of(last: dict[str, Any] | None, running: bool) -> str:
+    if running:
+        return "running"
+    if last is None:
+        return "idle"
+    return {"ok": "ok", "failed": "failed", "running": "running"}.get(last.get("status"), "idle")
+
+
+def build_graph(
+    store: Store, project: Project, root: Path, sched: Scheduler | None
+) -> dict[str, Any]:
+    last = store.last_run_by_job()
+    sched_state = sched.status() if sched else {}
+    producers = project.producers()
+
+    jobs = []
+    for j in project.jobs:
+        st = sched_state.get(j.id, {})
+        lr = last.get(j.id)
+        jobs.append({
+            "id": j.id,
+            "kind": "source" if j in project.sources else "step",
+            "connector": getattr(j, "connector", None),
+            "script": getattr(j, "script", None),
+            "from": list(j.reads),
+            "to": list(j.writes),
+            "universe": getattr(j, "universe", None),
+            "schedule": j.schedule,
+            "when": list(getattr(j, "when", [])),
+            "mode": getattr(j, "mode", None),
+            "options": getattr(j, "options", {}),
+            "next_at": st.get("next_at"),
+            "status": _status_of(lr, bool(st.get("running"))),
+            "last_run": lr,
+        })
+    by_id = {j["id"]: j for j in jobs}
+
+    tables = []
+    for ref in project.tables():
+        info = store.table_info(ref)
+        stage_id = ref.split(".")[0]
+        lay = project.stage(stage_id)
+        owner = producers.get(ref)
+        tables.append({
+            "ref": ref,
+            "stage": stage_id,
+            "stage_kind": lay.kind if lay else "features",
+            "name": ref.partition(".")[2],
+            "producer": owner,
+            "producer_kind": by_id.get(owner, {}).get("kind"),
+            "producer_connector": by_id.get(owner, {}).get("connector"),
+            "rows": info.rows if info else 0,
+            "columns": [{"name": c, "type": t} for c, t in (info.columns if info else [])],
+            "updated_at": info.updated_at if info else None,
+            "status": by_id.get(owner, {}).get("status", "idle"),
+            "retention": project.retention.get(ref),
+        })
+
+    pl = plan_project(project, root, store)
+    for ch in pl.orphans:
+        info = store.table_info(ch.target)
+        stage_id = ch.target.split(".")[0]
+        lay = project.stage(stage_id)
+        tables.append({
+            "ref": ch.target,
+            "stage": stage_id,
+            "stage_kind": lay.kind if lay else "features",
+            "name": ch.target.partition(".")[2],
+            "producer": None,
+            "producer_kind": None,
+            "producer_connector": None,
+            "rows": info.rows if info else 0,
+            "columns": [{"name": c, "type": t} for c, t in (info.columns if info else [])],
+            "updated_at": info.updated_at if info else None,
+            "status": "orphan",
+            "retention": project.retention.get(ch.target),
+        })
+
+    # Which tables were computed by something that has since changed. Nothing is
+    # deleted -- the rows just stop claiming to be current.
+    stale = pl.stale(project, store)
+    for t in tables:
+        t["stale"] = t["ref"] in stale
+
+    ok = sum(1 for t in tables if t["status"] == "ok")
+    bad = sum(1 for t in tables if t["status"] == "failed")
+    pnl_stage = project.pnl_stage
+    if pnl_stage is not None:
+        from qanat.backtest import alpha_ids_of, pnl_ref
+
+        # One PnL table per alpha, plus one for every blend that has actually been
+        # run: a blend is not declared anywhere, it exists because somebody priced
+        # two alphas together, so history is the only place it can be read from.
+        keys = [a for a, _ in project.alphas]
+        declared = set(keys)
+        for row in store.alpha_book():
+            k = row.get("alpha") or ""
+            if "+" in k and k not in declared and all(i in declared for i in alpha_ids_of(k)):
+                keys.append(k)
+
+        seen = {t["ref"] for t in tables}
+        for key in keys:
+            ref = pnl_ref(project, key)
+            if ref is None:
+                continue
+            makers = alpha_ids_of(key)
+            if ref in seen:
+                # already listed (the store has it as an orphan); name its maker
+                for t in tables:
+                    if t["ref"] == ref:
+                        t.update(producer=makers[0], producers=makers, producer_kind="replay",
+                                 stage_kind="pnl", status="ok", written_by_replay=True)
+                continue
+            info = store.table_info(ref)
+            tables.append({
+                "ref": ref, "stage": pnl_stage.id, "stage_kind": "pnl",
+                "name": ref.partition(".")[2], "producer": makers[0], "producers": makers,
+                "producer_kind": "replay", "producer_connector": None,
+                "rows": info.rows if info else 0,
+                "columns": ([{"name": c, "type": t} for c, t in info.columns] if info else []),
+                "updated_at": info.updated_at if info else None,
+                "status": "ok" if info else "idle", "written_by_replay": True,
+            })
+
+    return {
+        "project": project.name,
+        "version": __version__,
+        "store": project.store,
+        "stages": [
+            {"id": x.id, "kind": x.kind, "description": x.description,
+             "tables": [t["ref"] for t in tables if t["stage"] == x.id]}
+            for x in project.stages
+        ],
+        "universes": [{"id": b.id, "index": b.index, "symbols": b.symbols} for b in project.universes],
+        "retention": dict(project.retention),
+        "tables": tables,
+        "jobs": jobs,
+        "edges": [{"from": a, "to": b, "step": s} for a, b, s in graph_edges(project)],
+        # the order jobs actually run in. The console draws the pass in this order
+        # rather than guessing from the shape, so the lights are the run, not a
+        # picture of it
+        "run_order": [j.id for j in run_order(project)],
+        "health": {
+            "tables": len(tables),
+            "healthy": ok,
+            "failing": bad,
+            "rows": sum(t["rows"] for t in tables),
+            "scheduled": len(sched_state),
+            "drift": len(pl.changes),
+            # Worker starvation used to be visible only as a stream of warn events
+            # nobody was reading. Four stuck jobs stop the scheduler dead.
+            "workers": getattr(sched, "workers", 0) if sched else 0,
+            "busy": sum(1 for s in sched_state.values() if s.get("running")),
+        },
+        "plan": {
+            "changes": [
+                {"action": ch.action, "target": ch.target, "note": ch.note,
+                 "details": ch.details}
+                for ch in pl.changes
+            ],
+            "unchanged": pl.unchanged,
+        },
+    }

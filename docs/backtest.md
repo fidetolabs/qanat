@@ -146,7 +146,7 @@ misses and the per-period figure divides a few real returns over many empty slot
 
 So `totals` carries `held_periods` and `flat_periods` alongside `hit_rate_held` and
 `net_per_held_period`, and every surface that quotes the headline can qualify it. The report says
-both, `qanat tui` hatches the flat stretches on the equity curve, and neither figure is quoted
+both, and neither figure is quoted
 without the other. One alpha here reported `net +5.61%` and a `6.1%` hit rate having held a
 portfolio in three periods out of thirty-three; both numbers mislead, in opposite directions.
 
@@ -175,7 +175,7 @@ it is written after the run rather than before.
 That is the one sense of out-of-sample that cannot be arrived at by looking. An out-of-sample half
 was measured on rows that were already on disk when the alpha was picked: the data did not argue
 back through the fitting, but it argued back through the person, because you knew how that year
-went. `qanat tui` draws the forward return against the rate that half implied, and the gap between
+went. `report` gives the forward return and the rate that half implied, and the gap between
 them is the number worth reading.
 
 Live produces a portfolio. It does not place an order.
