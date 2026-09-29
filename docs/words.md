@@ -16,7 +16,7 @@ Each word means exactly one thing, and there is no second word for it.
 | **job** | A source or a step — anything that runs. |
 | **run** | One execution of a job. What the log and the history record. |
 
-One word belongs to the console: a **slab** is one **table** drawn in the graph. The graph draws
+One word belongs to the picture: a **slab** is one **table** drawn in the graph. The graph draws
 tables as boxes and steps as the arrows between them — `table — (step) — table` — because that is
 what a pipeline is.
 

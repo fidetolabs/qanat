@@ -6,20 +6,14 @@ says 12,043 rows, that is a count(*), and if a node is red, a run row says so.
 
 from __future__ import annotations
 
-import asyncio
-import json as _json_mod
 import math
 import threading
-import time
-import uuid
-from collections import deque
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
 from fastapi import FastAPI, HTTPException, Request
-from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
-from fastapi.staticfiles import StaticFiles
+from fastapi.responses import JSONResponse
 from pydantic import AliasChoices, BaseModel, Field
 
 from qanat import __version__
@@ -45,8 +39,6 @@ from qanat.retention import run_retention
 from qanat.runner import order as run_order
 from qanat.scheduler import Scheduler
 from qanat.store import TIME_COLS, Store
-
-CONSOLE = Path(__file__).parent / "console"
 
 #: Column names a price may go by, for the shelf-alpha shape check.
 PRICE_COLS = ("close", "price", "px", "adj_close", "last", "value")
@@ -445,20 +437,6 @@ class DropIn(BaseModel):
 _READS_WORTH_SAYING = {("backtest", "conditions")}
 
 
-def _summarise_into(state: Any, session_id: str) -> None:
-    """Write a session's summary, and close it. Never raises: this is tidying."""
-    from qanat.agent import summarise
-
-    try:
-        text = summarise(session_id, state.root, _agent_pref(state))
-    except Exception:  # noqa: BLE001
-        text = ""
-    try:
-        state.store.end_session(session_id, text)
-    except Exception:  # noqa: BLE001, S110
-        pass
-
-
 def _owning_session(state: Any, request: Any) -> str:
     """Which conversation a replay belongs to.
 
@@ -518,93 +496,6 @@ def _agent_pref(state: Any) -> str:
     return str(getattr(cfg, "cli", "") or "")
 
 
-def _agent_timeout(state: Any) -> float:
-    """How long one question gets. A bad value is not worth failing an ask over,
-    so it falls back to the default rather than raising at the door."""
-    from qanat.retention import parse_duration
-
-    cfg = getattr(state.project, "agent", None)
-    raw = str(getattr(cfg, "timeout", "") or "180s")
-    try:
-        return max(1.0, parse_duration(raw, "agent.timeout").total_seconds())
-    except ValueError:
-        return 180.0
-
-
-def _trace_of(method: str, path: str) -> tuple[str, str] | None:
-    p = [x for x in path.split("/") if x]
-    if len(p) < 2 or p[0] != "api":
-        return None
-    what = p[1]
-    rest = p[2:]
-    # Pure plumbing. Everything else is fair game now: the console stamps its own
-    # fetches, so a path no longer has to be excluded just because this page polls
-    # it. Filtering by path as well was hiding the agent's real reads -- it would
-    # say it had read the graph and the thread showed nothing.
-    if what in ("trace", "ask", "health", "docs", "openapi.json", "state", "next"):
-        return None
-    # The console polls its own API to stay current -- the graph every two seconds,
-    # the book and the run list beside it. Those are this page keeping up, not
-    # anybody's intent, and a thread full of `alpha_book` is a thread nobody reads.
-    #
-    # So: every write is intent, and only a short list of reads are. A read that
-    # nobody had to ask for does not belong in a history of what was asked.
-
-    if what == "profile" and len(rest) == 2:
-        return (f"profile_table · {rest[0]}.{rest[1]}", "data")
-    if what == "table" and len(rest) == 2:
-        return (f"sample_table · {rest[0]}.{rest[1]}", f"table:{rest[0]}.{rest[1]}")
-    if what == "jobs":
-        if rest[-1:] == ["run"]:
-            return (f"run · {rest[0]}", "alpha")
-        if rest:
-            return (f"read_step · {rest[0]}", f"job:{rest[0]}")
-    if what == "backtest":
-        # the tool whose whole job is to stop and ask. It gets its own surface,
-        # because the right answer to it is a question, not a panel.
-        if rest[:1] == ["conditions"]:
-            return ("backtest_conditions", "conditions")
-        if method == "POST":
-            return ("backtest · replaying", "backtest")
-    if what == "backtests":
-        if len(rest) >= 3 and rest[1] == "compare":
-            return ("compare", "backtest")
-        if rest:
-            return (f"report · {rest[0]}", "backtest")
-        return ("list_backtests", "backtest")
-    if what == "alphas":
-        if method == "POST":
-            return ("save_alpha", "alpha")
-        if method == "DELETE":
-            return (f"remove_alpha · {rest[0] if rest else ''}", "alpha")
-        return ("alpha_book", "backtest")
-    if what == "steps":
-        return (("save_step" if method == "POST" else "remove_step"), "alpha")
-    if what == "sources":
-        return (("save_source" if method == "POST" else "remove_source"), "data")
-    if what == "stages":
-        return ("edit stage", "alpha")
-    if what == "project" and method == "PUT":
-        return ("edit qanat.yaml", "alpha")
-    if what == "graph":
-        return ("list_tables · the graph", "alpha")
-    if what == "project":
-        return ("read qanat.yaml", "alpha")
-    if what == "runs":
-        return ("list_runs", "alpha")
-    if what == "events":
-        return None
-    if what == "live":
-        return ("live_status", "live")
-    if what == "check":
-        return ("check · the contract", "check")
-    if what == "plan":
-        return ("plan · what would change", "check")
-    if what == "shelf":
-        return None
-    return None
-
-
 def create_app(state: AppState, allow_hosts: list[str] | None = None) -> FastAPI:
     app = FastAPI(
         title=f"qanat · {state.project.name}",
@@ -637,96 +528,6 @@ def create_app(state: AppState, allow_hosts: list[str] | None = None) -> FastAPI
                                    f"accepts its own origin."},
             )
         return await call_next(request)
-
-    #: The session, as a list of things that were done to the project. Bounded,
-    #: in memory, and never written anywhere -- it is a view, not a record.
-    trace: deque = deque(maxlen=300)
-    seq = {"n": 0}
-
-    @app.middleware("http")
-    async def record_calls(request, call_next):  # type: ignore[no-untyped-def]
-        """Note what was asked of the project, and who asked.
-
-        Attribution is by whether an Ask is in flight rather than by a header the
-        agent would have to remember to send. While one is running the person is
-        watching rather than clicking, so the requests arriving are its; and on the
-        rare overlap a click still belongs in the thread, only labelled `you`.
-        """
-        # The console stamps its own fetches. They are this page keeping current,
-        # not a tool call, and recording them makes the console drive itself.
-        from_ui = request.headers.get("x-qanat-ui") == "1"
-        hit = None if from_ui else _trace_of(request.method, request.url.path)
-        resp = await call_next(request)
-        if hit is None:
-            return resp
-        # The page stamps its own calls, so anything reaching here unstamped came
-        # from outside it. That is the agent while one is running, and some other
-        # caller otherwise -- never the person, who acts through the page. Saying
-        # "you" for a request nobody made by hand is the kind of small lie that
-        # makes somebody distrust the whole panel.
-        cur = getattr(state, "_ask", None)
-        seq["n"] += 1
-        trace.append({
-            "seq": seq["n"],
-            "at": time.time(),
-            "by": "agent" if (cur and not cur.done) else "api",
-            "label": hit[0],
-            "surface": hit[1],
-            "ok": resp.status_code < 400,
-        })
-        return resp
-
-    @app.get("/api/ask/stream")
-    async def ask_stream(after: int = 0):
-        """The answer as it is written, and the tool calls as they happen, on one
-        connection.
-
-        Polling could not do this. At 250ms the reply landed in visible steps, and
-        the tool lines came from a second poll on its own clock -- so a sentence
-        written after a call could be drawn above it. Both now arrive in order from
-        the same place, at the rate the agent actually produces them.
-        """
-        async def gen():
-            seen = after
-            last = None
-            idle = 0
-            while True:
-                cur = getattr(state, "_ask", None)
-                rows = [x for x in trace if x["seq"] > seen]
-                if rows:
-                    seen = rows[-1]["seq"]
-                payload: dict[str, Any] = {"trace": rows, "seq": seq["n"]}
-                if cur is not None:
-                    payload["ask"] = cur.state()
-                sig = _json_mod.dumps(payload, sort_keys=True, default=str)
-                if sig != last:
-                    last = sig
-                    yield "data: " + sig + "\n\n"
-                    idle = 0
-                else:
-                    idle += 1
-                    # a comment keeps the connection from being reaped by a proxy
-                    if idle % 200 == 0:
-                        yield ": still here\n\n"
-                if cur is not None and cur.state().get("done") and not rows:
-                    yield "event: end\ndata: {}\n\n"
-                    return
-                await asyncio.sleep(0.05)
-
-        return StreamingResponse(gen(), media_type="text/event-stream", headers={
-            "Cache-Control": "no-cache",
-            "X-Accel-Buffering": "no",
-        })
-
-    @app.get("/api/trace")
-    def call_trace(after: int = 0) -> dict[str, Any]:
-        """Everything done to this project since `after`, newest last.
-
-        The console polls this to follow along: each entry is a line for the thread
-        and a surface for the stage.
-        """
-        rows = [t for t in trace if t["seq"] > after]
-        return {"trace": rows, "seq": seq["n"]}
 
     def _editor_error(exc: Exception) -> HTTPException:
         if isinstance(exc, EditorError):
@@ -872,25 +673,6 @@ def create_app(state: AppState, allow_hosts: list[str] | None = None) -> FastAPI
                 return {"ok": True, "warnings": warnings}
         except Exception as exc:
             raise _editor_error(exc) from exc
-
-    @app.put("/api/agent")
-    def agent_put(body: dict[str, Any]) -> dict[str, Any]:
-        """Pick which agent CLI answers, and write it into `qanat.yaml`.
-
-        The choice belongs in the file rather than in this process: it is part of
-        how the project is run, it survives a restart, and an unattended pass that
-        took whatever PATH offered is a result nobody can reproduce.
-        """
-        from qanat.editor import set_agent_cli
-
-        cli = str(body.get("cli") or "").strip()
-        try:
-            with state._lock:
-                warnings = set_agent_cli(state.project, state.root, cli)
-                state.reload()
-        except Exception as exc:
-            raise _editor_error(exc) from exc
-        return {"ok": True, "cli": cli, "warnings": warnings}
 
     @app.post("/api/retention/run")
     def retention_run_now() -> dict[str, Any]:
@@ -1039,7 +821,7 @@ def create_app(state: AppState, allow_hosts: list[str] | None = None) -> FastAPI
         """Add an alpha, or change one. One weights table per alpha, so the name is
         the name of that table and of the PnL table under it."""
         from qanat import alphas as shelf_mod
-        from qanat.editor import EditorError, save_step
+        from qanat.editor import save_step
 
         with state._lock:
             wl = state.project.weights_stage
@@ -1116,7 +898,7 @@ def create_app(state: AppState, allow_hosts: list[str] | None = None) -> FastAPI
 
     @app.delete("/api/alphas/{step_id}")
     def drop_alpha(step_id: str) -> dict[str, Any]:
-        from qanat.editor import EditorError, delete_step
+        from qanat.editor import delete_step
 
         with state._lock:
             if state.project.alpha(step_id) is None:
@@ -1460,198 +1242,6 @@ def create_app(state: AppState, allow_hosts: list[str] | None = None) -> FastAPI
         return {"ok": True, "run_id": run_id, "count": state.store.trial_count()}
 
     # ---- sessions ------------------------------------------------------------
-    @app.get("/api/sessions")
-    def sessions_list(limit: int = 50) -> dict[str, Any]:
-        """Every conversation, newest first, and which one is open.
-
-        `runs` is legitimately zero on most of them. A session that asked a
-        question and got an answer produced no replay, and showing an empty space
-        there is the truth about it rather than a gap in the record.
-        """
-        return {
-            "open": getattr(state, "_session", "") or "",
-            "sessions": state.store.sessions(limit),
-        }
-
-    @app.get("/api/sessions/{session_id}")
-    def session_one(session_id: str) -> dict[str, Any]:
-        """One conversation, and what came out of it."""
-        row = state.store.session(session_id)
-        if row is None:
-            raise HTTPException(404, f"no session {session_id}")
-        return {
-            **row,
-            "open": getattr(state, "_session", "") == session_id,
-            "backtests": state.store.session_backtests(session_id),
-            #  What was actually said. Named apart from the row's `asks`, which
-            #  is a count: one key cannot be both a number and a list, and the
-            #  spread above would have quietly made it the list.
-            #
-            #  Sessions from before this was kept have none, and show a card
-            #  rather than a thread -- which is the truth about them.
-            "messages": state.store.session_asks(session_id),
-        }
-
-    @app.post("/api/sessions/new")
-    def session_new() -> dict[str, Any]:
-        """Close whatever is open and start fresh.
-
-        Closing summarises in the background: it resumes the session to ask it
-        what happened, which takes as long as an answer does and has no business
-        holding up the next question.
-        """
-        old = getattr(state, "_session", "") or ""
-        state._session = None
-        if old:
-            threading.Thread(target=_summarise_into, args=(state, old), daemon=True).start()
-        return {"ok": True, "closed": old}
-
-    @app.post("/api/sessions/{session_id}/summarise")
-    def session_summarise(session_id: str) -> dict[str, Any]:
-        if state.store.session(session_id) is None:
-            raise HTTPException(404, f"no session {session_id}")
-        _summarise_into(state, session_id)
-        row = state.store.session(session_id)
-        return {"ok": True, "summary": (row or {}).get("summary") or ""}
-
-    @app.get("/api/alphas/{alpha}/sessions")
-    def alpha_sessions(alpha: str) -> list[dict[str, Any]]:
-        """The other direction: from a strategy back to the conversations it came
-        out of, each with what it got."""
-        return state.store.alpha_sessions(alpha)
-
-    @app.get("/api/ask")
-    def ask_state() -> dict[str, Any]:
-        """What the current question is doing, and what could answer it.
-
-        `clis` carries every agent we know how to drive, installed or not, so the
-        console can offer the choice and say plainly which ones work rather than
-        listing a name that quietly returns nothing.
-        """
-        from qanat.agent import find_cli, list_clis
-
-        prefer = _agent_pref(state)
-        cli = find_cli(prefer)
-        cur = getattr(state, "_ask", None)
-        return {
-            "available": bool(cli),
-            "cli": cli["label"] if cli else None,
-            "clis": list_clis(prefer),
-            "chosen": prefer,
-            "ask": cur.state() if cur else None,
-        }
-
-    @app.delete("/api/ask")
-    def ask_stop() -> dict[str, Any]:
-        """Change your mind. Whatever it already did to the project stays done."""
-        cur = getattr(state, "_ask", None)
-        if not cur or cur.done:
-            return {"stopped": False, "note": "nothing was running"}
-        stopped = cur.stop()
-        if stopped:
-            state.store.event("warn", "agent", "stopped before it finished")
-        return {"stopped": stopped}
-
-    @app.post("/api/ask")
-    def ask_start(body: dict[str, Any]) -> dict[str, Any]:
-        from qanat.agent import Ask, find_cli
-        from qanat.agent import carry as run_ask_carry
-        from qanat.agent import run as run_ask
-
-        question = str(body.get("question") or "").strip()
-        if not question:
-            raise HTTPException(400, "ask something first")
-        #  A new question supersedes the old one rather than being refused. Asking
-        #  again is how a person says "not that, this" -- and after a stop there is
-        #  a beat where the last one is killed but not yet marked done, which used
-        #  to come back as "already working on the last question".
-        cur = getattr(state, "_ask", None)
-        if cur and not cur.done:
-            cur.stop()
-
-        ask = Ask(question=question)
-        state._ask = ask
-        base = str(body.get("base") or "http://127.0.0.1:8420").rstrip("/")
-        root = state.root
-        prefer, budget = _agent_pref(state), _agent_timeout(state)
-
-        #  Which conversation this question belongs to. Naming one continues it;
-        #  naming none continues whichever is open, and opens one if none is.
-        #  The id is ours and is handed to the CLI, so both sides call the same
-        #  conversation by the same name.
-        want = str(body.get("session") or "").strip()
-        carried, resume = "", False
-        if want:
-            row = state.store.session(want)
-            if row is None:
-                raise HTTPException(404, f"no session {want}")
-            sid, resume = want, True
-            carried = run_ask_carry(str(row.get("summary") or ""))
-        elif getattr(state, "_session", None):
-            sid, resume = state._session, True
-        else:
-            sid = str(uuid.uuid4())
-        state._session = sid
-        state.store.open_session(sid, cli=(find_cli(prefer) or {}).get("label", ""),
-                                 title=question[:120])
-        ask.session_id = sid
-
-        def work() -> None:
-            # the agent is a person's hands here, not the clock's
-            from qanat.agent import diff, snapshot
-            from qanat.store import set_actor
-            set_actor("agent")
-            state.store.event("info", "agent", f"asked: {question[:120]}")
-
-            def shot() -> dict[str, Any]:
-                with state._lock:
-                    return snapshot(build_graph(state.store, state.project, state.root,
-                                                state.sched))
-
-            before = shot()
-            try:
-                run_ask(ask, root, base, timeout=budget, prefer=prefer,
-                        session_id=sid, resume=resume)
-                #  `--resume` needs the CLI to still hold that transcript. When it
-                #  does not -- cleared cache, another machine -- the session row is
-                #  still here and the conversation is not, so start a fresh one
-                #  under the same id and hand it the summary instead. Degraded,
-                #  and much better than an error the person cannot act on.
-                if resume and ask.error and not ask.answer:
-                    _say_retry(ask)
-                    ask.error = ""
-                    run_ask(ask, root, base, timeout=budget, prefer=prefer,
-                            session_id=sid, resume=False, carried=carried)
-            except Exception as exc:  # noqa: BLE001
-                ask.error = f"{type(exc).__name__}: {exc}"
-                ask.done = True
-            state.reload()
-            # What came of it, in the project's terms rather than the agent's. The
-            # lines above say what it did; these say what moved.
-            try:
-                for line in diff(before, shot()):
-                    ask.lines.append({"kind": "diff", "text": line, "detail": "",
-                                      "at": ask.state()["elapsed"]})
-            except Exception:  # noqa: BLE001, S110
-                pass
-            state.store.event(
-                "error" if ask.error else "info", "agent",
-                ask.error[:160] if ask.error else (ask.answer[:160] or "finished"),
-            )
-            try:
-                state.store.note_ask(sid, cost_usd=ask.cost_usd, model=ask.model,
-                                     title=question[:120])
-                #  The conversation, kept. Written from the same state the console
-                #  was drawing live, and after the diff lines are appended, so the
-                #  replay shows what moved as well as what was said.
-                state.store.save_ask(sid, ask.state())
-            except Exception:  # noqa: BLE001, S110 -- accounting must not fail an answer
-                pass
-            ask.done = True          # last, so the diff lines are already there
-
-        threading.Thread(target=work, daemon=True).start()
-        return {"started": True}
-
     @app.get("/api/runs")
     def runs(limit: int = 60) -> list[dict[str, Any]]:
         return state.store.recent_runs(limit)
@@ -1985,13 +1575,6 @@ def create_app(state: AppState, allow_hosts: list[str] | None = None) -> FastAPI
     @app.get("/api/health")
     def health() -> dict[str, Any]:
         return {"ok": True, "project": state.project.name, "version": __version__}
-
-    if CONSOLE.is_dir():
-        app.mount("/static", StaticFiles(directory=CONSOLE), name="static")
-
-        @app.get("/")
-        def index() -> FileResponse:
-            return FileResponse(CONSOLE / "index.html")
 
     return app
 

@@ -283,9 +283,9 @@ class Backtest(Base):
 
 
 class Agent(Base):
-    """Which agent CLI answers a question in the console.
+    """Which installed agent CLI the unattended pass drives.
 
-    Left unset the console takes the first one it finds on PATH, which is fine
+    Left unset it takes the first one it finds on PATH, which is fine
     until two are installed and the choice is the accident of ordering. Naming it
     here settles it once, in the file, where it can be read back.
 

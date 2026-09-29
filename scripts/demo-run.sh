@@ -1,5 +1,5 @@
 #!/bin/sh
-# Live ingest demo (~2 minutes): mock feed + qanat console + scheduled job triggers.
+# Live ingest demo (~2 minutes): mock feed + the scheduler + scheduled job triggers.
 #
 #   sh scripts/demo-run.sh
 #
@@ -54,7 +54,7 @@ for job in news normalize momentum risk tone portfolio; do
   uv run --project "$ROOT" qanat run "$job"
 done
 
-echo "demo-run: console → http://127.0.0.1:${QANAT_PORT}"
+echo "demo-run: api → http://127.0.0.1:${QANAT_PORT}/api/docs"
 uv run --project "$ROOT" qanat serve --host 127.0.0.1 --port "$QANAT_PORT" --run-now &
 QANAT_PID=$!
 
@@ -89,7 +89,7 @@ trigger_loop() {
     run_job portfolio
     sleep "$INTERVAL"
   done
-  echo "demo-run: live cycles finished (${DURATION}s) — console still running"
+  echo "demo-run: live cycles finished (${DURATION}s), scheduler still running"
 }
 
 trigger_loop &
@@ -98,7 +98,7 @@ TRIGGER_PID=$!
 echo ""
 echo "  Open http://127.0.0.1:${QANAT_PORT}"
 echo "  Live ingest runs for ~${DURATION}s (every ${INTERVAL}s)."
-echo "  Press Ctrl+C to stop feed + console."
+echo "  Press Ctrl+C to stop the feed and the scheduler."
 echo ""
 
 wait "$QANAT_PID"

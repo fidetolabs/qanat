@@ -1,19 +1,19 @@
-"""Asking in plain English, using the agent the person already has.
+"""Running the agent CLI the person already has, headless.
 
-The console never holds a key and never signs anyone in. It runs the agent CLI
-already installed on the machine -- Claude Code, Cursor -- in headless mode, and
-that CLI is already authenticated. Nothing to paste, nothing to bill, and the
-credential stays where the person put it.
+The console used this for its Ask box and the console is gone. What is left is
+the unattended pass in `research.py`, which drives an installed CLI to try to
+break a strategy overnight and records every attempt.
 
-**Why the agent talks HTTP and not MCP.** A DuckDB file takes one writer, and the
-console is holding it. A second `qanat mcp` in the same project cannot open the
-store, which is what `StoreBusy` says. So the agent is pointed at the console's
-own API instead: the same service layer the MCP tools sit on, reached over the
-loopback port that is already serving. One process, one writer, no lock.
+The module is called `headless` and not `agent` because the filename was making
+a claim. Qanat is an MCP server. It does not ship an agent, and a file called
+`agent.py` sitting in the package told everyone who opened the repo otherwise.
 
-That endpoint is worth reaching only from this machine, which is what the `Host`
-guard in `api.py` is for -- without it any page in any tab could start an agent
-run here.
+**Why it talks HTTP and not MCP.** A DuckDB file takes one writer and `qanat
+serve` is holding it, so a second `qanat mcp` in the same project cannot open
+the store. The pass is pointed at the API this same process is already serving.
+`qanat mcp --http` now serves MCP from a process that holds the store, so this
+can move onto MCP and get the scope contract with it; until then the tool fence
+below is the only thing bounding what the pass may do.
 """
 
 from __future__ import annotations

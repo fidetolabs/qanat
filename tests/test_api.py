@@ -98,44 +98,6 @@ def test_prune_orphan(client, tmp_path: Path):
     assert any(d["ref"] == "features.tone" for d in r.json()["dropped"])
 
 
-def test_ask_lists_every_cli_with_status(client):
-    """The picker needs the whole shelf, not just whichever was found first.
-
-    A console that only ever names the winner cannot offer a choice, and a name
-    it offers without saying whether it works is worse than no choice at all.
-    """
-    c, _ = client
-    r = c.get("/api/ask")
-    assert r.status_code == 200
-    body = r.json()
-    assert body.get("clis")
-    assert "claude" in {row["bin"] for row in body["clis"]}
-    for row in body["clis"]:
-        assert set(row) >= {"bin", "label", "support", "found", "active", "note"}
-        assert row["support"] in {"full", "partial"}
-        #  A `partial` entry has to say what is wrong with it. An entry that is
-        #  offered without that is the thing this list exists to prevent.
-        if row["support"] != "full":
-            assert row["note"]
-    # at most one can be the one that would actually run
-    assert sum(1 for row in body["clis"] if row["active"]) <= 1
-
-
-def test_agent_choice_lands_in_the_file(client):
-    c, state = client
-    r = c.put("/api/agent", json={"cli": "claude"})
-    assert r.status_code == 200
-    state.reload()
-    assert state.project.agent is not None
-    assert state.project.agent.cli == "claude"
-    # and it is readable back through the door the console uses
-    assert c.get("/api/ask").json()["chosen"] == "claude"
-    # clearing it goes back to first-found
-    assert c.put("/api/agent", json={"cli": ""}).status_code == 200
-    state.reload()
-    assert state.project.agent.cli == ""
-
-
 def test_agent_choice_refuses_a_cli_we_cannot_drive(client):
     """Better to refuse at the door than to write it and fail at the ask box."""
     c, state = client
@@ -143,18 +105,6 @@ def test_agent_choice_refuses_a_cli_we_cannot_drive(client):
     assert r.status_code >= 400
     state.reload()
     assert state.project.agent is None or state.project.agent.cli == ""
-
-
-def test_agent_timeout_is_configurable_and_survives_a_bad_value(client):
-    from qanat.api import _agent_timeout
-    from qanat.models import Agent
-
-    _, state = client
-    assert _agent_timeout(state) == 180.0          # the default, with no agent block
-    state.project.agent = Agent(cli="", timeout="30m")
-    assert _agent_timeout(state) == 1800.0
-    state.project.agent = Agent(cli="", timeout="not a duration")
-    assert _agent_timeout(state) == 180.0          # falls back rather than failing an ask
 
 
 # ---------------------------------------------------------------- sessions
@@ -171,100 +121,14 @@ def _seed_session(state, sid="s-1", alpha="alpha_momentum", runs=1):
     return ids
 
 
-def test_a_session_shows_what_it_produced(client):
-    c, state = client
-    ids = _seed_session(state, runs=2)
-    body = c.get("/api/sessions/s-1").json()
-    assert body["title"] == "add a momentum strategy"
-    assert body["asks"] == 1 and body["cost_usd"] == pytest.approx(0.11)
-    assert [r["run_id"] for r in body["backtests"]] == sorted(ids, reverse=True)
-
-
-def test_a_session_that_replayed_nothing_simply_has_none(client):
-    """Most sessions are a question and an answer. An empty list is the truth about
-    that session, not a gap in the record or an error state."""
-    c, state = client
-    state.store.open_session("quiet", title="what is in this project?")
-    body = c.get("/api/sessions/quiet").json()
-    assert body["backtests"] == []
-    listed = {s["session_id"]: s for s in c.get("/api/sessions").json()["sessions"]}
-    assert listed["quiet"]["runs"] == 0
-
-
-def test_an_alpha_lists_the_sessions_it_came_out_of(client):
-    """The same join read the other way round."""
-    c, state = client
-    _seed_session(state, sid="s-1", alpha="alpha_momentum", runs=2)
-    _seed_session(state, sid="s-2", alpha="alpha_momentum", runs=1)
-    _seed_session(state, sid="s-3", alpha="alpha_low_vol", runs=1)
-
-    rows = c.get("/api/alphas/alpha_momentum/sessions").json()
-    assert {r["session_id"] for r in rows} == {"s-1", "s-2"}
-    assert {r["session_id"]: r["runs"] for r in rows} == {"s-1": 2, "s-2": 1}
-    assert [r["session_id"] for r in c.get("/api/alphas/alpha_low_vol/sessions").json()] == ["s-3"]
-
-
 def test_a_cli_or_scheduler_replay_belongs_to_no_session(client):
     """Tagging one would invent a conversation nobody had."""
-    c, state = client
+    _, state = client
     rid = state.store.start_backtest("2026-01-01", "2026-06-01", "5d", 0, "d", alpha="a")
     state.store.end_backtest(rid, "ok", {"net": 0.0, "gross": 0.0, "fees": 0.0,
                                          "slippage": 0.0, "turnover": 0.0, "periods": 1})
     row = next(r for r in state.store.backtests() if r["run_id"] == rid)
     assert not row["session_id"]
-    assert c.get("/api/sessions").json()["sessions"] == []
-
-
-def test_starting_a_new_session_closes_the_open_one(client):
-    c, state = client
-    state._session = "s-1"
-    _seed_session(state)
-    r = c.post("/api/sessions/new").json()
-    assert r["closed"] == "s-1"
-    assert c.get("/api/sessions").json()["open"] == ""
-
-
-def test_a_session_keeps_what_was_said(client):
-    """Continuing a session reads the CLI's transcript; reading one reads ours.
-    Without this a past session is a card -- a summary and a count -- and nobody
-    can see what was actually asked."""
-    c, state = client
-    state.store.open_session("s-1", title="q one")
-    state.store.save_ask("s-1", {
-        "question": "how many alphas?", "answer": "five, plus one blend",
-        "lines": [{"kind": "read", "text": "reading graph", "detail": "", "at": 0.4},
-                  {"kind": "diff", "text": "new step momentum", "detail": "", "at": 6.1}],
-        "model": "claude-opus-5", "cost_usd": 0.41, "elapsed": 12.7,
-    })
-    state.store.save_ask("s-1", {"question": "which was wired?", "answer": "momentum"})
-
-    body = c.get("/api/sessions/s-1").json()
-    asks = body["messages"]
-    assert [a["question"] for a in asks] == ["how many alphas?", "which was wired?"]
-    assert asks[0]["answer"] == "five, plus one blend"
-    # the tool log comes back as structure, not as the string it was stored as
-    assert [line["kind"] for line in asks[0]["lines"]] == ["read", "diff"]
-    assert asks[0]["cost_usd"] == pytest.approx(0.41)
-    assert asks[1]["lines"] == []
-
-
-def test_a_session_from_before_we_kept_messages_still_opens(client):
-    """Older sessions have no transcript. That is a thinner card, not an error."""
-    c, state = client
-    state.store.open_session("old", title="before")
-    assert c.get("/api/sessions/old").json()["messages"] == []
-
-
-def test_the_transcript_does_not_shadow_the_question_count(client):
-    """`asks` is how many questions; the messages are a list. One key cannot be
-    both, and the spread that builds this response would have made it the list."""
-    c, state = client
-    state.store.open_session("s-1", title="q")
-    state.store.note_ask("s-1", cost_usd=0.2)
-    state.store.save_ask("s-1", {"question": "q", "answer": "a"})
-    body = c.get("/api/sessions/s-1").json()
-    assert body["asks"] == 1
-    assert len(body["messages"]) == 1
 
 
 # ---------------------------------------------------------------- the ledger
@@ -528,7 +392,7 @@ def test_a_cli_we_cannot_drive_is_not_on_the_shelf(client):
 
     Adding a CLI needs an argv, an event mapping and a tool fence. Until all three
     exist, it does not belong on the list."""
-    from qanat.agent import CLIS
+    from qanat.headless import CLIS
 
     assert {c["bin"] for c in CLIS} == {"claude"}
     c, _ = client
@@ -566,3 +430,29 @@ def test_a_report_says_which_alpha_it_is(client):
     c, state = client
     rid = _priced_run(state, "d1", alpha="alpha_low_vol")
     assert c.get(f"/api/backtests/{rid}").json()["alpha"] == "alpha_low_vol"
+
+
+# The console is gone and its session browser with it. What the store does for a
+# session is still reached, by the unattended pass in `research.py`, so the part
+# that survived keeps its own tests rather than losing coverage with the routes.
+def test_a_session_round_trips_without_any_console(client):
+    _, state = client
+    state.store.open_session("s-9", cli="claude", title="falsify pass")
+    state.store.note_ask("s-9", cost_usd=0.12, model="opus", title="falsify · momentum")
+    state.store.save_ask("s-9", {"question": "break it", "answer": "could not"})
+    state.store.end_session("s-9", "nothing survived")
+
+    row = next(r for r in state.store.sessions() if r["session_id"] == "s-9")
+    assert row["title"] == "falsify pass"
+    assert row["summary"] == "nothing survived"
+    assert float(row["cost_usd"]) == pytest.approx(0.12)
+
+
+def test_the_installed_clis_are_discoverable_without_the_api():
+    """`/api/ask` used to report this. The pass still needs to find a CLI."""
+    from qanat.headless import CLIS, list_clis
+
+    found = list_clis()
+    assert {c["bin"] for c in found} == {c["bin"] for c in CLIS}
+    for entry in found:
+        assert "found" in entry and "support" in entry

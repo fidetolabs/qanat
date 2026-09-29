@@ -162,8 +162,8 @@ def run_pass(store: Store, project: Project, root: Path, base: str,
     cost, so a pass that turns out to be expensive stops on the way through
     instead of after.
     """
-    from qanat.agent import Ask
-    from qanat.agent import run as run_ask
+    from qanat.headless import Ask
+    from qanat.headless import run as run_ask
 
     cfg = project.research
     budget = float(getattr(cfg, "budget_usd", 1.0) or 1.0)
@@ -201,7 +201,7 @@ def run_pass(store: Store, project: Project, root: Path, base: str,
     #  conversation to ask what happened, so the row a person reads tomorrow was
     #  written by the thing that was there.
     try:
-        from qanat.agent import summarise
+        from qanat.headless import summarise
 
         store.end_session(pass_.session_id, summarise(pass_.session_id, root, prefer))
     except Exception:  # noqa: BLE001 -- tidying must not fail the pass

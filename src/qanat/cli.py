@@ -3,13 +3,13 @@
     qanat init [dir]     scaffold a project that runs green with no keys
     qanat check          hold the pipeline against the stage contract
     qanat ls             stages, tables, jobs
-    qanat graph          the console's picture of the pipeline, in the terminal
-    qanat tui            the console itself, in the terminal: graph, alphas, replays
+    qanat graph          the pipeline as a picture, in the terminal
+    qanat tui            graph, alphas and replays, in the terminal
     qanat run [job]      one pass, or one job
     qanat backtest       replay the graph over a window, and price what it held
     qanat report <id>    one backtest, period by period
     qanat mcp            serve the same tools to an agent, over stdio or --http, at one of three scopes
-    qanat serve          scheduler + console
+    qanat serve          run the scheduler, and serve the API it works through
 """
 
 from __future__ import annotations
@@ -313,7 +313,7 @@ def cmd_graph(args) -> int:
 
 # ------------------------------------------------------------------------- tui
 def cmd_tui(args) -> int:
-    """The console without the browser: the graph, the alphas, and a live replay."""
+    """The graph, the alphas, and a live replay, in the terminal."""
     from qanat.graph import glyphs_for, ink_for
     from qanat.project import validate
     from qanat.store import Store
@@ -648,8 +648,7 @@ def cmd_serve(args) -> int:
             ).start()
 
     print(f"\n  {c('qanat', B)} {D}v{__version__}{X}  {project.name}")
-    print(f"  console  {c(f'http://{args.host}:{args.port}', B)}")
-    print(f"  api      {D}http://{args.host}:{args.port}/api/docs{X}")
+    print(f"  api      {c(f'http://{args.host}:{args.port}/api/docs', B)}")
     print(f"  store    {D}{project.store_url(root)}{X}\n")
     sys.stdout.flush()  # uvicorn blocks next, and a piped stdout would never flush
     try:
@@ -751,7 +750,7 @@ def cmd_mcp(args) -> int:
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
         prog="qanat",
-        description="An agent-first backtesting engine that turns your raw data into portfolio weights through a pipeline of steps you define.",
+        description="An MCP server for quant factor processing and backtesting.",
     )
     p.add_argument("--version", action="version", version=f"qanat {__version__}")
     p.add_argument("-p", "--project", help="path to qanat.yaml (default: found by walking up)")
@@ -785,7 +784,7 @@ def build_parser() -> argparse.ArgumentParser:
     ls = sub.add_parser("ls", help="stages, tables, jobs")
     ls.set_defaults(func=cmd_ls)
 
-    gr = sub.add_parser("graph", help="the console's picture of the pipeline, in the terminal")
+    gr = sub.add_parser("graph", help="the pipeline as a picture, in the terminal")
     gr.add_argument("--color", choices=("auto", "always", "never"), default="auto",
                     help="colour the stages (default: when stdout is a terminal)")
     gr.add_argument("--ascii", action="store_true", help="draw with - | + instead of box rules")
@@ -795,7 +794,7 @@ def build_parser() -> argparse.ArgumentParser:
                     help="fit to this many columns. 0 is unlimited (the default when piped)")
     gr.set_defaults(func=cmd_graph)
 
-    tu = sub.add_parser("tui", help="the console in the terminal: graph, alphas, live replays")
+    tu = sub.add_parser("tui", help="graph, alphas and live replays, in the terminal")
     tu.add_argument("--color", choices=("auto", "always", "never"), default="always",
                     help="colour the stages (default: always -- it is a terminal by definition)")
     tu.add_argument("--ascii", action="store_true", help="draw with - | + instead of box rules")
@@ -869,11 +868,11 @@ def build_parser() -> argparse.ArgumentParser:
     mc.add_argument("--read-only", action="store_true", help=argparse.SUPPRESS)
     mc.set_defaults(func=cmd_mcp)
 
-    s = sub.add_parser("serve", help="scheduler and console")
+    s = sub.add_parser("serve", help="run the scheduler, and serve the API it works through")
     s.add_argument("--host", default="127.0.0.1")
     s.add_argument("--port", type=int, default=8420)
     s.add_argument("--workers", type=int, default=4)
-    s.add_argument("--no-schedule", action="store_true", help="serve the console, run nothing")
+    s.add_argument("--no-schedule", action="store_true", help="serve the API, run nothing")
     s.add_argument("--run-now", action="store_true", help="fire every job once at startup")
     s.add_argument("--log-level", default="warning")
     s.add_argument("--force", action="store_true")

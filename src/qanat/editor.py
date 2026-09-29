@@ -248,7 +248,7 @@ def set_agent_cli(project: Project, root: Path, cli: str) -> list[str]:
     Refuses a name we cannot drive rather than writing it and failing later at the
     ask box, where the reason would be much harder to see.
     """
-    from qanat.agent import CLIS
+    from qanat.headless import CLIS
     from qanat.models import Agent
 
     known = {c["bin"] for c in CLIS}

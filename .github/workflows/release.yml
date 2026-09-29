@@ -75,17 +75,18 @@ jobs:
           QANAT_TEST_PG: postgresql://qanat:qanat@127.0.0.1:5433/qanat
 
       - run: uv build
-      - name: the wheel must carry the console
+      - name: the wheel must carry the CLI and the MCP server
         run: |
           uv run python - <<'PY'
           import glob, zipfile
           names = zipfile.ZipFile(sorted(glob.glob("dist/*.whl"))[-1]).namelist()
-          want = {"index.html", "dag.js", "console.js", "backtests.js", "alphaedit.js", "theme.css",
-                  "thread.js", "data.js", "live.js", "conditions.js"}
-          have = {n.rsplit("/", 1)[-1] for n in names if "/console/" in n}
+          have = {n.rsplit("/", 1)[-1] for n in names if n.startswith("qanat/")}
+          want = {"cli.py", "mcp.py", "mcp_http.py", "backtest.py", "store.py", "headless.py"}
           missing = want - have
-          assert not missing, f"the wheel is missing {missing} -- it would install a blank console"
-          print(f"console assets in the wheel: {len(have)}")
+          assert not missing, f"the wheel is missing {missing}"
+          stray = {n for n in names if "console" in n or n.endswith("agent.py")}
+          assert not stray, f"the console left the package; the wheel still carries {stray}"
+          print(f"modules in the wheel: {len(have)}")
           PY
 
       - uses: actions/upload-artifact@v7

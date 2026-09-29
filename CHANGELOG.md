@@ -2,6 +2,42 @@
 
 ## Unreleased
 
+### The console leaves the package
+
+Someone opened the repo, saw a chat window and a dashboard, and decided what
+Qanat was before reading a word. The answer to "agent? tool? engine?" was the
+code, not the README. So the console is gone: 13 files under `src/qanat/console`,
+the twelve UI probe scripts, and the CSS test.
+
+`agent.py` is now `headless.py`. The filename was making a claim. Qanat is an MCP
+server and does not ship an agent, and a file called `agent.py` sitting in the
+package said otherwise to everyone who looked. What the module does is unchanged:
+it runs an installed agent CLI headless, and the only thing left that calls it is
+the unattended falsification pass.
+
+Out of the API with the screen: `GET /`, the static mount, `/api/ask` and
+`/api/ask/stream`, `/api/trace`, the five `/api/sessions` routes and `PUT
+/api/agent`. What is left is the read model and the buttons, which the scheduler
+and the unattended pass still work through. 2,010 lines to 1,592.
+
+`open_console` and `console_status` go with it, so the MCP surface is 31 tools
+rather than 33, and a `Session` no longer holds a page it might have been
+serving. Scopes are 6 / 19 / 31.
+
+The release check that verified the wheel carried console assets now verifies the
+opposite: the modules are there and nothing called `console` or `agent.py` is.
+
+**`qanat serve` is the scheduler now**, and says so. It prints the API address
+instead of a console address. A new project's README tells you to run `qanat mcp`
+first. The busy-store error offered three doors and two of them were the console;
+it offers `qanat mcp --http` instead. `qanat tui` stays: it is a terminal
+program, not a screen this package has to ship and host.
+
+The ten API tests that covered the removed routes went with them. The store's
+session machinery survives because the unattended pass uses it, so it has its own
+test now rather than losing coverage with the routes.
+
+
 ### MCP over HTTP, so the client does not have to be on this machine
 
 `qanat mcp` speaks JSON-RPC on a pipe, which is right for one person on one

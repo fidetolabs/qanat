@@ -19,7 +19,7 @@ as the numerator:
 
 **Annualisation comes from the rebalance gap, not from 252.** A period here is a rebalance. A
 weekly strategy annualised at 252 would be called five times more volatile than it is, so
-`per_year("5d")` is 73 and `per_year("1w")` is 52.14. The console computes it the same way from
+`per_year("5d")` is 73 and `per_year("1w")` is 52.14. `qanat report` computes it the same way from
 the same string, so the Sharpe drawn on the page and the one written into the run agree.
 
 `sharpe` is `null` rather than `0.0` for a single period or a run that never moved. Reporting
@@ -102,7 +102,7 @@ summed line is the one they reconcile against.
 
 ## Opening a single rebalance
 
-`qanat report` gives you the periods. The console, and the `period` MCP tool, give you one of them
+`qanat report` gives you the periods. The `period` MCP tool gives you one of them
 in full: what was held, what each name returned, and what was traded to get there.
 
 The contributions add up to that period's gross, because the server recomputes them from what the
@@ -146,7 +146,7 @@ misses and the per-period figure divides a few real returns over many empty slot
 
 So `totals` carries `held_periods` and `flat_periods` alongside `hit_rate_held` and
 `net_per_held_period`, and every surface that quotes the headline can qualify it. The report says
-both, the console hatches the flat stretches on the equity curve, and neither figure is quoted
+both, `qanat tui` hatches the flat stretches on the equity curve, and neither figure is quoted
 without the other. One alpha here reported `net +5.61%` and a `6.1%` hit rate having held a
 portfolio in three periods out of thirty-three; both numbers mislead, in opposite directions.
 
@@ -175,7 +175,7 @@ it is written after the run rather than before.
 That is the one sense of out-of-sample that cannot be arrived at by looking. An out-of-sample half
 was measured on rows that were already on disk when the alpha was picked: the data did not argue
 back through the fitting, but it argued back through the person, because you knew how that year
-went. The console draws the forward return against the rate that half implied, and the gap between
+went. `qanat tui` draws the forward return against the rate that half implied, and the gap between
 them is the number worth reading.
 
 Live produces a portfolio. It does not place an order.

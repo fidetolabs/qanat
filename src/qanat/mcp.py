@@ -58,10 +58,6 @@ class Session:
         self.path = project_path
         self.project, self.root = load(project_path)
         self._store = None
-        #: Set once `open_console` has served the console from this same session,
-        #: so the page a person is watching and the tools an agent is calling are
-        #: one process over one store, and cannot disagree.
-        self.console: dict[str, Any] | None = None
 
     @property
     def store(self):
@@ -75,14 +71,8 @@ class Session:
         from qanat.project import load
 
         self.project, self.root = load(self.path)
-        if self.console:
-            # the open page is reading AppState, so hand it the reloaded file too
-            self.console["state"].set_project(self.project)
 
     def close(self) -> None:
-        if self.console and self.console.get("server") is not None:
-            self.console["server"].should_exit = True
-            self.console = None
         if self._store is not None:
             self._store.close()
             self._store = None
@@ -688,80 +678,6 @@ def _free_port(host: str, first: int) -> int:
             if s.connect_ex((host, port)) != 0:
                 return port
     raise ToolError(f"no free port between {first} and {first + 40}")
-
-
-@tool("open_console",
-      "Open the Qanat console in the person's browser so they can watch the DAG and the "
-      "backtest charts while you work. Serves from this same session, so anything you run "
-      "shows up on the page. Call it once; calling it again returns the same URL. "
-      "Use view='backtests' to land them on the charts.",
-      {"properties": {
-          "view": {"type": "string",
-                   "enum": ["data", "alpha", "backtests", "live", "pipeline"],
-                   "default": "alpha",
-                   "description": "which page to land them on. `pipeline` is the old name for "
-                                  "`alpha` and still works"},
-          "port": {"type": "integer", "default": 8420},
-          "browser": {"type": "boolean", "default": True,
-                      "description": "false serves it but does not open a window"},
-      }},
-      writes=True,
-      scope="full")
-def _open_console(s: Session, args: dict) -> Any:
-    import threading
-    import time
-    import webbrowser
-
-    # The console has four pages now, so this can land a person on any of them
-    # rather than only on the charts. `pipeline` still resolves, as `alpha`.
-    view = args.get("view") or "alpha"
-    suffix = f"?view={view}" if view in ("data", "alpha", "backtests", "live") else ""
-
-    if s.console:
-        url = s.console["url"] + suffix
-        if args.get("browser", True):
-            webbrowser.open(url)
-        return {"url": url, "already_open": True,
-                "note": "the console was already serving; the same page was brought forward"}
-
-    import uvicorn
-
-    from qanat.api import AppState, create_app
-
-    host = "127.0.0.1"
-    port = _free_port(host, int(args.get("port") or 8420))
-    # No scheduler: in this session the agent decides when something runs, not cron.
-    state = AppState(store=s.store, project=s.project, root=s.root, sched=None)
-    server = uvicorn.Server(uvicorn.Config(create_app(state), host=host, port=port,
-                                           log_level="warning"))
-    threading.Thread(target=server.run, daemon=True).start()
-
-    deadline = time.time() + 10
-    while not getattr(server, "started", False) and time.time() < deadline:
-        time.sleep(0.05)
-    if not getattr(server, "started", False):
-        raise ToolError(f"the console did not come up on port {port} within 10s")
-
-    base = f"http://{host}:{port}"
-    s.console = {"url": base, "server": server, "state": state}
-    if args.get("browser", True):
-        webbrowser.open(base + suffix)
-    return {
-        "url": base + suffix,
-        "already_open": False,
-        "shows": ["the DAG, with live row counts and job status",
-                  "the backtest panel: equity curve, per-period net, and the cost breakdown"],
-        "note": "The page polls, so a run or a backtest you start now appears without a reload.",
-    }
-
-
-@tool("console_status", "Whether the console is being served from this session, and where.",
-      {"properties": {}},
-      scope="full")
-def _console_status(s: Session, args: dict) -> Any:
-    if not s.console:
-        return {"open": False, "note": "call open_console to serve it"}
-    return {"open": True, "url": s.console["url"]}
 
 
 # ---- author ------------------------------------------------------------------

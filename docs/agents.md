@@ -1,6 +1,6 @@
 # Notes on the agent surface
 
-The README covers adding qanat to an MCP client and what the 33 tools are. These are the parts
+The README covers adding qanat to an MCP client and what the 31 tools are. These are the parts
 that only matter once you are using them.
 
 ## The agent's surface is wider than the CLI's
@@ -18,8 +18,9 @@ Going the other way, `save_step`, `save_source`, `save_universe` and `use_alpha`
 all. You author a step in your editor; an agent authors one through the API.
 
 Five commands have no tool. `init` and `prune` because an agent works inside a project that
-already exists and does not drop tables; `serve` because `open_console` does it in-session; `mcp`
-because it is the transport; `ls` because it is three tools here.
+already exists and does not drop tables; `serve` because starting a scheduler is not something an
+agent should do mid-question; `mcp` because it is the transport; `ls` because it is three tools
+here.
 
 ## `record_trial` is the one nobody thinks to call
 
@@ -91,18 +92,18 @@ Three scopes, nested. Each one contains the one before it, and `full` is the def
 ```bash
 qanat mcp --scope data       #  6 tools
 qanat mcp --scope research   # 19 tools
-qanat mcp                    # 33 tools
+qanat mcp                    # 31 tools
 ```
 
 | scope | adds | tools |
 | --- | --- | --- |
 | `data` | read the tables | `list_tables` `describe_table` `sample_table` `profile_table` `lineage` `stale_tables` |
 | `research` | run a replay, read its result, compare runs | `backtest_conditions` `backtest` `report` `period` `weights` `compare` `list_backtests` `alpha_book` `list_alphas` `read_alpha` `read_bar` `record_trial` `list_trials` |
-| `full` | author, ingest, schedule | `list_steps` `read_step` `check` `plan` `run` `list_runs` `use_alpha` `save_step` `remove_step` `save_source` `save_universe` `set_bar` `open_console` `console_status` |
+| `full` | author, ingest, schedule | `list_steps` `read_step` `check` `plan` `run` `list_runs` `use_alpha` `save_step` `remove_step` `save_source` `save_universe` `set_bar` |
 
 **It is one server and one service layer.** The scope decides which tools are listed, nothing
-else. Three separate servers would drift apart, and parity with the console is the thing this
-package refuses to break.
+else. Three separate servers would drift apart, and the CLI and the MCP server answering the same
+way is the thing this package refuses to break.
 
 Two reasons for the split, and the second is the larger one.
 
@@ -111,7 +112,7 @@ different things, and the difference starts to cost money the day the server is 
 answering to more than one project.
 
 **What a tool list costs.** Every definition is sent on every request. An agent that wants rows
-out of one table should not carry thirty-three descriptions to use four, and a long list makes it
+out of one table should not carry thirty-one descriptions to use four, and a long list makes it
 worse at picking from the list.
 
 **`set_bar` is in `full`, and `record_trial` is in `research`.** That is the boundary doing work
@@ -124,7 +125,7 @@ against, so the line moves on purpose or not at all. A tool that exists above yo
 by name instead of pretending not to exist -- if that message keeps appearing for the same tool,
 the line is drawn in the wrong place.
 
-`--read-only` is gone. It split the tools 23 and 10, which is a fact about the implementation and
+`--read-only` is gone. It split the tools 23 and 10, which was a fact about the implementation and
 not a promise anybody could build on.
 
 ## `--http`
@@ -155,7 +156,7 @@ each. This is the real limit on how far the HTTP transport goes today.
 
 **Who may connect.** It binds to 127.0.0.1 and refuses any other address without `--token` or
 `QANAT_MCP_TOKEN`, because binding somewhere reachable and then answering anybody is not a default
-worth having. The `Host` and `Origin` checks are the same ones the console uses, and they are there
+worth having. The `Host` and `Origin` checks are the ones `qanat serve` uses, and they are here
 for the same reason: binding to loopback does not stop a page you are visiting from pointing its
 own domain at 127.0.0.1 and calling this server as if it were same-origin.
 

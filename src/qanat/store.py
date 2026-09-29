@@ -220,12 +220,11 @@ class Store:
                     raise
                 raise StoreBusy(
                     f"{self.path} is already open in another process.\n"
-                    "  A DuckDB file takes one writer at a time, so the console, the CLI and an\n"
-                    "  agent cannot each open it. Pick one door:\n"
+                    "  A DuckDB file takes one writer at a time, so the CLI, the scheduler and\n"
+                    "  an agent cannot each open it. Pick one:\n"
                     "    · stop `qanat serve`, then run this again, or\n"
-                    "    · keep the console and drive it from there, or\n"
-                    "    · start `qanat mcp` first and ask the agent to open_console. One process\n"
-                    "      serves both, or\n"
+                    "    · reach it through the process that already has it: `qanat mcp --http`\n"
+                    "      serves MCP from one that holds the store, or\n"
                     "    · move the project to Postgres (`qanat init --postgres`), which takes many"
                 ) from exc
         # Without this the meaning of a timestamp depends on the machine: a stamp

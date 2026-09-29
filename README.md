@@ -71,7 +71,7 @@ it.
 | --- | --- | --- |
 | `--scope data` | 6 | read the tables, including as they stood on a past date |
 | `--scope research` | 19 | adds running a replay, reading the result, comparing runs |
-| *(default)* | 33 | adds writing steps, ingest and scheduling |
+| *(default)* | 31 | adds writing steps, ingest and scheduling |
 
 Every tool definition is sent on every request, so a narrow scope costs fewer tokens and leaves the
 agent a shorter list to choose from. Pick the smallest one that does the job.
@@ -210,9 +210,10 @@ Beta. It does what this page says on my own work, and few other people have run 
 breaks, open an [issue](https://github.com/fidetolabs/qanat/issues) or say so on
 [Discord](https://discord.gg/JUmwATScS8).
 
-**The console is still in the package and is on its way out.** `qanat serve` opens it on
-http://127.0.0.1:8420 and it works. It is being taken out so that what you install is the engine
-and the server, and the screen is whatever agent client you already use.
+**There is no screen, on purpose.** What you install is the engine, the CLI and the MCP server.
+Your agent client is the screen. `qanat serve` runs the scheduler for sources and steps on a
+clock, and `qanat tui` draws the graph and the replays in the terminal if you want to look at
+something.
 
 Not implemented: backfills, incremental windows, and live trading. Qanat produces a portfolio, on
 history and going forward. **It does not place an order.**
