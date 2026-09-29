@@ -127,6 +127,41 @@ the line is drawn in the wrong place.
 `--read-only` is gone. It split the tools 23 and 10, which is a fact about the implementation and
 not a promise anybody could build on.
 
+## `--http`
+
+`qanat mcp` speaks JSON-RPC on stdin and stdout, which is the right transport for one person on
+one machine and cannot be the hosted one. A request arriving at a server has nowhere to keep a
+child process, and the client is somewhere else entirely.
+
+```bash
+qanat mcp --http --port 8421 --scope research --token "$QANAT_MCP_TOKEN"
+```
+
+This is MCP's Streamable HTTP transport on `/mcp`. `POST` carries JSON-RPC and gets JSON back.
+`initialize` hands out an `Mcp-Session-Id` that every later request must send. `DELETE` ends a
+session, and a session idle for an hour is dropped, which answers `404` and means the client should
+call `initialize` again. `GET` answers `405`, because this server never sends anything on its own
+and holding a stream open that will never carry a message is worse than saying so.
+
+Three things are fixed by the command that starts it rather than by anything in a request.
+
+**The scope.** A caller that names its own scope has no scope at all. `--scope` decides, and
+`tools/list` and `tools/call` both read the same pinned list, so a tool above the line answers with
+the name of the scope it needs instead of pretending not to exist.
+
+**One project per process.** The store takes one writer, so every session on a server shares one
+store behind a lock. Two projects means two processes. Many tenants means Postgres and a store
+each. This is the real limit on how far the HTTP transport goes today.
+
+**Who may connect.** It binds to 127.0.0.1 and refuses any other address without `--token` or
+`QANAT_MCP_TOKEN`, because binding somewhere reachable and then answering anybody is not a default
+worth having. The `Host` and `Origin` checks are the same ones the console uses, and they are there
+for the same reason: binding to loopback does not stop a page you are visiting from pointing its
+own domain at 127.0.0.1 and calling this server as if it were same-origin.
+
+`GET /health` reports the project, the scope, how many tools that scope offers, and how many
+sessions are open.
+
 ## `from:` is a list, and the tools treat it as one
 
 A step may read several tables, across any stage earlier than the one it writes -- `Step` is `n:m`,

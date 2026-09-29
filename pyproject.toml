@@ -5,12 +5,12 @@ build-backend = "hatchling.build"
 [project]
 name = "qanat-fdtl"
 version = "0.2.0"
-description = "An agent-first backtesting engine that turns your raw data into portfolio weights through a pipeline of steps you define."
+description = "An MCP server for quant factor processing and backtesting. Point it at any source with a timestamp; connect it to your agent and ask."
 readme = "README.md"
 license = { file = "LICENSE" }
 requires-python = ">=3.10"
 authors = [{ name = "fidetolabs", email = "dev@fidetolabs.com" }]
-keywords = ["backtesting", "alpha-research", "quantitative-finance", "feature-engineering", "dag", "duckdb"]
+keywords = ["mcp", "mcp-server", "model-context-protocol", "backtesting", "alpha-research", "quantitative-finance", "feature-engineering", "duckdb"]
 classifiers = [
   "Development Status :: 4 - Beta",
   "Intended Audience :: Financial and Insurance Industry",

@@ -8,7 +8,7 @@
     qanat run [job]      one pass, or one job
     qanat backtest       replay the graph over a window, and price what it held
     qanat report <id>    one backtest, period by period
-    qanat mcp            serve the same tools to an agent over stdio, at one of three scopes
+    qanat mcp            serve the same tools to an agent, over stdio or --http, at one of three scopes
     qanat serve          scheduler + console
 """
 
@@ -731,13 +731,19 @@ def cmd_alphas(args) -> int:
 
 # ------------------------------------------------------------------------- mcp
 def cmd_mcp(args) -> int:
-    from qanat.mcp import serve_stdio
-
     if getattr(args, "read_only", False):
         print("qanat mcp: --read-only is gone. It split 33 tools into 23 and 10, which is "
               "too blunt to be a promise. Use --scope data to read tables, or --scope "
               "research to add replays. See docs/agents.md.", file=sys.stderr)
         return 2
+    if args.http:
+        from qanat.mcp_http import serve_http
+
+        return serve_http(getattr(args, "project", None), scope=args.scope,
+                          host=args.host, port=args.port, token=args.token)
+
+    from qanat.mcp import serve_stdio
+
     return serve_stdio(getattr(args, "project", None), scope=args.scope)
 
 
@@ -851,6 +857,14 @@ def build_parser() -> argparse.ArgumentParser:
     mc.add_argument("--scope", choices=list(SCOPES), default="full",
                     help="which tools to offer: data reads tables, research adds replays, "
                          "full adds authoring and ingest (default: full)")
+    mc.add_argument("--http", action="store_true",
+                    help="serve MCP over HTTP instead of stdio, for a client that is not "
+                         "on this machine")
+    mc.add_argument("--host", default="127.0.0.1", help="with --http (default: 127.0.0.1)")
+    mc.add_argument("--port", type=int, default=8421, help="with --http (default: 8421)")
+    mc.add_argument("--token", help="with --http: the bearer token a caller must send. "
+                                    "Required to bind anything but loopback. Also "
+                                    "QANAT_MCP_TOKEN")
     # Removed, and kept only so it can say what replaced it rather than die in argparse.
     mc.add_argument("--read-only", action="store_true", help=argparse.SUPPRESS)
     mc.set_defaults(func=cmd_mcp)

@@ -2,6 +2,39 @@
 
 ## Unreleased
 
+### MCP over HTTP, so the client does not have to be on this machine
+
+`qanat mcp` speaks JSON-RPC on a pipe, which is right for one person on one
+machine and cannot be the hosted one. `qanat mcp --http` serves the same tools
+over MCP's Streamable HTTP transport on `/mcp`: POST carries JSON-RPC, initialize
+hands out a session id every later request must send, DELETE ends one, and an
+idle hour drops it with a 404 that means call initialize again.
+
+GET answers 405. This server never sends anything on its own, and holding open a
+stream that will never carry a message is worse than saying so.
+
+The scope is fixed by the command that starts the server, so nothing in a request
+can widen it. One process serves one project, because the store takes one writer,
+and that is the real limit on how far this goes today: two projects means two
+processes, and many tenants means Postgres and a store each.
+
+It binds to 127.0.0.1 and refuses any other address without a token. Binding
+somewhere reachable and then answering anybody is not a default worth having. The
+Host and Origin checks are the console's, for the console's reason: loopback does
+not stop a page you are visiting from pointing its own domain at 127.0.0.1.
+
+### The README says what this is now
+
+The front page led with "an agent-first backtesting engine" and opened on `qanat
+serve`. Both describe the thing the console was the front door to. Line one is
+now the MCP server, the quick start connects it to an agent, and the scopes and
+the HTTP transport are on the page instead of only in `docs/`. The GitHub
+description, the topics and the PyPI keywords moved with it. 518 lines to 235.
+
+The console is still in the package and the README says so rather than implying
+it away.
+
+
 ### The tool list is scoped to whoever connected
 
 `--read-only` kept 23 tools and dropped 10, which describes how the code is written
