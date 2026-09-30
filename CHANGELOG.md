@@ -1,135 +1,101 @@
 # Changelog
 
-## Unreleased
+## 0.3.0 — 2026-09-30
 
-### MCP is the only door
+### Qanat is an MCP server for quant factor processing and backtesting
 
-There is no way to sit and operate qanat, so the parts that existed to be
-operated are gone. `tui.py` and `chart.py` went with the web console: a terminal
-app you watch is still a screen, and this package does not ship one.
+Point it at any source that carries a timestamp. It processes that into factors, stores
+them, replays the whole chain over history one date at a time with no lookahead, prices
+what the portfolio held after fees and slippage, and serves all of it to your agent over
+MCP.
 
-`api.py` went too, and that is the larger half. It was 1,592 lines of read model
-for a console that no longer exists, kept alive by one caller: the unattended
-pass, which was handed a dozen curl endpoints and `--allowedTools Bash`. That is
-a wide door. Asked once to reshape some ideas, the agent walked out of the
-project into qanat's own installed source and then into `~/.claude/projects`.
+That is what Qanat has always done. This is the release where the package says it and
+says nothing else.
 
-The pass now reaches the project the same way everything else does, over MCP at
-`--scope research`. It gets the tools that scope offers and nothing besides. The
-scope is also what stops it editing the strategy it is supposed to be attacking;
-that used to be a sentence in a prompt.
+```bash
+claude mcp add qanat -- qanat mcp --scope research
+```
 
-**`qanat serve` is the MCP server with a clock.** It opens the store, starts the
-scheduler, and mounts the same `/mcp` endpoint, so one process holds the store
-and everything reaches the project through it. It takes `--scope` and `--token`,
-and refuses a non-loopback bind without one.
+31 tools. Ask "what feeds the momentum strategy", "test this over 2015 to 2024 and tell
+me what survived costs", "why did it lose money in March". Your agent reads the tables,
+runs the replay, opens the period, and shows what was held.
 
-`AppState` moved to `runtime.py` and `build_graph` to `graph.py`, next to the
-thing that draws it. The `Host` and `Origin` guard moved to `mcp_http.py`.
+### Three scopes, and each one is a promise
 
-**One guard was nearly lost with the API and is now stronger.** `ge=0` on the
-request model was the only thing refusing a negative fee, and a negative cost
-pays you to trade: -9999 bps once put +1938% into the strategy book with nothing
-marking it. It is in the engine now, so it holds for every caller rather than for
-the one that went through pydantic.
+`--read-only` split the tools 23 and 10. That describes how the code is written and
+promises nothing anybody could build against. It is replaced by three nested scopes:
 
-The parity tests compared MCP against the HTTP API. With one door they compare it
-against the functions underneath, which is what the API was calling anyway.
+    qanat mcp --scope data        6 tools   read the tables, including as-of
+    qanat mcp --scope research   19 tools   adds replays, results, comparisons
+    qanat mcp                    31 tools   adds authoring, ingest, scheduling
 
+`data` is the door an institution connects at. `research` is the door a hosted service
+connects at. Each is a published contract, so adding a tool to `data` changes what
+somebody has already built against.
 
-### The console leaves the package
+`scope` has no default on the tool decorator, so a tool cannot be added without naming
+who may see it. And the split does real work: `set_bar` sits in `full` while
+`record_trial` sits in `research`, so a caller can write down what it tried and cannot
+lower the line those attempts are held to. A tool above your scope names its scope
+instead of pretending not to exist.
 
-Someone opened the repo, saw a chat window and a dashboard, and decided what
-Qanat was before reading a word. The answer to "agent? tool? engine?" was the
-code, not the README. So the console is gone: 13 files under `src/qanat/console`,
-the twelve UI probe scripts, and the CSS test.
+### It no longer has to be on your machine
 
-`agent.py` is now `headless.py`. The filename was making a claim. Qanat is an MCP
-server and does not ship an agent, and a file called `agent.py` sitting in the
-package said otherwise to everyone who looked. What the module does is unchanged:
-it runs an installed agent CLI headless, and the only thing left that calls it is
-the unattended falsification pass.
+```bash
+qanat mcp --http --port 8421 --scope research --token "$QANAT_MCP_TOKEN"
+qanat serve     --port 8421 --scope research --token "$QANAT_MCP_TOKEN"   # and the scheduler
+```
 
-Out of the API with the screen: `GET /`, the static mount, `/api/ask` and
-`/api/ask/stream`, `/api/trace`, the five `/api/sessions` routes and `PUT
-/api/agent`. What is left is the read model and the buttons, which the scheduler
-and the unattended pass still work through. 2,010 lines to 1,592.
+MCP's Streamable HTTP transport on `/mcp`, with sessions. The scope is fixed by the
+command that starts the server, so nothing in a request can widen it. It binds to
+127.0.0.1 and refuses any other address without a token.
 
-`open_console` and `console_status` go with it, so the MCP surface is 31 tools
-rather than 33, and a `Session` no longer holds a page it might have been
-serving. Scopes are 6 / 19 / 31.
+`qanat serve` is that server with a clock: it opens the store, runs the scheduler, and
+mounts the same endpoint, so one process holds the store and everything reaches the
+project through it.
 
-The release check that verified the wheel carried console assets now verifies the
-opposite: the modules are there and nothing called `console` or `agent.py` is.
+One process serves one project, because the store takes one writer. Two projects means
+two processes, and many tenants means Postgres and a store each.
 
-**`qanat serve` is the scheduler now**, and says so. It prints the API address
-instead of a console address. A new project's README tells you to run `qanat mcp`
-first. The busy-store error offered three doors and two of them were the console;
-it offers `qanat mcp --http` instead. `qanat tui` stays: it is a terminal
-program, not a screen this package has to ship and host.
+### What you install is the engine and the server
 
-The ten API tests that covered the removed routes went with them. The store's
-session machinery survives because the unattended pass uses it, so it has its own
-test now rather than losing coverage with the routes.
+The console is gone, and so is the terminal app and the HTTP API behind them. Your agent
+client is the screen.
 
+That is about 14,000 lines out of the package, and it is the point rather than the cost.
+A person who opened this repo used to see a chat window and a dashboard and decide what
+Qanat was before reading a word. The answer to "agent? tool? engine?" was the code, not
+the README. What installs now is the replay engine, the CLI that operates it, and the MCP
+server, and nothing you have to look at.
 
-### MCP over HTTP, so the client does not have to be on this machine
+`agent.py` is `headless.py`, because the filename was making the claim.
 
-`qanat mcp` speaks JSON-RPC on a pipe, which is right for one person on one
-machine and cannot be the hosted one. `qanat mcp --http` serves the same tools
-over MCP's Streamable HTTP transport on `/mcp`: POST carries JSON-RPC, initialize
-hands out a session id every later request must send, DELETE ends one, and an
-idle hour drops it with a 404 that means call initialize again.
+### The unattended pass got narrower and better fenced
 
-GET answers 405. This server never sends anything on its own, and holding open a
-stream that will never carry a message is worse than saying so.
+It tries to break your best strategy overnight and records every attempt, and it used to
+do that through a dozen curl endpoints with `--allowedTools Bash`. That is a wide door.
+Asked once to reshape some ideas, the agent walked out of the project into Qanat's own
+installed source and then into `~/.claude/projects`.
 
-The scope is fixed by the command that starts the server, so nothing in a request
-can widen it. One process serves one project, because the store takes one writer,
-and that is the real limit on how far this goes today: two projects means two
-processes, and many tenants means Postgres and a store each.
+It now reaches the project over MCP at `--scope research`, with the tools that scope
+offers and nothing besides. The scope is also what stops it editing the strategy it is
+supposed to be attacking. That used to be a sentence in a prompt.
 
-It binds to 127.0.0.1 and refuses any other address without a token. Binding
-somewhere reachable and then answering anybody is not a default worth having. The
-Host and Origin checks are the console's, for the console's reason: loopback does
-not stop a page you are visiting from pointing its own domain at 127.0.0.1.
+### Negative costs are refused everywhere, not in one place
 
-### The README says what this is now
+A negative fee pays you to trade, so turnover becomes profit and the run lands in the
+strategy book looking like a discovery: -9999 bps once put +1938% into it with nothing
+marking it. That was refused by a `ge=0` on the console's request model, which meant it
+held for exactly one caller. It is in the engine now.
 
-The front page led with "an agent-first backtesting engine" and opened on `qanat
-serve`. Both describe the thing the console was the front door to. Line one is
-now the MCP server, the quick start connects it to an agent, and the scopes and
-the HTTP transport are on the page instead of only in `docs/`. The GitHub
-description, the topics and the PyPI keywords moved with it. 518 lines to 235.
+### Upgrading
 
-The console is still in the package and the README says so rather than implying
-it away.
+`--read-only` is gone: use `--scope data` to read tables, or `--scope research` to add
+replays. `qanat serve` no longer opens a console and no longer serves `/api/*`; it serves
+`/mcp`. `qanat tui` is gone. Everything else on the CLI is unchanged.
 
-
-### The tool list is scoped to whoever connected
-
-`--read-only` kept 23 tools and dropped 10, which describes how the code is written
-and promises nothing anybody could build against. It is replaced by `--scope`, and
-there are three: `data` reads the tables, `research` adds replays and their results,
-`full` adds authoring, ingest and scheduling. Each contains the one before it.
-
-One server and one service layer still. The scope only decides which tools are
-listed, because three servers would drift apart and parity with the console is the
-thing this package will not break.
-
-Two reasons it is worth having. A server that reads and a server that runs jobs on
-request are different things to defend, which starts to matter the day one is hosted.
-And every tool definition is sent on every request, so an agent that wants rows out of
-one table should not carry thirty-three descriptions to use four.
-
-`set_bar` sits in `full` and `record_trial` in `research`, so a caller can record what
-it tried and cannot lower the line those trials are held to. `backtest` and
-`record_trial` are the only tools in `research` that write, and neither one touches
-`qanat.yaml`.
-
-A tool above your scope now says which scope it is in, rather than answering that no
-such tool exists. Each scope is a contract, so if that message keeps coming back for
-the same tool, the line is in the wrong place.
+180 tests, and the release check that used to verify the wheel carried console assets now
+verifies it carries none.
 
 ## 0.2.0 — 2026-09-21
 

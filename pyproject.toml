@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "qanat-fdtl"
-version = "0.2.0"
+version = "0.3.0"
 description = "An MCP server for quant factor processing and backtesting. Point it at any source with a timestamp; connect it to your agent and ask."
 readme = "README.md"
 license = { file = "LICENSE" }
