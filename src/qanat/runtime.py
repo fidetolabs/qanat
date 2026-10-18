@@ -31,8 +31,6 @@ class AppState:
     #: edits to the project, which a replay never makes, so a backtest must not
     #: take it.
     _replay: threading.Lock = field(default_factory=threading.Lock)
-    #: The unattended pass, while one is running.
-    _research: Any = None
 
     def reload(self) -> None:
         with self._lock:

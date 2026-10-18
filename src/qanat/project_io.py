@@ -40,10 +40,6 @@ def dump_project(project: Project) -> dict[str, Any]:
         # Anything the model holds has to be written back, or saving one step
         # quietly deletes the rest of the file.
         data["backtest"] = project.backtest.model_dump()
-    if project.agent is not None:
-        data["agent"] = project.agent.model_dump()
-    if project.research is not None:
-        data["research"] = project.research.model_dump()
     return data
 
 

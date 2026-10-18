@@ -649,11 +649,6 @@ def cmd_serve(args) -> int:
         return 2
     app = create_app(None, args.scope, token=token, allow_hosts=named, state=state)
     if sched:
-        #  The unattended pass drives an agent, and the agent reaches the project
-        #  over the MCP endpoint this process is about to serve -- so it needs the
-        #  address. Handed over here rather than worked out in the scheduler, which
-        #  has no idea whether anything is listening.
-        sched.research_through(state, f"http://127.0.0.1:{args.port}")
         sched.start()
         if args.run_now:
             # one full pass in dependency order -- firing every job at once would

@@ -51,9 +51,6 @@ class Scheduler:
         #  Where the unattended pass reaches the project, and the state object it
         #  drives. Both are handed over by `serve`, which is the only caller that
         #  has an API to point at -- so a bare Scheduler simply never researches.
-        self._research_base: str | None = None
-        self._research_state: Any = None
-        self._research_at: datetime | None = None
         #: Set when live is on but cannot be run as configured. A misconfiguration
         #: does not get better by being retried every thirty seconds, and the log
         #: line it writes each time buries everything else. Cleared on reload,
@@ -67,12 +64,6 @@ class Scheduler:
         self.next_at = {}
         for j in self._jobs:
             self.next_at[j.id] = croniter(j.schedule, now).get_next(datetime)
-
-    def research_through(self, state: Any, base: str) -> None:
-        """Give the pass a door into the project. Without one it never fires."""
-        self._research_state = state
-        self._research_base = base.rstrip("/")
-        self._research_at = None
 
     def reload(self, project: Project) -> None:
         """Pick up a new qanat.yaml without restarting the server."""
@@ -131,44 +122,7 @@ class Scheduler:
             if time.time() - self._last_live >= 30:
                 self._last_live = time.time()
                 self.score_forward()
-            self.research_due(now)
             self._stop.wait(1.0)
-
-    def research_due(self, now: datetime) -> bool:
-        """Fire the unattended pass when its cron says so.
-
-        Held apart from the job loop above because it is not a job: a job's work
-        was decided when somebody wrote it, and this decides its own. It also
-        needs the MCP endpoint to be up -- it drives an agent, and the agent
-        reaches the project over HTTP -- so it is a no-op unless `serve` handed us
-        an address.
-        """
-        cfg = getattr(self.project, "research", None)
-        if not cfg or not cfg.enabled or self._research_base is None:
-            return False
-        if self._research_at is None:
-            try:
-                self._research_at = croniter(cfg.schedule, now).get_next(datetime)
-            except (ValueError, KeyError):
-                self.store.event("error", "research",
-                                 f"cannot read schedule {cfg.schedule!r}")
-                self._research_base = None
-                return False
-            return False
-        if now < self._research_at:
-            return False
-        self._research_at = croniter(cfg.schedule, now).get_next(datetime)
-        state = self._research_state
-        if state is None:
-            return False
-        cur = getattr(state, "_research", None)
-        if cur is not None and not cur.done:
-            self.store.event("info", "research", "skipped: the last pass is still running")
-            return False
-        from qanat.research import start as start_pass
-
-        start_pass(state, "", self._research_base)
-        return True
 
     def live_steps(self) -> list[str] | None:
         """Which weights tables a live pass prices, or None when nothing can say.

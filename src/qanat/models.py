@@ -166,32 +166,6 @@ class Step(Base):
         return self
 
 
-class Research(Base):
-    """An unattended pass that works on the project while nobody is watching.
-
-    The goal is fixed and narrow on purpose. `falsify` takes a strategy that
-    already looks good and tries to break it -- other windows, other universes,
-    other costs -- and that is the one goal that cannot overfit: every result it
-    produces can only take confidence away. `monitor` compares what a live
-    strategy is earning against what its backtest promised, and invents nothing
-    at all.
-
-    Searching for new strategies is deliberately not here yet. A loop that
-    proposes and keeps winners needs the sealed window and the trial-count bar
-    doing real work first, or it is an expensive way to fool yourself.
-    """
-
-    enabled: bool = False
-    #: When to wake. Cron, like a source or a step.
-    schedule: str = "0 3 * * *"
-    goal: Literal["falsify", "monitor"] = "falsify"
-    #: Stop a pass once it has cost this much. The CLI reports its own spend, so
-    #: this is measured rather than estimated.
-    budget_usd: float = 1.0
-    #: How many weights-writing steps one pass will work on.
-    targets: int = 1
-
-
 class Bar(Base):
     """How high a result has to be, given how many were tried to find it.
 
@@ -313,26 +287,6 @@ class Backtest(Base):
         return v
 
 
-class Agent(Base):
-    """Which installed agent CLI the unattended pass drives.
-
-    Left unset it takes the first one it finds on PATH, which is fine
-    until two are installed and the choice is the accident of ordering. Naming it
-    here settles it once, in the file, where it can be read back.
-
-    It matters more than a preference once anything runs unattended: which agent
-    proposed a strategy is part of what produced the number, so a pass that ran on
-    whatever PATH offered that morning is a result nobody can reproduce.
-    """
-
-    #: The binary to drive -- `claude`, `cursor-agent`. Empty means first found.
-    cli: str = ""
-    #: How long one question gets before the CLI is killed. A person waiting on an
-    #: answer gives up long before a research pass does, so this is a setting
-    #: rather than the constant it used to be.
-    timeout: str = "180s"
-
-
 class Project(Base):
     name: str = Field(validation_alias=AliasChoices("project", "name"))
     store: str = "./data/qanat.duckdb"
@@ -346,8 +300,6 @@ class Project(Base):
     # worker until the process ends, and four of those stop the scheduler dead.
     job_timeout: str | None = None
     backtest: Backtest | None = None
-    agent: Agent | None = None
-    research: Research | None = None
 
     # ---- lookups -------------------------------------------------------------
     def store_url(self, root: Path) -> str:
