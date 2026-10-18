@@ -19,21 +19,21 @@
 
 Qanat is a **data platform for investment research**.
 
-A data platform has a job list. Qanat does these and nothing else:
+It does four things:
 
 | | |
 | --- | --- |
-| **ingest** | pull data in from wherever it lives, on its own schedule |
-| **deduplicate** | the same data arriving twice is stored once, so a re-run is always safe |
-| **save** | keep it, dated, exactly as it arrived |
+| **ingest** | pull data in from wherever it lives |
+| **save** | keep it, dated, exactly as it arrived. The same data arriving twice is stored once, so a re-run is always safe |
 | **transform** | clean it, type it, and compute what you define from it |
 | **serve** | hand it back, including as it stood on a past date |
-| **orchestrate** | run all of that in the right order, without being asked |
-| **verify** | say whether each piece actually ran, and what it produced |
 
-The last two are not extras. A source pulls on its own clock and a step waits for the table it reads,
-so something has to hold that order. And a job that failed quietly looks exactly like a job that had
-nothing to do, which is how a data set loses a day and nobody notices.
+And it has its **own orchestrator** that runs those four and checks each one did what it should.
+
+That part is not an extra. A source pulls on its own clock and a step waits for the table it reads,
+so something has to hold the order. And a job that failed quietly looks exactly like a job that had
+nothing to do. Only the thing that knew the job was due can tell those apart. Without it, a data set
+loses a day and nobody notices.
 
 What it is **for** is investment research: company accounts, prices, anything with a date on it.
 Qanat computes the metrics you define over that data, for every company, for any date. Valuation
