@@ -36,27 +36,17 @@ Your agent drives all of it over MCP. There is no screen in the box; your agent 
 
 ## The one idea that matters
 
-Imagine a company closes its books on 31 December. It does not publish the numbers that day. It
-publishes them about two months later. Across all US annual reports, the middle case is **62 days**.
+A company's results are published a while after the period they describe. Before that day, nobody
+could read them.
 
-So on 15 January, nobody could read those numbers yet. They did not exist in public.
-
-If your screen uses them on 15 January anyway, it is reading the future. The list it gives you looks
-better than anything you could have actually picked. This mistake is the single most common reason a
+If a screen uses those numbers before they were public, it is reading the future. The list it gives
+you looks better than anything you could have actually picked. This is the most common reason a
 backtest promises something real investing never delivers.
 
-**Qanat puts two dates on every number:**
+So Qanat keeps **two dates** on every number: the period it describes, and the day it became public.
+A screen for a past date sees only what was public on that date. It cannot cheat.
 
-| | |
-| --- | --- |
-| the period date | the day the number is *about* (31 December) |
-| the published date | the day it became *public* (early March) |
-
-A screen run as of any past date reads only what was public on that date. Nothing else is visible to
-it, so it cannot cheat.
-
-Every stock screener on the internet screens **today**. This one screens **any day**, correctly.
-That is the whole point of it.
+Every stock screener screens **today**. This one screens **any day**, correctly.
 
 ## Try it in two minutes
 
@@ -130,48 +120,48 @@ unless you say otherwise, and it refuses any other address unless you pass a tok
 
 ## How a project is written
 
-Everything lives in one `qanat.yaml` file.
+Everything lives in one `qanat.yaml` file. **You decide what the layers are.** Qanat does not ship a
+fixed set of them and does not care what you call yours.
 
 ```yaml
 project: equity
 store: ./data/qanat.duckdb
 
-universes:                         # which companies the screen may look at
+universes:                         # which companies a screen may look at
   - id: sp100
     symbols: ./universes/sp100.csv
 
-stages:                            # the order here is the order data moves
-  - { id: raw,        kind: raw }
-  - { id: normalized, kind: normalized }
-  - { id: features,   kind: features }
-  - { id: weights,    kind: weights }
-  - { id: pnl,        kind: pnl }
+layers:                            # your names, your order
+  - { id: landed,   landed: true } # written by sources, never edited
+  - { id: clean }
+  - { id: metrics }
+  - { id: passed }
 
 sources:
   - id: prices
-    to: [raw.daily_prices]
+    to: [landed.daily_prices]
     connector: rest
     options:
       url: https://api.example.com/v1/bars
 
 steps:
   - id: normalize                  # clean it up
-    from: [raw.daily_prices]
-    to:   [normalized.prices]
+    from: [landed.daily_prices]
+    to:   [clean.prices]
     script: steps/normalize.sql
 
   - id: momentum                   # a metric: one number per company per date
-    from: [normalized.prices]
-    to:   [features.momentum]
+    from: [clean.prices]
+    to:   [metrics.momentum]
     script: steps/momentum.py
-    options: { reads: normalized.prices, lookback: 20 }
+    options: { reads: clean.prices, lookback: 20 }
 
   - id: pick_top                   # the screen: rank on the metric, keep the top few
-    from: [features.momentum]
-    to:   [weights.momentum]
+    from: [metrics.momentum]
+    to:   [passed.momentum]
     script: steps/pick_top.py
     universe: sp100
-    options: { reads: features.momentum, column: momentum, top_n: 4 }
+    options: { reads: metrics.momentum, column: momentum, top_n: 4 }
     rebalance: 20d
 ```
 
@@ -179,18 +169,28 @@ A step is either a `.sql` file or a `.py` file with a `run(ctx)`:
 
 ```python
 def run(ctx):
-    bars = ctx.read("normalized.prices")   # only tables this step listed in `from`
+    bars = ctx.read("clean.prices")        # only tables this step listed in `from`
     return df
 ```
 
-`ctx.read()` refuses any table the step did not declare. So a forgotten dependency is an error you
-see, not a wrong number you do not.
+Your agent builds all of this over MCP. It creates the layers and writes the steps for the question
+in front of it, so you never fill in a shape somebody else chose.
 
-**Data moves forward and never back.** `raw` keeps it exactly as it arrived and is never edited.
-`normalized` types and de-duplicates it. `features` holds what you measure. The last two stages hold
-the screen's output and what it returned.
+### The four rules Qanat does enforce
 
-`qanat check` refuses a project that breaks these rules before anything runs. The rules are in
+Not opinions about how to work. Properties that have to hold or the answers are wrong.
+
+| | |
+| --- | --- |
+| **a landed layer is never written by a step** | it is the record of what arrived. Every past-date read rests on it |
+| **a step reads only what it declared** | `ctx.read()` refuses anything not in `from`, so a forgotten dependency is an error you see, not a wrong number you do not |
+| **no cycles** | a loop has no order to replay in |
+| **every row carries both dates** | this is what makes a past date readable at all |
+
+`qanat check` refuses a project that breaks these before anything runs. It does **not** check whether
+your pipeline makes sense. A valid pipeline can still compute nonsense; that part is yours.
+
+The rules are in
 **[docs/contract.md](https://github.com/fidetolabs/qanat/blob/main/docs/contract.md)**.
 
 ## Screening the past
@@ -245,9 +245,9 @@ There is no web screen and no second HTTP API.
 - **No trading.** Qanat produces a list. **It does not place an order**, and no agent it serves ever
   will.
 
-**Two names are changing.** The last two pipeline stages are still called `weights` and `pnl`, from
-when this was built as a backtesting engine. It is a screening platform now, so those names describe
-the old product. The rename is in progress and the stage contract will move with it.
+**The layer contract is mid-move.** The package still ships five fixed stage kinds from when this
+was a backtesting engine, and `qanat check` still enforces where a basket stage may sit. The yaml
+above is where it is going: your layers, your names, four properties enforced and nothing else.
 
 **One real limit.** The point-in-time views stop a *step* seeing the future. Nothing stops *you*, or
 your agent, reading past a date while deciding what to try. The data cannot cheat; a person still
