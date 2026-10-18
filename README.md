@@ -5,8 +5,7 @@
 <h1 align="center">Qanat</h1>
 
 <p align="center">
-  <i>A data platform for investment research. It ingests financial data sources and computes
-  point-in-time financial metrics for valuation and screening.</i>
+  <i>A data platform for investment research.</i>
 </p>
 
 <p align="center">
@@ -16,245 +15,118 @@
   <a href="https://discord.gg/JUmwATScS8"><img alt="Discord members" src="https://img.shields.io/badge/dynamic/json?logo=discord&logoColor=white&label=Discord&query=%24.approximate_member_count&url=https%3A%2F%2Fdiscord.com%2Fapi%2Fv10%2Finvites%2FJUmwATScS8%3Fwith_counts%3Dtrue&color=5865F2&style=flat-square"></a>
 </p>
 
-## What this is
+## What it does
 
-You want to find companies worth reading about. So you set a rule, like *price under 20 times
-earnings*, and you want the list of companies that passed.
+You load company data. You write a rule. Qanat gives you the companies that pass it.
 
-Qanat is the thing underneath that. It holds the data, it works out the numbers your rule needs, and
-it hands you the list.
+```
+your data  ──▶  Qanat  ──▶  "these 12 companies passed"
+                  │
+            your agent asks
+```
 
-Three jobs:
+You write the rule. Qanat does not pick your numbers and never tells you what to buy.
 
-1. **Load financial data.** Anything with a date on it. Company accounts, share prices, whatever you
-   bring.
-2. **Work out the metrics.** You write the formula. Qanat computes it for every company on every
-   date. It does not ship a list of metrics and it does not pick your thresholds.
-3. **Give you the companies that passed.** For today, or for any day in the past.
+## Why not just use a screener
 
-Your agent drives all of it over MCP. There is no screen in the box; your agent client is the screen.
+Every screener shows you what passes **today**.
 
-## The one idea that matters
+Qanat shows you what passed on **any day**. Last year. Five years ago.
 
-A company's results are published a while after the period they describe. Before that day, nobody
-could read them.
+That is harder than it sounds, and here is the whole reason:
 
-If a screen uses those numbers before they were public, it is reading the future. The list it gives
-you looks better than anything you could have actually picked. This is the most common reason a
-backtest promises something real investing never delivers.
+> A company's results come out a while after the period they cover. Before that day, nobody could
+> read them.
 
-So Qanat keeps **two dates** on every number: the period it describes, and the day it became public.
-A screen for a past date sees only what was public on that date. It cannot cheat.
+So if you ask "what passed in 2022?" and the tool uses numbers published in 2023, it is reading the
+future. Your list looks great and you could never have picked it.
 
-Every stock screener screens **today**. This one screens **any day**, correctly.
+Qanat keeps **two dates** on every number: the period it covers, and the day it became public. Ask
+about 2022 and you see only what was public in 2022.
 
-## Try it in two minutes
+## Try it
 
-You need Python 3.10 or newer.
+Needs Python 3.10 or newer.
 
 ```bash
 uv tool install qanat-fdtl                 # or: pip install qanat-fdtl
 qanat init my-research --demo && cd my-research
 ```
 
-`--demo` builds a small working project and runs it, in about ten seconds. The data is made up, so
-you need no API key and no network. It writes one metric, ranks companies on it, and reports what the
-top of that ranking went on to do.
+That builds a small working project and runs it, in about ten seconds. The data is made up, so you
+need no API key and no network.
 
-Leave `--demo` off and you get the same project with nothing run yet.
-
-Qanat itself never calls the network. The only calls are the ones your own data sources make.
-
-## Connect it to an agent
+## Use it from your agent
 
 ```bash
 claude mcp add qanat -- qanat mcp --scope research
 ```
 
-Any MCP client works:
+Any MCP client works. Then just ask:
 
-```json
-{ "mcpServers": { "qanat": { "command": "qanat", "args": ["mcp"], "cwd": "/path/to/my-research" } } }
-```
+> *"What data is in here, and where did it come from?"*
+>
+> *"Add a metric for price over earnings."*
+>
+> *"Which companies passed my rule in 2022?"*
+>
+> *"What did those companies do over the next year?"*
 
-Then ask for things in plain language:
+There is no website and no dashboard. Your agent is the screen.
 
-- **"What data is in this project, and where did it come from?"** It traces any table back to its
-  source and answers from the actual rows.
-- **"Add a metric for price over earnings."** It tells you what your data covers first, then asks you
-  for the parts it must not guess.
-- **"Which companies passed my rule in 2022?"** It runs the screen as of 2022's publication dates and
-  lists them.
-- **"What did that list go on to do?"** It reports each company's return from its own publication
-  date to the next year's.
+## How it fits together
 
-It never tells you a company is a good buy. You write the rule; it reports what came out.
+Three pieces, and only the first one is stored.
 
-## Scopes: how much the agent can do
+**1. Your data, in layers you name.** A source lands data as it arrived. Steps you write clean it up
+and type it. You choose the layers and what to call them; Qanat ships no fixed set.
 
-`--scope` picks which tools your agent gets. Each level contains the one before it.
+**2. Your metrics and rules, saved.** A metric is a formula you wrote. A rule is a threshold on it.
+Qanat keeps both so you can reuse them, and keeps versions so an old answer still means something.
 
-| | What it can do |
-| --- | --- |
-| `--scope data` | read the tables, including as they stood on a past date |
-| `--scope research` | and read a step, run a screen, read the result |
-| *(default, `full`)* | and write steps, sources and universes |
+**3. Screens, computed when you ask.** Nothing is stored. Qanat reads the facts, works out your
+metrics, applies your rule, and hands back the list. Ask again for a different date and it works it
+out again.
 
-Every tool definition is sent to the model on every single request. A narrow scope costs fewer tokens
-and leaves the agent a shorter list to choose from, so it chooses better. **Pick the smallest one
-that does your job.**
+The yaml, the step contract and the four rules Qanat enforces are in
+**[docs/contract.md](https://github.com/fidetolabs/qanat/blob/main/docs/contract.md)**.
+Tool-by-tool reference is in
+**[docs/agents.md](https://github.com/fidetolabs/qanat/blob/main/docs/agents.md)**.
 
-Full table in **[docs/agents.md](https://github.com/fidetolabs/qanat/blob/main/docs/agents.md)**.
-
-## Running it for something not on this machine
-
-```bash
-qanat mcp --http --port 8421 --scope research --token "$QANAT_MCP_TOKEN"
-```
-
-This speaks MCP's Streamable HTTP transport on `/mcp`. The scope is fixed by the flag that started
-the server, so nothing in a request can widen it.
-
-One process serves one project, because the data store takes one writer. It binds to `127.0.0.1`
-unless you say otherwise, and it refuses any other address unless you pass a token.
-
-## How a project is written
-
-Everything lives in one `qanat.yaml` file. **You decide what the layers are.** Qanat does not ship a
-fixed set of them and does not care what you call yours.
-
-```yaml
-project: equity
-store: ./data/qanat.duckdb
-
-universes:                         # which companies a screen may look at
-  - id: sp100
-    symbols: ./universes/sp100.csv
-
-layers:                            # your names, your order
-  - { id: landed,   landed: true } # written by sources, never edited
-  - { id: clean }
-  - { id: metrics }
-  - { id: passed }
-
-sources:
-  - id: prices
-    to: [landed.daily_prices]
-    connector: rest
-    options:
-      url: https://api.example.com/v1/bars
-
-steps:
-  - id: normalize                  # clean it up
-    from: [landed.daily_prices]
-    to:   [clean.prices]
-    script: steps/normalize.sql
-
-  - id: momentum                   # a metric: one number per company per date
-    from: [clean.prices]
-    to:   [metrics.momentum]
-    script: steps/momentum.py
-    options: { reads: clean.prices, lookback: 20 }
-
-  - id: pick_top                   # the screen: rank on the metric, keep the top few
-    from: [metrics.momentum]
-    to:   [passed.momentum]
-    script: steps/pick_top.py
-    universe: sp100
-    options: { reads: metrics.momentum, column: momentum, top_n: 4 }
-    rebalance: 20d
-```
-
-A step is either a `.sql` file or a `.py` file with a `run(ctx)`:
-
-```python
-def run(ctx):
-    bars = ctx.read("clean.prices")        # only tables this step listed in `from`
-    return df
-```
-
-Your agent builds all of this over MCP. It creates the layers and writes the steps for the question
-in front of it, so you never fill in a shape somebody else chose.
-
-### The four rules Qanat does enforce
-
-Not opinions about how to work. Properties that have to hold or the answers are wrong.
+## What comes in the box
 
 | | |
 | --- | --- |
-| **a landed layer is never written by a step** | it is the record of what arrived. Every past-date read rests on it |
-| **a step reads only what it declared** | `ctx.read()` refuses anything not in `from`, so a forgotten dependency is an error you see, not a wrong number you do not |
-| **no cycles** | a loop has no order to replay in |
-| **every row carries both dates** | this is what makes a past date readable at all |
+| **Connectors** | HTTP, SQL, CSV, and a fake market so you can play before you have any API key |
+| **Store** | a DuckDB file, or Postgres on localhost |
+| **Examples** | five of them. `examples/filings-sample` is the shape this is built for |
 
-`qanat check` refuses a project that breaks these before anything runs. It does **not** check whether
-your pipeline makes sense. A valid pipeline can still compute nonsense; that part is yours.
-
-The rules are in
-**[docs/contract.md](https://github.com/fidetolabs/qanat/blob/main/docs/contract.md)**.
-
-## Screening the past
-
-```bash
-qanat backtest --from 2015-01-01 --to 2024-12-31 --step pick_top
-qanat report 14
-```
-
-This walks the period one date at a time. On each date, every step sees only the rows that were
-public then, so nothing in the run can read the future.
-
-**What it reports today, and what is changing.** Today it treats the selection as a portfolio: it
-holds it, charges fees and slippage, and gives you one net number at the end. That is a backtesting
-engine's answer, and it is being replaced.
-
-What it is moving to is one row per date: which companies passed, and what each one returned by the
-next date, with nothing added together. Adding returns up means deciding how much of each company to
-hold, and that decision is yours, not the platform's.
-
-More in **[docs/backtest.md](https://github.com/fidetolabs/qanat/blob/main/docs/backtest.md)**.
-
-## What ships with it
-
-**Four connectors.** `rest` for an HTTP endpoint, `sql` for anything SQLAlchemy reaches, `csv` for a
-path or a URL, and `synthetic` for a fake market you can run before you have any API key.
-
-**The store** is a DuckDB file, or Postgres on localhost.
-
-**Five examples.** `examples/filings-sample` is the shape this is built for: a filings panel where
-every row carries both dates. Its README is about which of the two is the clock. Its numbers are
-invented. `examples/fx-bundled` is the other kind, with real data in the repo: 27 years of ECB
-exchange rates, 128 KB, no key needed.
+Qanat makes no network calls of its own. The only ones are what your own sources make.
 
 ## Status
 
-Beta. It does what this page says on my own work, and few other people have run it. If something
+**Beta.** It does what this page says on my own work, and few other people have run it. If something
 breaks, open an [issue](https://github.com/fidetolabs/qanat/issues) or say so on
 [Discord](https://discord.gg/JUmwATScS8).
 
-**MCP is the only interface.** You install the engine, a CLI to operate it, and the MCP server.
-There is no web screen and no second HTTP API.
+**You bring the data.** Nothing in here reads a company filing yet. There are generic connectors and
+no SEC parser, so loading real accounts is your job, or point it at a feed you already have.
 
-**Be clear about what is not here yet.**
+**It does not trade.** Qanat produces a list. It does not place an order, and no agent it serves
+ever will.
 
-- **Nothing in the package reads a company filing.** There are four generic connectors and no SEC
-  parser. Loading real company accounts is yours to write, or point it at a feed you already have.
-- **No industry grouping.** Comparing a company only against its real peers needs a classification
-  that is itself point-in-time, and that does not exist here. Today a ranking is against whatever
-  universe you declare.
-- **No backfills and no incremental windows.**
-- **No trading.** Qanat produces a list. **It does not place an order**, and no agent it serves ever
-  will.
+**What it does not do yet.** No industry grouping, so a ranking is against whatever list of companies
+you give it. No backfills. No incremental updates.
 
-**The layer contract is mid-move.** The package still ships five fixed stage kinds from when this
-was a backtesting engine, and `qanat check` still enforces where a basket stage may sit. The yaml
-above is where it is going: your layers, your names, four properties enforced and nothing else.
+**One honest limit.** The two dates stop a *step* from seeing the future. They do not stop *you*, or
+your agent, from reading ahead while deciding what to try. The data cannot cheat. A person still can.
 
-**One real limit.** The point-in-time views stop a *step* seeing the future. Nothing stops *you*, or
-your agent, reading past a date while deciding what to try. The data cannot cheat; a person still
-can.
+**Being rebuilt right now.** This page describes where Qanat is going. The package still carries
+pieces of what it used to be, a backtesting engine, including five fixed layer names and a results
+layer that is becoming a plain query.
 
-**What this is not.** Qanat runs one shape of pipeline. Airflow, Dagster and Prefect handle arbitrary
-DAGs and distributed execution, and they are the right tools for that.
+**What this is not.** Airflow, Dagster and Prefect run general pipelines and run them across many
+machines. Use those for that.
 
 Issues and pull requests welcome. See
 **[CONTRIBUTING.md](https://github.com/fidetolabs/qanat/blob/main/CONTRIBUTING.md)**.
