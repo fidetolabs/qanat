@@ -1,5 +1,23 @@
 # Changelog
 
+## 0.4.1 — 2026-10-18
+
+### The package description said the thing 0.4.0 removed
+
+PyPI and every package index read the one-liner out of `pyproject.toml`, and that line still said
+*"an MCP server that turns filings and prices into valuation indicators, and tests each one inside
+its own industry."* Testing an indicator inside its industry is exactly what 0.4.0 took out, so the
+release shipped with a tagline contradicting it.
+
+It now reads: **a data platform for investment research. It ingests financial data sources and
+computes point-in-time financial metrics for valuation and screening. Delivered as an MCP server.**
+
+Keywords follow: `backtesting`, `indicators` and `feature-engineering` out; `investment-research`,
+`stock-screener`, `point-in-time`, `financial-data` and `data-platform` in.
+
+Metadata only. No code changed between 0.4.0 and 0.4.1.
+
+
 ## 0.4.0 — 2026-10-18
 
 ### Qanat is a data platform for investment research, not a backtesting engine
