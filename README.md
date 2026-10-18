@@ -5,7 +5,8 @@
 <h1 align="center">Qanat</h1>
 
 <p align="center">
-  <i>An MCP server that turns filings and prices into valuation indicators, and tests each one inside its own industry.</i>
+  <i>A data platform for investment research. It ingests financial data sources and computes
+  point-in-time financial metrics for valuation and screening.</i>
 </p>
 
 <p align="center">
@@ -15,35 +16,64 @@
   <a href="https://discord.gg/JUmwATScS8"><img alt="Discord members" src="https://img.shields.io/badge/dynamic/json?logo=discord&logoColor=white&label=Discord&query=%24.approximate_member_count&url=https%3A%2F%2Fdiscord.com%2Fapi%2Fv10%2Finvites%2FJUmwATScS8%3Fwith_counts%3Dtrue&color=5865F2&style=flat-square"></a>
 </p>
 
-Qanat does three things.
+## What this is
 
-1. **Takes the financials out of a filing** and adjusts them, each number dated by the day it was
-   knowable rather than the quarter it describes.
-2. **Builds valuation indicators from them.** Relative ones, like PER and EV/EBITDA, which need a
-   price as well as a filing. Absolute ones, like the floor the balance sheet supports and how far
-   the price sits below it.
-3. **Tests whether an indicator holds inside the industry the company belongs to.** It ranks that
-   industry's companies on the indicator, holds the top of the ranking, prices what that would have
-   earned after fees, and counts the attempt.
+You want to find companies worth reading about. So you set a rule, like *price under 20 times
+earnings*, and you want the list of companies that passed.
 
-Your agent drives all three over MCP, because which indicators value a factory are not the ones that
-value a software company, and nobody knows the right set in advance. Point it at any source that
-carries a timestamp. Connect it to your agent and ask.
+Qanat is the thing underneath that. It holds the data, it works out the numbers your rule needs, and
+it hands you the list.
 
-## Install
+Three jobs:
 
-Python 3.10 or newer.
+1. **Load financial data.** Anything with a date on it. Company accounts, share prices, whatever you
+   bring.
+2. **Work out the metrics.** You write the formula. Qanat computes it for every company on every
+   date. It does not ship a list of metrics and it does not pick your thresholds.
+3. **Give you the companies that passed.** For today, or for any day in the past.
+
+Your agent drives all of it over MCP. There is no screen in the box; your agent client is the screen.
+
+## The one idea that matters
+
+Imagine a company closes its books on 31 December. It does not publish the numbers that day. It
+publishes them about two months later. Across all US annual reports, the middle case is **62 days**.
+
+So on 15 January, nobody could read those numbers yet. They did not exist in public.
+
+If your screen uses them on 15 January anyway, it is reading the future. The list it gives you looks
+better than anything you could have actually picked. This mistake is the single most common reason a
+backtest promises something real investing never delivers.
+
+**Qanat puts two dates on every number:**
+
+| | |
+| --- | --- |
+| the period date | the day the number is *about* (31 December) |
+| the published date | the day it became *public* (early March) |
+
+A screen run as of any past date reads only what was public on that date. Nothing else is visible to
+it, so it cannot cheat.
+
+Every stock screener on the internet screens **today**. This one screens **any day**, correctly.
+That is the whole point of it.
+
+## Try it in two minutes
+
+You need Python 3.10 or newer.
 
 ```bash
 uv tool install qanat-fdtl                 # or: pip install qanat-fdtl
 qanat init my-research --demo && cd my-research
 ```
 
-`--demo` wires one indicator and one sort over it, runs the pipeline, and prices what each basket
-held, in about ten seconds. The data is synthetic, so it needs no key and no network. Leave
-`--demo` off and you get the same project, unrun.
+`--demo` builds a small working project and runs it, in about ten seconds. The data is made up, so
+you need no API key and no network. It writes one metric, ranks companies on it, and reports what the
+top of that ranking went on to do.
 
-Qanat makes no network calls of its own. The only ones are what your sources do.
+Leave `--demo` off and you get the same project with nothing run yet.
+
+Qanat itself never calls the network. The only calls are the ones your own data sources make.
 
 ## Connect it to an agent
 
@@ -57,61 +87,60 @@ Any MCP client works:
 { "mcpServers": { "qanat": { "command": "qanat", "args": ["mcp"], "cwd": "/path/to/my-research" } } }
 ```
 
-Then ask for things:
+Then ask for things in plain language:
 
-- **"What is in this project, and what feeds the momentum indicator?"** It traces the table back to
-  its sources and answers from the rows.
-- **"Add a trailing-return indicator and test it."** Before running anything it comes back with what
-  your data covers and asks you to pick the window, the rebalance and the costs.
-- **"Which of my indicators held up?"** It lists every step that writes a basket, with what each one
-  earned.
-- **"Why did it lose money in March?"** It opens that period and shows what was held and what each
-  name returned.
+- **"What data is in this project, and where did it come from?"** It traces any table back to its
+  source and answers from the actual rows.
+- **"Add a metric for price over earnings."** It tells you what your data covers first, then asks you
+  for the parts it must not guess.
+- **"Which companies passed my rule in 2022?"** It runs the screen as of 2022's publication dates and
+  lists them.
+- **"What did that list go on to do?"** It reports each company's return from its own publication
+  date to the next year's.
 
-## Scopes
+It never tells you a company is a good buy. You write the rule; it reports what came out.
 
-`--scope` picks which tools your agent gets. Each one contains the one before it.
+## Scopes: how much the agent can do
 
-| | tools | |
-| --- | --- | --- |
-| `--scope data` | 6 | read the tables, including as they stood on a past date |
-| `--scope research` | 18 | adds reading a step, running a replay, reading the result, comparing runs |
-| *(default)* | 27 | adds writing steps, sources and universes, and moving the bar |
+`--scope` picks which tools your agent gets. Each level contains the one before it.
 
-Every tool definition is sent on every request, so a narrow scope costs fewer tokens and leaves the
-agent a shorter list to choose from. Pick the smallest one that does the job.
+| | What it can do |
+| --- | --- |
+| `--scope data` | read the tables, including as they stood on a past date |
+| `--scope research` | and read a step, run a screen, read the result |
+| *(default, `full`)* | and write steps, sources and universes |
 
-The split also decides what a caller can break. `set_bar` sits in `full`, so an agent connected at
-`research` can record what it tried and cannot lower the line those attempts are held to.
+Every tool definition is sent to the model on every single request. A narrow scope costs fewer tokens
+and leaves the agent a shorter list to choose from, so it chooses better. **Pick the smallest one
+that does your job.**
 
 Full table in **[docs/agents.md](https://github.com/fidetolabs/qanat/blob/main/docs/agents.md)**.
 
-## Serving it to something that is not on this machine
+## Running it for something not on this machine
 
 ```bash
-qanat mcp --http --port 8421 --scope research --token "$QANAT_MCP_TOKEN"   # server only
-qanat serve --port 8421 --scope research --token "$QANAT_MCP_TOKEN"        # and the scheduler
+qanat mcp --http --port 8421 --scope research --token "$QANAT_MCP_TOKEN"
 ```
 
-Both speak MCP's Streamable HTTP transport on `/mcp`. The scope is fixed by the flag that started
+This speaks MCP's Streamable HTTP transport on `/mcp`. The scope is fixed by the flag that started
 the server, so nothing in a request can widen it.
 
-One process serves one project, because the store takes one writer. It binds to 127.0.0.1 unless
-you say otherwise, and it refuses any other address without a token.
+One process serves one project, because the data store takes one writer. It binds to `127.0.0.1`
+unless you say otherwise, and it refuses any other address unless you pass a token.
 
 ## How a project is written
 
-Everything is in one `qanat.yaml`.
+Everything lives in one `qanat.yaml` file.
 
 ```yaml
 project: equity
 store: ./data/qanat.duckdb
 
-universes:                         # which symbols a basket may hold
+universes:                         # which companies the screen may look at
   - id: sp100
     symbols: ./universes/sp100.csv
 
-stages:                            # order here is order in the pipeline
+stages:                            # the order here is the order data moves
   - { id: raw,        kind: raw }
   - { id: normalized, kind: normalized }
   - { id: features,   kind: features }
@@ -124,123 +153,77 @@ sources:
     connector: rest
     options:
       url: https://api.example.com/v1/bars
-      headers: { Authorization: "Bearer ${PRICE_API_KEY}" }
 
 steps:
-  - id: normalize
+  - id: normalize                  # clean it up
     from: [raw.daily_prices]
     to:   [normalized.prices]
     script: steps/normalize.sql
 
-  - id: momentum                   # an indicator: one number per symbol per date
+  - id: momentum                   # a metric: one number per company per date
     from: [normalized.prices]
     to:   [features.momentum]
     script: steps/momentum.py
     options: { reads: normalized.prices, lookback: 20 }
 
-  - id: sort_on_momentum           # the step that writes weights ends the pipeline
+  - id: pick_top                   # the screen: rank on the metric, keep the top few
     from: [features.momentum]
     to:   [weights.momentum]
-    script: steps/sort_on_momentum.py
+    script: steps/pick_top.py
     universe: sp100
     options: { reads: features.momentum, column: momentum, top_n: 4 }
     rebalance: 20d
-
-backtest:
-  prices: normalized.prices
-  fee_bps: 5
-  slippage_bps: 10
 ```
 
-A step is a `.sql` file, or a `.py` file with a `run(ctx)`:
+A step is either a `.sql` file or a `.py` file with a `run(ctx)`:
 
 ```python
 def run(ctx):
-    bars = ctx.read("normalized.prices")      # only tables the step declared in `from`
+    bars = ctx.read("normalized.prices")   # only tables this step listed in `from`
     return df
 ```
 
-`ctx.read()` refuses any table the step did not list, so a missing dependency is an error instead
-of a wrong number.
+`ctx.read()` refuses any table the step did not declare. So a forgotten dependency is an error you
+see, not a wrong number you do not.
 
-Data moves forward through the stages and never back: `raw` holds it as it arrived, `normalized`
-types and deduplicates it, `features` holds what you measure, `weights` holds one table per step,
-and `pnl` holds what each one earned. `qanat check` refuses a project that breaks the rules: a
-`normalized` stage after something computed, a second `weights` stage, a step writing into `pnl`.
-They are written out in
+**Data moves forward and never back.** `raw` keeps it exactly as it arrived and is never edited.
+`normalized` types and de-duplicates it. `features` holds what you measure. The last two stages hold
+the screen's output and what it returned.
+
+`qanat check` refuses a project that breaks these rules before anything runs. The rules are in
 **[docs/contract.md](https://github.com/fidetolabs/qanat/blob/main/docs/contract.md)**.
 
-## Replaying it
+## Screening the past
 
 ```bash
-qanat backtest --from 2015-01-01 --to 2024-12-31 --step sort_on_momentum
+qanat backtest --from 2015-01-01 --to 2024-12-31 --step pick_top
 qanat report 14
 ```
 
-A replay walks the period one date at a time. Every step reads only the rows that existed on that
-date, so a step cannot see the future. It prices what the basket held, takes off fees and slippage,
-and the headline number is what is left. `--step` picks which weights table to price, and is needed
-once a project writes more than one.
+This walks the period one date at a time. On each date, every step sees only the rows that were
+public then, so nothing in the run can read the future.
 
-**A basket is one cut of a ranking.** `--indicator features.momentum:momentum` scores the column
-itself as well: the rank correlation with the return that followed, date by date, and the top group's
-return against the bottom group's. A column can order the universe well and still lose money in a
-basket of four names, so the two numbers answer different questions and the replay reports both.
+**What it reports today, and what is changing.** Today it treats the selection as a portfolio: it
+holds it, charges fees and slippage, and gives you one net number at the end. That is a backtesting
+engine's answer, and it is being replaced.
 
-```bash
-qanat backtest --from … --to … --step sort_on_momentum --indicator features.momentum:momentum
-```
-
-Three kinds of period come out of it: in-sample, out-of-sample, and live. Live is the only one that
-cannot be arrived at by looking, because it is priced after a `live_from` date that was stamped
-before the rows existed.
+What it is moving to is one row per date: which companies passed, and what each one returned by the
+next date, with nothing added together. Adding returns up means deciding how much of each company to
+hold, and that decision is yours, not the platform's.
 
 More in **[docs/backtest.md](https://github.com/fidetolabs/qanat/blob/main/docs/backtest.md)**.
 
-## How many did you try
-
-A Sharpe of 2.2 on the first attempt is interesting. The same figure picked out of fifty is what
-noise looks like, and nothing inside a backtest tells those apart. So Qanat keeps the count.
-
-```bash
-qanat backtest --from … --to …
-# then, whether it worked or not:
-#   record_trial: what you were testing, and what you decided
-#   list_trials:  how many distinct questions that adds up to
-```
-
-Set a bar and the count feeds into it:
-
-```yaml
-backtest:
-  bar:
-    rule: count        # none · floor · count
-    significance: 0.05
-    gate: true
-```
-
-`count` divides the significance by the number of attempts. `floor` is a fixed t-statistic
-whatever you tried. With `gate: true`, calling a result live fails until it clears. Loosening the
-bar is recorded with who did it, because the thing proposing indicators is also the thing that can
-move the line.
-
 ## What ships with it
 
-`qanat init --demo` writes two steps: an indicator, and a sort over it. The sort takes a column,
-which end of it is the good end, and how many names to hold, then ranks the universe on that
-column, keeps the top few, and weights them equally. One sort covers every indicator, because
-testing one always means the same thing: build the basket on each rebalance date and price it.
-**The engine is what is given away here. The blend I use is not in it.**
+**Four connectors.** `rest` for an HTTP endpoint, `sql` for anything SQLAlchemy reaches, `csv` for a
+path or a URL, and `synthetic` for a fake market you can run before you have any API key.
 
-Four connectors: `rest` for an HTTP endpoint, `sql` for anything SQLAlchemy reaches, `csv` for a
-path or a URL, and `synthetic` for a fake market that runs before you have any key. The store is a
-DuckDB file, or Postgres on localhost.
+**The store** is a DuckDB file, or Postgres on localhost.
 
-Five examples. `examples/filings-sample` is the shape this is built for, and it is invented: a
-quarterly filings panel where a row has two dates, the quarter it describes and the day it was
-published. Its README is about which of the two is the clock, and what a replay reads when nobody
-says. `examples/fx-bundled` is the other kind: real data in the repo, 27 years of ECB rates,
-128 KB, no key needed.
+**Five examples.** `examples/filings-sample` is the shape this is built for: a filings panel where
+every row carries both dates. Its README is about which of the two is the clock. Its numbers are
+invented. `examples/fx-bundled` is the other kind, with real data in the repo: 27 years of ECB
+exchange rates, 128 KB, no key needed.
 
 ## Status
 
@@ -248,28 +231,30 @@ Beta. It does what this page says on my own work, and few other people have run 
 breaks, open an [issue](https://github.com/fidetolabs/qanat/issues) or say so on
 [Discord](https://discord.gg/JUmwATScS8).
 
-**MCP is the only interface.** What you install is the engine, the CLI that operates it, and the MCP
-server. There is no screen and no second HTTP API: your agent client is the screen. `qanat serve`
-runs the scheduler and serves this same MCP over HTTP from the process holding the store, which is
-also how the unattended pass reaches the project.
+**MCP is the only interface.** You install the engine, a CLI to operate it, and the MCP server.
+There is no web screen and no second HTTP API.
 
-**Two of the three things on this page are only partly here.** Nothing in the package reads a
-filing: there are four generic connectors and no EDGAR parser, so step 1 is yours to write or to
-point at a feed you already have. Ranking inside an industry needs a point-in-time classification
-and one indicator set per industry, and neither exists, so today a rank is against whatever universe
-you declare. What is built is the engine under all of it: the point-in-time replay, the pricing after
-fees, and the trial count.
+**Be clear about what is not here yet.**
 
-Also not implemented: backfills, incremental windows, and live trading. Qanat produces a basket, on
-history and going forward. **It does not place an order**, and no agent it serves ever will.
+- **Nothing in the package reads a company filing.** There are four generic connectors and no SEC
+  parser. Loading real company accounts is yours to write, or point it at a feed you already have.
+- **No industry grouping.** Comparing a company only against its real peers needs a classification
+  that is itself point-in-time, and that does not exist here. Today a ranking is against whatever
+  universe you declare.
+- **No backfills and no incremental windows.**
+- **No trading.** Qanat produces a list. **It does not place an order**, and no agent it serves ever
+  will.
 
-Two limits. The window is not sealed: the point-in-time views stop a step seeing the future, but
-nothing stops the agent reading past a date while it decides what to try. And there is no search
-goal, because a loop that proposes indicators and keeps the winners is an expensive way to fool
-yourself until the bar gates rather than reports.
+**Two names are changing.** The last two pipeline stages are still called `weights` and `pnl`, from
+when this was built as a backtesting engine. It is a screening platform now, so those names describe
+the old product. The rename is in progress and the stage contract will move with it.
 
-Qanat runs one kind of pipeline, the kind that ends in a basket. Airflow, Dagster and Prefect
-handle arbitrary DAGs and distributed execution.
+**One real limit.** The point-in-time views stop a *step* seeing the future. Nothing stops *you*, or
+your agent, reading past a date while deciding what to try. The data cannot cheat; a person still
+can.
+
+**What this is not.** Qanat runs one shape of pipeline. Airflow, Dagster and Prefect handle arbitrary
+DAGs and distributed execution, and they are the right tools for that.
 
 Issues and pull requests welcome. See
 **[CONTRIBUTING.md](https://github.com/fidetolabs/qanat/blob/main/CONTRIBUTING.md)**.
