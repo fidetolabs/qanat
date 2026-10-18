@@ -15,34 +15,46 @@
   <a href="https://discord.gg/JUmwATScS8"><img alt="Discord members" src="https://img.shields.io/badge/dynamic/json?logo=discord&logoColor=white&label=Discord&query=%24.approximate_member_count&url=https%3A%2F%2Fdiscord.com%2Fapi%2Fv10%2Finvites%2FJUmwATScS8%3Fwith_counts%3Dtrue&color=5865F2&style=flat-square"></a>
 </p>
 
-## What it does
+## What it is
 
-You load company data. You write a rule. Qanat gives you the companies that pass it.
+Qanat is a **data platform for investment research**.
 
-```
-your data  ──▶  Qanat  ──▶  "these 12 companies passed"
-                  │
-            your agent asks
-```
+A data platform has a job list. Qanat does these and nothing else:
 
-You write the rule. Qanat does not pick your numbers and never tells you what to buy.
+| | |
+| --- | --- |
+| **ingest** | pull data in from wherever it lives, on its own schedule |
+| **deduplicate** | the same data arriving twice is stored once, so a re-run is always safe |
+| **save** | keep it, dated, exactly as it arrived |
+| **transform** | clean it, type it, and compute what you define from it |
+| **serve** | hand it back, including as it stood on a past date |
+| **orchestrate** | run all of that in the right order, without being asked |
+| **verify** | say whether each piece actually ran, and what it produced |
 
-## Why not just use a screener
+The last two are not extras. A source pulls on its own clock and a step waits for the table it reads,
+so something has to hold that order. And a job that failed quietly looks exactly like a job that had
+nothing to do, which is how a data set loses a day and nobody notices.
 
-Every screener shows you what passes **today**.
+What it is **for** is investment research: company accounts, prices, anything with a date on it.
+Qanat computes the metrics you define over that data, for every company, for any date. Valuation
+metrics and screening metrics are just metrics you defined.
 
-Qanat shows you what passed on **any day**. Last year. Five years ago.
+What it is **not**: it does not define metrics for you, does not hold your thresholds, does not pick
+companies, and does not trade. Those belong to you and to whatever you point at it.
 
-That is harder than it sounds, and here is the whole reason:
+## The dates are the point
 
-> A company's results come out a while after the period they cover. Before that day, nobody could
-> read them.
+Company results come out a while after the period they cover. Before that day, nobody could read
+them.
 
-So if you ask "what passed in 2022?" and the tool uses numbers published in 2023, it is reading the
-future. Your list looks great and you could never have picked it.
+So Qanat puts **two dates** on every number: the period it covers, and the day it became public.
 
-Qanat keeps **two dates** on every number: the period it covers, and the day it became public. Ask
-about 2022 and you see only what was public in 2022.
+Ask for a metric as of 2022 and you get it computed from what was public in 2022. Not from numbers
+that arrived in 2023. Without that, every answer about the past is quietly better than anything you
+could have acted on.
+
+This is the one thing in Qanat that is hard to add later, and it is why the platform exists rather
+than a folder of spreadsheets.
 
 ## Try it
 
@@ -74,19 +86,24 @@ Any MCP client works. Then just ask:
 
 There is no website and no dashboard. Your agent is the screen.
 
-## How it fits together
+## What Qanat keeps, and what it does not
 
-Three pieces, and only the first one is stored.
+**Qanat keeps what everyone shares.**
 
-**1. Your data, in layers you name.** A source lands data as it arrived. Steps you write clean it up
-and type it. You choose the layers and what to call them; Qanat ships no fixed set.
+- Your data, in layers you name. A source lands it as it arrived; steps you write clean and type it.
+  You choose the layers; Qanat ships no fixed set of them.
+- Your metric definitions, with versions, so an old answer still means something.
+- The computed metric values. A metric is the same number for everybody who asks, so it is worked out
+  once and kept.
 
-**2. Your metrics and rules, saved.** A metric is a formula you wrote. A rule is a threshold on it.
-Qanat keeps both so you can reuse them, and keeps versions so an old answer still means something.
+**Your client keeps what is yours alone.** Thresholds. Target rates. Which companies you watch. Your
+saved work.
 
-**3. Screens, computed when you ask.** Nothing is stored. Qanat reads the facts, works out your
-metrics, applies your rule, and hands back the list. Ask again for a different date and it works it
-out again.
+That split is not a preference. Qanat cannot tell two callers apart, so anything belonging to one
+person cannot be stored in it correctly. Your agent, or a hosted service, is where that lives.
+
+**So screening happens on your side.** Qanat serves the values. Your client compares them to your
+numbers and gets the list.
 
 The yaml, the step contract and the four rules Qanat enforces are in
 **[docs/contract.md](https://github.com/fidetolabs/qanat/blob/main/docs/contract.md)**.
