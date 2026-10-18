@@ -40,10 +40,6 @@ def dump_project(project: Project) -> dict[str, Any]:
         # Anything the model holds has to be written back, or saving one step
         # quietly deletes the rest of the file.
         data["backtest"] = project.backtest.model_dump()
-    if project.agent is not None:
-        data["agent"] = project.agent.model_dump()
-    if project.research is not None:
-        data["research"] = project.research.model_dump()
     return data
 
 
@@ -91,7 +87,7 @@ def _dump_step(st: Step) -> dict[str, Any]:
 
 
 #: One writer at a time. An agent edits from a request thread and the scheduler
-#: stamps `live_from` from its own, and a plain write_text let them interleave: two
+#: writes from its own thread, and a plain write_text let them interleave: two
 #: in four hundred reads got a half-written file, and one writer's change was lost.
 _WRITE = threading.RLock()
 

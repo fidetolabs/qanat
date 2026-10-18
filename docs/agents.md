@@ -1,18 +1,18 @@
 # Notes on the agent surface
 
-The README covers adding qanat to an MCP client and what the 27 tools are. These are the parts
-that only matter once you are using them.
+The README covers adding qanat to an MCP client. These are the parts that only matter once you are
+using them. There are 21 tools at `full`, 13 at `research` and 6 at `data`.
 
 ## The agent's surface is wider than the CLI's
 
-Six tools share a name with a command and do the same thing: `check`, `plan`, `run`, `backtest`,
-`report`, `compare`. One is renamed — `qanat backtests` is `list_backtests`. Everything else differs,
+Five tools share a name with a command and do the same thing: `check`, `plan`, `run`, `backtest`,
+`report`. One is renamed — `qanat backtests` is `list_backtests`. Everything else differs,
 deliberately.
 
 An agent navigates where a person reads. `qanat ls` prints stages, tables and jobs in one dump;
 an agent gets `list_tables`, `list_steps` and `describe_table` separately, and `describe_table`
 plus `sample_table` to look inside one. `qanat report` prints a whole run; an agent also gets
-`period` and `weights` to open one point on the curve.
+`period` to open one point on it.
 
 Going the other way, `save_step`, `save_source` and `save_universe` have no CLI at
 all. You author a step in your editor; an agent authors one through the API.
@@ -22,38 +22,23 @@ already exists and does not drop tables; `serve` because starting a scheduler is
 agent should do mid-question; `mcp` because it is the transport; `ls` because it is three tools
 here.
 
-## `record_trial` is the one nobody thinks to call
+## Nothing here judges a result
 
-`backtest` gives you a number. `record_trial` says what the number was an *attempt at* — a
-one-line hypothesis, and the run it varied. Four tools cover this ground:
+`backtest` returns what a selection did. It does not say whether it worked, and no tool on this
+surface does.
 
-| tool | |
-| --- | --- |
-| `record_trial` | say what a replay was an attempt at, and what you decided about it |
-| `list_trials` | the ledger, and how many **distinct** questions it amounts to |
-| `read_bar` | how high a result has to be here, given how many were tried |
-| `set_bar` | change that. Recorded with who changed it |
+Removed in 0.4.0: `record_trial`, `list_trials`, `read_bar`, `set_bar`, `compare`, `weights`. The
+first four were a trial ledger and a significance bar, which only mean something if the product
+certifies indicators. It does not. The arithmetic is in the fdtl-kb record, `O-20261018-04`: at
+fourteen annual rebalances the significance bar lands at an IC of 0.069 and a real indicator is
+0.02 to 0.06, so the test fails on a true effect at any history length that is available.
 
-The reason it exists is the count. A Sharpe of 2.2 from one attempt is interesting and the same
-figure picked out of fifty is what noise looks like, and nothing inside a backtest distinguishes
-them — so `list_trials` is worth reading *before* quoting a result, not after.
+`weights` went because nothing in the product simulates holding a position any more, and `compare`
+because comparing two runs needed one summary number per run and there is no longer one.
 
-A trial is a distinct digest, not a run. Re-running one configuration is the same question asked
-twice; it gives the same answer and cannot raise the bar the winner has to clear.
-
-**Record the failures.** They are the whole point. A ledger holding only winners cannot be
-divided by anything, and a summariser's instinct is to drop the boring rows — which are exactly
-the ones the correction needs.
-
-## `disposition: live` is the only call that can be refused
-
-Everything else an agent does here is a record of what happened, and recording is always allowed.
-Writing `live` against a run is a claim that it works, so when the project's bar is set to gate
-and the run has not cleared it, `record_trial` fails and says why.
-
-That is not something to route around by calling `set_bar` first. Loosening the bar is logged as
-a warning with the actor attached, precisely because the thing proposing strategies is also the
-thing that can move the line. If a result does not clear, the useful answer is to say so.
+**What replaces them is reporting per date and saying how many dates there were.** A number from
+four rebalances and a number from four hundred are not the same claim, and the honest way to show
+that is to show the count beside it rather than to divide a p-value by it.
 
 ## `profile_table` answers the question `sample_table` cannot
 
@@ -91,15 +76,15 @@ Three scopes, nested. Each one contains the one before it, and `full` is the def
 
 ```bash
 qanat mcp --scope data       #  6 tools
-qanat mcp --scope research   # 18 tools
-qanat mcp                    # 27 tools
+qanat mcp --scope research   # 13 tools
+qanat mcp                    # 21 tools
 ```
 
 | scope | adds | tools |
 | --- | --- | --- |
 | `data` | read the tables | `list_tables` `describe_table` `sample_table` `profile_table` `lineage` `stale_tables` |
-| `research` | read the graph, run a replay, read its result, compare runs | `list_steps` `read_step` `backtest_conditions` `backtest` `report` `period` `weights` `compare` `list_backtests` `read_bar` `record_trial` `list_trials` |
-| `full` | author, ingest, schedule | `check` `plan` `run` `list_runs` `save_step` `remove_step` `save_source` `save_universe` `set_bar` |
+| `research` | read the graph, run a replay, read its result | `list_steps` `read_step` `backtest_conditions` `backtest` `report` `period` `list_backtests` |
+| `full` | author, ingest, schedule | `check` `plan` `run` `list_runs` `save_step` `remove_step` `save_source` `save_universe` |
 
 **It is one server and one service layer.** The scope decides which tools are listed, nothing
 else. Three separate servers would drift apart, and the CLI and the MCP server answering the same
@@ -112,13 +97,13 @@ different things, and the difference starts to cost money the day the server is 
 answering to more than one project.
 
 **What a tool list costs.** Every definition is sent on every request. An agent that wants rows
-out of one table should not carry thirty-one descriptions to use four, and a long list makes it
+out of one table should not carry twenty-one descriptions to use four, and a long list makes it
 worse at picking from the list.
 
-**`set_bar` is in `full`, and `record_trial` is in `research`.** That is the boundary doing work
-rather than describing itself: a caller can record what it tried and what it concluded, and cannot
-lower the line those trials are held to. `backtest` and `record_trial` are the only two tools in
-`research` that write anything, and neither touches `qanat.yaml`.
+**Nothing in `research` touches `qanat.yaml`.** That is the boundary doing work rather than
+describing itself: a caller at `research` can run a replay and read the result, and cannot rewrite
+the project it ran against. `backtest` is the only tool in `research` that writes anything, and
+what it writes is a run record.
 
 **Each scope is a contract.** Adding a tool to `data` changes what somebody has already built
 against, so the line moves on purpose or not at all. A tool that exists above your scope says so

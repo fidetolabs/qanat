@@ -81,7 +81,7 @@ jobs:
           import glob, zipfile
           names = zipfile.ZipFile(sorted(glob.glob("dist/*.whl"))[-1]).namelist()
           have = {n.rsplit("/", 1)[-1] for n in names if n.startswith("qanat/")}
-          want = {"cli.py", "mcp.py", "mcp_http.py", "backtest.py", "store.py", "headless.py"}
+          want = {"cli.py", "mcp.py", "mcp_http.py", "backtest.py", "store.py", "scheduler.py"}
           missing = want - have
           assert not missing, f"the wheel is missing {missing}"
           stray = {n for n in names if "console" in n or n.endswith("agent.py")}

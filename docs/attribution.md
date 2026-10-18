@@ -61,85 +61,16 @@ The rule, then: whatever the hypothesis says about which names, goes in a `Unive
 the step says `universe:`. An agent that hardcodes symbols has produced a number nobody can
 decompose.
 
-## Four runs, and what each one answers
+## The attribution grid is gone, with the benchmark
 
-With the idea in one place and the arithmetic in another, both can be switched off independently.
+The rest of this page described four runs that split a result between the pool and the rule, read
+off `benchmark_net` and `excess_net`.
 
-|                          | the universe the idea named | the base universe |
-| ---                      | ---                         | ---               |
-| **the step's weights**   | `+14.2%`                    | `+13.6%`          |
-| **equal weight**         | ?                           | ?                 |
+Both were removed in 0.4.0, with everything else that priced a selection as a portfolio. Attributing
+a return between two causes is a question about a portfolio, and this is a screening platform: it
+reports which companies passed and what each one did, and never adds them together. Adding them up
+means choosing how much of each to hold, and that choice is the user's and is made elsewhere.
 
-Read across for whether the idea about the world paid. Read down for whether the arithmetic paid.
-
-The bottom left is the cell nobody checks and the one that decides most cases: *what if you had
-held the sector the news pointed at, in equal parts, and done nothing else.* If that returns
-`+13%`, then the screening added nothing, the narrowing added nothing, and the honest report is
-that an index fund and an afternoon off would have matched the whole apparatus.
-
-All four runs must be the same window, the same costs, the same rebalance gap, with exactly one
-thing varied. Otherwise the difference between two numbers is a difference between two questions.
-
-## How to run each of the four
-
-| cell | how |
-| --- | --- |
-| step × named universe | an ordinary run |
-| step × base universe | `--universe base`, which needs a base universe declared in the project |
-| equal weight × named universe | `benchmark: universe_equal_weight` |
-| equal weight × base universe | `benchmark: equal_weight` |
-
-The bottom two are the two floors, and they were not always both there. `_price_frame` reads the
-prices table whole and `benchmark_returns` averages every column in it, so `equal_weight` holds
-everything *priced* rather than everything *holdable*. Where a project prices exactly one index
-those are the same list, and describing `equal_weight` as the whole universe in equal parts is true
-by accident. Where a project prices several sectors so a hypothesis can choose between them, they
-are not, and that benchmark answers about a wider pool than the run was allowed to hold — which
-moves the sector call's contribution into the floor and hides exactly what this page is for.
-
-`universe_equal_weight` is the one that follows the run: the override if the run had one, otherwise
-the steps' own `universe:`, with membership read as of each decision date. Redefining
-`equal_weight` would have fixed the grid and changed the meaning of every number already recorded
-under that name, so it keeps its behaviour and the second spec keeps its own.
-
-A rule that narrows to a pool owes an answer to both. Beating `equal_weight` and losing to
-`universe_equal_weight` is a specific, common, diagnosable result: the pool was the whole edge and
-everything after it was decoration.
-
-## These runs are not a search
-
-The trial ledger exists because a number picked from fifty attempts is not the number it appears to
-be, and `bar: count` raises the threshold as the count climbs. An ablation is the opposite activity.
-It varies one input in order to take credit away from a result that already exists, and it cannot
-produce a better number to keep — switching the idea off does not give you a new strategy, it gives
-you a smaller claim about the old one.
-
-Counted as attempts, they make the bar stricter for having been more careful, which is a rule that
-teaches people to be less careful. Whatever field eventually separates a test from an examination,
-these belong on the examination side.
-
-## What it is worth printing
-
-One run already prints the vertical half of the grid, and says which floor it is reading:
-
-```
-    net                +14.2%  compounded
-    benchmark          +13.1%  the universe, equally
-    excess              +1.1%  what the rule added
-```
-
-The horizontal half takes the second run, and it is the line worth adding:
-
-```
-    same rule, base universe     +13.6%
-    the pool was worth            +0.6%
-```
-
-Together they say the thing a backtest on its own cannot: the ranking added `+1.1%` over holding the
-pool, and choosing the pool added `+0.6%` over holding the market. Both small. Most of the `+14.2%`
-was the market, and the honest report says so in two lines that cost one extra replay.
-
-Every other backtester stops at whether the rule worked. And this settles an argument about the
-product rather than leaving it to taste: if that last line sits near zero across a few hundred
-hypotheses, then the news story on the front page is decoration, and the thing that says so is the
-tool's own output.
+**What survives is everything above this line.** A universe is still where the idea lives, a step is
+still where the arithmetic lives, and an agent still writes a universe rather than a list inside a
+script. Those were never about the benchmark.

@@ -20,7 +20,6 @@ from __future__ import annotations
 
 import hashlib
 import json
-import math
 import re
 import threading
 from collections.abc import Sequence
@@ -32,7 +31,7 @@ from typing import Any, NamedTuple
 import pandas as pd
 
 from qanat import progress
-from qanat.context import is_point_in_time, members
+from qanat.context import members
 from qanat.models import Project
 from qanat.retention import parse_duration
 from qanat.runner import order, run_all
@@ -44,8 +43,7 @@ class BacktestError(Exception):
 
 
 #: One replay per store, whoever asks. An earlier cut locked at the caller, but
-#: the scheduler's live pass called `run_backtest` directly and took nothing -- so
-#: with `backtest.live: true` a requested run and a timed pass could overlap. They
+#: two requested runs could overlap. They
 #: share one as-of clock and one set of views, so each kept resetting the other:
 #: both came back with zero periods, no exception and no recorded failure.
 _REPLAY = threading.Lock()
@@ -67,30 +65,6 @@ class Period:
 
 
 @dataclass
-class IndicatorPeriod:
-    """What one indicator scored over one closed period.
-
-    A basket answers one question about the top of a ranking. These two answer the
-    ranking itself. `ic` is the rank correlation between the indicator and the
-    return that followed, so it says whether the order was right, not whether the
-    top paid. `spread` is the top group's mean return minus the bottom group's, so
-    it says how much the two ends differed. `autocorr` is the rank correlation with
-    the date before, which is the turnover the ranking implies before any basket
-    is built from it.
-
-    All three are measured on the same two price days the period was priced on, so
-    the fill rule in `_price_at` holds for them too.
-    """
-
-    as_of: str
-    indicator: str
-    n: int
-    ic: float | None
-    spread: float | None
-    autocorr: float | None
-
-
-@dataclass
 class BacktestResult:
     run_id: int
     frm: str
@@ -103,13 +77,6 @@ class BacktestResult:
     notes: list[str] = field(default_factory=list)
     failures: list[str] = field(default_factory=list)
     conditions: dict[str, Any] = field(default_factory=dict)
-    segments: dict[str, Any] = field(default_factory=dict)
-    #: Per indicator per period, when the run was asked to score any. Named like
-    #: `periods` beside it, and summarised by `indicator_summary` the way `periods`
-    #: is by `totals`.
-    indicator_periods: list[IndicatorPeriod] = field(default_factory=list)
-    #: One row per indicator, over the whole window.
-    indicator_summary: list[dict[str, Any]] = field(default_factory=list)
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -121,10 +88,7 @@ class BacktestResult:
             "digest": self.digest,
             "conditions": self.conditions,
             "totals": self.totals,
-            "segments": self.segments,
             "periods": [asdict(p) for p in self.periods],
-            "indicator_summary": self.indicator_summary,
-            "indicator_periods": [asdict(r) for r in self.indicator_periods],
             "notes": self.notes,
             "failures": self.failures,
         }
@@ -174,34 +138,6 @@ def next_stop(frm: str, after: str, every: str) -> str:
     # single replay over the same window would have used
     n = int((last - cur) / step) + 1
     return str(cur + step * n)
-
-
-def live_window(store: Store, project: Project) -> tuple[str, str] | None:
-    """The window to score now, or None if the data has not reached the next stop.
-
-    New rows on their own are not the trigger -- a rebalance date is. Data can
-    arrive all day and nothing happens until it reaches the next point on the
-    grid, which is what keeps a live run and a one-shot replay comparable.
-    """
-    bt = project.backtest
-    if bt is None or not bt.live:
-        return None
-    try:
-        prices = _price_frame(store, project)
-    except BacktestError:
-        return None
-    if prices.empty:
-        return None
-
-    first, latest = str(prices.index.min()), str(prices.index.max())
-    done = store.last_live_backtest()
-    if done is None:
-        # the opening run prices everything there is, and stamps the frontier
-        return (first, latest)
-    due = next_stop(first, done, bt.rebalance)
-    if pd.Timestamp(latest) < pd.Timestamp(due):
-        return None
-    return (first, latest)
 
 
 def data_fingerprint(store: Store, project: Project) -> dict[str, list]:
@@ -387,196 +323,6 @@ def score_period(
     ), notes
 
 
-def _rank_corr(a: pd.Series, b: pd.Series) -> float | None:
-    """Spearman correlation, or None when there is nothing to correlate.
-
-    Rank rather than value on purpose: an indicator is used as an ordering, and one
-    outlier should not decide whether it worked. Fewer than three names, or a column
-    with one value in it, has no correlation to report -- and a zero there would be
-    read as "no relationship" rather than "nothing was measured".
-    """
-    both = a.dropna().index.intersection(b.dropna().index)
-    if len(both) < 3:
-        return None
-    x, y = a[both], b[both]
-    if x.nunique() < 2 or y.nunique() < 2:
-        return None
-    r = x.rank().corr(y.rank())
-    return None if pd.isna(r) else float(r)
-
-
-def score_indicator(
-    prices: pd.DataFrame, values: pd.Series, before: pd.Series | None,
-    indicator: str, stop: str, next_stop: str, project: Project,
-    costs: Costs | None = None,
-) -> tuple[IndicatorPeriod | None, list[str]]:
-    """Score one indicator over one period, on the period's own price days.
-
-    The return every name earned, not only the ones a basket held. That is the
-    difference between this and `score_period`: a basket is one cut of the ranking
-    and this is the whole of it.
-    """
-    bt = project.backtest
-    c = costs or Costs(bt.fee_bps, bt.slippage_bps, bt.embargo)
-    embargo = parse_duration(c.embargo, "embargo")
-    notes: list[str] = []
-
-    entry = _price_at(prices, pd.Timestamp(stop) + embargo)
-    exit_ = _price_at(prices, pd.Timestamp(next_stop) + embargo)
-    if entry is None or exit_ is None:
-        return None, notes          # score_period already said so for this stop
-    (d0, p0), (d1, p1) = entry, exit_
-    if d0 == d1:
-        return None, notes
-
-    if values is None or values.empty:
-        notes.append(f"{indicator}: no rows on at least one as-of date, not scored there")
-        return None, notes
-
-    priced = p0.dropna().index.intersection(p1.dropna().index)
-    both = values.dropna().index.intersection(priced)
-    if len(both) < 3:
-        notes.append(
-            f"{indicator}: fewer than three names had both the column and a price on both "
-            f"ends of a period, so those periods are not scored"
-        )
-        return None, notes
-    ret = p1[both] / p0[both] - 1.0
-    v = values[both]
-
-    ic = _rank_corr(v, ret)
-    groups = max(2, int(bt.groups))
-    spread: float | None = None
-    if len(both) >= groups * 2:
-        # Cut the ranking into `groups` pieces and take the two ends. qcut is on
-        # ranks rather than values so ties and a skewed column still split evenly.
-        edges = pd.qcut(v.rank(method="first"), groups, labels=False, duplicates="drop")
-        ends = sorted(set(edges.dropna()))
-        if len(ends) >= 2:
-            top = ret[edges == ends[-1]]
-            bottom = ret[edges == ends[0]]
-            if len(top) and len(bottom):
-                spread = float(top.mean() - bottom.mean())
-    else:
-        notes.append(
-            f"{indicator}: {len(both)} names against {groups} groups leaves fewer than two "
-            f"names per end, so no spread is reported. Set `groups:` to "
-            f"{max(2, len(both) // 2)} or lower"
-        )
-
-    return IndicatorPeriod(
-        as_of=str(stop), indicator=indicator, n=len(both), ic=ic, spread=spread,
-        autocorr=_rank_corr(values, before) if before is not None else None,
-    ), notes
-
-
-def indicator_totals(rows: Sequence[IndicatorPeriod]) -> list[dict[str, Any]]:
-    """One summary row per indicator.
-
-    `ic_mean` on its own says nothing about whether it was luck, so the t-statistic
-    of the per-date ICs rides with it, and `ic_hit` says on what share of dates the
-    order was right at all. A high mean carried by two dates out of forty reads
-    differently next to a hit rate of 0.5.
-    """
-    out: list[dict[str, Any]] = []
-    for name in sorted({r.indicator for r in rows}):
-        mine = [r for r in rows if r.indicator == name]
-        ics = [r.ic for r in mine if r.ic is not None]
-        spreads = [r.spread for r in mine if r.spread is not None]
-        acs = [r.autocorr for r in mine if r.autocorr is not None]
-        mean = (sum(ics) / len(ics)) if ics else None
-        sd = _stdev(ics) if len(ics) > 1 else 0.0
-        out.append({
-            "indicator": name,
-            "periods": len(mine),
-            "names_median": int(sorted(r.n for r in mine)[len(mine) // 2]) if mine else 0,
-            "ic_mean": mean,
-            "ic_t": (mean / sd * (len(ics) ** 0.5)) if (mean is not None and sd) else None,
-            "ic_hit": (sum(1 for x in ics if x > 0) / len(ics)) if ics else None,
-            "spread_mean": (sum(spreads) / len(spreads)) if spreads else None,
-            "autocorr_mean": (sum(acs) / len(acs)) if acs else None,
-        })
-    return out
-
-
-#: The two benchmarks qanat computes rather than reads off a symbol. Both hold a
-#: list in equal parts and differ only in which list -- which is the whole point:
-#: one answers "against the market", the other "against the pool this run was
-#: allowed to hold", and a strategy whose only claim is that it picks inside that
-#: pool is answerable to the second one.
-SYNTHETIC_BENCHMARKS = ("equal_weight", "universe_equal_weight")
-
-
-def _held_equally(a: pd.Series, b: pd.Series, only: set[str] | None = None) -> float:
-    """One share of everything priced at both ends of a period.
-
-    A symbol that was not trading across the period is dropped rather than counted
-    as a zero return -- it was not a holding. A period where nothing was priced is
-    flat, which is what holding nothing earns.
-    """
-    if only is not None:
-        cols = [c for c in a.index if c in only]
-        a, b = a[cols], b[cols]
-    r = (b / a - 1.0).dropna()
-    return float(r.mean()) if len(r) else 0.0
-
-
-def benchmark_returns(prices: pd.DataFrame, periods: list[Period], spec: str,
-                      universe: pd.DataFrame | None = None,
-                      symbol_column: str = "symbol") -> list[float] | None:
-    """What the benchmark did over each of the same holding periods.
-
-    Priced on the strategy's own period boundaries rather than on a calendar, so
-    the two are comparable period for period -- a benchmark measured over a
-    different window is a different question wearing the same label.
-
-    Costs are not charged to it. A benchmark is the thing you could have held by
-    doing nothing, and doing nothing does not pay turnover.
-
-    Three things `spec` can be:
-
-      * a symbol in the price table -- hold that one thing.
-      * `equal_weight` -- hold everything the price table carries. The market, as
-        far as this project has one.
-      * `universe_equal_weight` -- hold the run's universe, on each date, in equal
-        parts. `universe` is that universe's file, and membership is read per
-        period from the day the portfolio was decided, so the floor moves as the
-        pool moved.
-
-    The difference between those last two is the difference between two questions,
-    and a rule that narrowed to one sector owes an answer to both. `equal_weight`
-    asks whether the rule beat the market -- which a rule riding a sector that
-    doubled will pass without picking anything well. `universe_equal_weight` asks
-    the harder one: whether any of the work after choosing the pool was worth
-    doing, or whether holding the pool itself would have earned the same.
-    """
-    if not spec or not periods:
-        return None
-    if spec == "universe_equal_weight" and universe is None:
-        return None
-    if spec not in SYNTHETIC_BENCHMARKS and spec not in prices.columns:
-        return None
-    out: list[float] = []
-    for p in periods:
-        try:
-            a = prices.loc[pd.Timestamp(p.priced_from)]
-            b = prices.loc[pd.Timestamp(p.priced_to)]
-        except KeyError:
-            out.append(0.0)
-            continue
-        if spec == "equal_weight":
-            out.append(_held_equally(a, b))
-        elif spec == "universe_equal_weight":
-            #  As of the day the portfolio was decided, not the day it was priced.
-            #  The benchmark has to be the pool the step was choosing from, and the
-            #  step was choosing at `as_of`.
-            out.append(_held_equally(a, b, _universe_symbols(universe, p.as_of, symbol_column)))
-        else:
-            x, y = a.get(spec), b.get(spec)
-            out.append(0.0 if (pd.isna(x) or pd.isna(y) or not x) else float(y / x - 1.0))
-    return out
-
-
 def _universe_symbols(universe: pd.DataFrame | None, as_of: str,
                       symbol_column: str = "symbol") -> set[str]:
     """Who was in the universe on one day, by the name the prices call them."""
@@ -587,102 +333,6 @@ def _universe_symbols(universe: pd.DataFrame | None, as_of: str,
     if col not in rows.columns:
         return set()
     return set(rows[col].astype(str))
-
-
-def t_stat(totals: dict[str, Any]) -> float | None:
-    """How many standard errors the average period is away from zero.
-
-    Falls out of the Sharpe already computed. The t-stat of a mean over n periods
-    is `(mean / sd) * sqrt(n)`, and the Sharpe reported here is that same ratio
-    annualised by `periods_per_year` -- so the two differ only by how much time
-    the run covers:
-
-        t = sharpe * sqrt(years)
-
-    Which says the plain thing out loud: a good ratio measured over three months
-    is not the same evidence as the same ratio measured over ten years, and only
-    one of them should survive being divided by the number of things you tried.
-    """
-    sh, n, ppy = totals.get("sharpe"), totals.get("periods"), totals.get("periods_per_year")
-    if sh is None or not n or not ppy:
-        return None
-    return float(sh) * math.sqrt(float(n) / float(ppy))
-
-
-def gate_promotion(store: Any, project: Any, run_id: int) -> str:
-    """Why this run may not be called live, or "" if it may.
-
-    The one thing the bar is worth blocking. Nothing else here is a decision --
-    a replay is a measurement and measuring is always allowed -- but writing
-    `live` against a run is a claim that it works, and a claim that has not
-    cleared the bar the project set is the exact thing the bar exists to stop.
-
-    Refuses rather than warns only when `gate` is on. Off, this returns "" and
-    the verdict is reported beside the number for a person to weigh, which is
-    the right default: a tool that starts refusing things on day one gets its
-    bar set to `none` and stays there.
-    """
-    bt = getattr(project, "backtest", None)
-    bar = getattr(bt, "bar", None) if bt else None
-    if bar is None or not getattr(bar, "gate", False):
-        return ""
-    row = store.backtest(run_id)
-    if row is None:
-        return ""
-    import json as _json
-
-    try:
-        report = _json.loads(row["report"]) if row.get("report") else {}
-    except (TypeError, ValueError):
-        report = {}
-    totals = report.get("totals") or {}
-    trials = store.trial_count(str(row.get("step") or ""))
-    v = bar_verdict(totals, trials, bar)
-    if v.get("clears") is False:
-        return (f"run {run_id} does not clear the bar: {v['note']}, and it has "
-                f"t {v['t']:.2f}. Lower the bar deliberately if you mean to, or "
-                "leave this as a candidate")
-    if v.get("clears") is None:
-        return (f"run {run_id} cannot be judged against the bar yet: {v.get('note')}")
-    return ""
-
-
-def bar_verdict(totals: dict[str, Any], trials: int, bar: Any) -> dict[str, Any]:
-    """What this result had to clear, and whether it did.
-
-    Explains rather than judges. The rule, the number of trials it was divided by
-    and the bar that produced are all returned, because a verdict nobody can check
-    is worth about as much as no verdict.
-    """
-    rule = getattr(bar, "rule", "none") if bar else "none"
-    t = t_stat(totals)
-    out: dict[str, Any] = {"rule": rule, "trials": max(1, int(trials or 1)),
-                           "t": t, "required": None, "clears": None,
-                           "gate": bool(getattr(bar, "gate", False)) if bar else False}
-    if rule == "none" or t is None:
-        out["note"] = ("no bar is set, so these figures are reported and nothing is "
-                       "required of them" if rule == "none"
-                       else "not enough periods to say anything about significance")
-        return out
-
-    if rule == "floor":
-        out["required"] = float(getattr(bar, "t_floor", 3.0))
-        out["note"] = (f"a fixed bar of t ≥ {out['required']:.1f}, whatever was tried "
-                       "to get here")
-    else:
-        #  Divide the significance you would have demanded of one test by the
-        #  number of tests actually run. Crude next to a deflated Sharpe, and it
-        #  errs the safe way -- which for a bar is the right direction to err.
-        significance = float(getattr(bar, "significance", 0.05))
-        n = out["trials"]
-        from statistics import NormalDist
-
-        out["required"] = float(NormalDist().inv_cdf(1.0 - significance / (2.0 * n)))
-        out["note"] = (f"{significance:g} significance divided by {n} "
-                       f"{'trial' if n == 1 else 'trials'}, so t ≥ "
-                       f"{out['required']:.2f}")
-    out["clears"] = t >= out["required"]
-    return out
 
 
 def per_year(rebalance: str) -> float:
@@ -700,8 +350,7 @@ def per_year(rebalance: str) -> float:
     return 365.0 / max(1e-9, int(m.group(1)) * per)
 
 
-def totals_of(periods: list[Period], rebalance: str = "",
-              bench: list[float] | None = None) -> dict[str, Any]:
+def totals_of(periods: list[Period], rebalance: str = "") -> dict[str, Any]:
     """The run so far, from the periods closed so far. Valid mid-replay as well as
     at the end -- which is what lets a long replay report a number while it runs."""
     if not periods:
@@ -758,150 +407,8 @@ def totals_of(periods: list[Period], rebalance: str = "",
         #
         # These are over every period, flat ones included, which is what the
         # equity curve and the drawdown beside it are drawn from.
-        "vol": _stdev(net),
-        "sharpe": _sharpe(net, rebalance),
         "max_drawdown": worst,
-        # Written down rather than assumed, so the Sharpe above can be checked.
-        "periods_per_year": per_year(rebalance),
-        **_versus(net, bench),
     }
-
-
-def _versus(net: list[float], bench: list[float] | None) -> dict[str, Any]:
-    """The same money in the benchmark, and the gap between the two.
-
-    Absent when no benchmark is configured -- the keys are missing rather than
-    zero, because a project without one has not measured this and should not be
-    able to read a number as though it had.
-    """
-    if not bench or len(bench) != len(net):
-        return {}
-    be = 1.0
-    for b in bench:
-        be *= 1.0 + b
-    eq = 1.0
-    for n in net:
-        eq *= 1.0 + n
-    return {
-        "benchmark_net": be - 1.0,
-        # Compounded difference, to sit beside `net`, which is also compounded.
-        "excess_net": eq - be,
-        # And the per-period version, which is the one to average or test.
-        "excess_per_period": (sum(net) - sum(bench)) / len(net),
-    }
-
-
-def _stdev(xs: list[float]) -> float:
-    """Sample standard deviation. Zero below two points, where it has no meaning."""
-    if len(xs) < 2:
-        return 0.0
-    m = sum(xs) / len(xs)
-    return math.sqrt(sum((x - m) ** 2 for x in xs) / (len(xs) - 1))
-
-
-def _sharpe(xs: list[float], rebalance: str) -> float | None:
-    """Return per unit of its own volatility, annualised by the rebalance gap.
-
-    None rather than zero when there is nothing to divide by: a single period, or
-    a run that never moved, has no Sharpe, and reporting 0.0 for it would read as
-    a measured result rather than an absent one.
-    """
-    sd = _stdev(xs)
-    if sd == 0.0:
-        return None
-    return (sum(xs) / len(xs)) / sd * math.sqrt(per_year(rebalance))
-
-
-def segment(periods: list[Period], split: str | None,
-            frontier: str | None = None, rebalance: str = "",
-            bench: list[float] | None = None) -> dict[str, Any]:
-    """The run cut into the parts that are worth different amounts.
-
-    Every knob -- the lookback, the rebalance gap, the decay -- was chosen by
-    someone who could see the in-sample half, so the in-sample number is partly a
-    measurement of that choosing.
-
-    Out of sample is better, but it is not clean. Those rows were already on disk
-    when the step was picked. The data did not argue back through the fitting,
-    but it argued back through the person: you knew how that year went.
-
-    Only rows that did not exist yet are free of that, and `frontier` is where
-    they start -- the last date the data held when live scoring was switched on.
-    It has to be stamped rather than worked out now: computed fresh each time, it
-    would move forward every day and collapse back into out of sample.
-    """
-    #  Periods and their benchmark returns travel together through every cut
-    #  below. Filtering one without the other would line a segment's return up
-    #  against the wrong stretch of market, which is worse than having no
-    #  benchmark at all: it would still print a number.
-    pairs = list(zip(periods, bench if bench and len(bench) == len(periods)
-                     else [None] * len(periods)))
-
-    def split_pairs(rows: list[tuple[Period, float | None]]):
-        ps = [p for p, _ in rows]
-        bs = [b for _, b in rows]
-        return ps, (None if any(b is None for b in bs) else bs)
-
-    def totals(rows: list[tuple[Period, float | None]]) -> dict[str, Any]:
-        ps, bs = split_pairs(rows)
-        return totals_of(ps, rebalance, bs)
-
-    if not split and not frontier:
-        return {"split": None, "all": totals(pairs)}
-    out: dict[str, Any] = {"split": None, "all": totals(pairs)}
-
-    live: list[tuple[Period, float | None]] = []
-    dated = pairs
-    if frontier:
-        edge = pd.Timestamp(frontier)
-        live = [r for r in pairs if pd.Timestamp(r[0].as_of) > edge]
-        dated = [r for r in pairs if pd.Timestamp(r[0].as_of) <= edge]
-        out["frontier"] = str(edge)
-        out["live"] = totals(live)
-
-    if not split:
-        return out
-    cut = pd.Timestamp(split)
-    is_ = [r for r in dated if pd.Timestamp(r[0].as_of) < cut]
-    oos = [r for r in dated if pd.Timestamp(r[0].as_of) >= cut]
-    out.update({
-        "split": str(cut),
-        "in_sample": totals(is_),
-        "out_of_sample": totals(oos),
-    })
-    if dated and (not is_ or not oos):
-        out["warning"] = (
-            f"the split at {split} leaves {len(is_)} in-sample and {len(oos)} out-of-sample "
-            "period(s). One side is empty, so there is nothing to compare"
-        )
-    elif oos and is_:
-        a, b = (out["in_sample"]["net_per_period"], out["out_of_sample"]["net_per_period"])
-        out["decay_vs_in_sample"] = None if a == 0 else (b - a) / abs(a)
-    return out
-
-
-def score(
-    prices: pd.DataFrame, held: dict[str, pd.Series], stops: list[str], project: Project,
-    costs: Costs | None = None, universe: pd.DataFrame | None = None,
-) -> tuple[list[Period], dict[str, Any], list[str]]:
-    """Every period at once. The replay itself scores incrementally; this is the
-    same arithmetic in one call, for anything holding a finished set of portfolios."""
-    periods: list[Period] = []
-    notes: list[str] = []
-    previous = pd.Series(dtype=float)
-    for i, stop in enumerate(stops[:-1]):
-        w = held.get(stop)
-        period, note = score_period(prices, w, previous, stop, stops[i + 1],
-                                    project, costs)
-        notes.extend(note)
-        if period is not None:
-            periods.append(period)
-            previous = w if w is not None else pd.Series(dtype=float)
-    gap = project.backtest.rebalance if project.backtest else ""
-    spec = project.backtest.benchmark if project.backtest else ""
-    sym = project.backtest.symbol_column if project.backtest else "symbol"
-    bench = benchmark_returns(prices, periods, spec, universe, sym)
-    return periods, totals_of(periods, gap, bench), notes
 
 
 # --------------------------------------------------------------- several books
@@ -1006,16 +513,13 @@ def run_backtest(
     seed: int = 0,
     decay: int | None = None,
     universe: str | None = None,
-    split: str | None = None,
     step: str | Sequence[str] | None = None,
     allocation: dict[str, float] | None = None,
     fee_bps: float | None = None,
     slippage_bps: float | None = None,
     purge: str | None = None,
     embargo: str | None = None,
-    indicators: Sequence[str] | None = None,
     on_step: Any = None,
-    live: bool = False,
     #  Which conversation asked for this replay, when one did. A run from the
     #  CLI or the scheduler belongs to none, and says so by leaving it empty.
     session_id: str = "",
@@ -1029,9 +533,9 @@ def run_backtest(
     try:
         return _run_backtest(
             store, project, root, frm, to, rebalance=rebalance, seed=seed, decay=decay,
-            universe=universe, split=split, step=step, allocation=allocation,
+            universe=universe, step=step, allocation=allocation,
             fee_bps=fee_bps, slippage_bps=slippage_bps, purge=purge, embargo=embargo,
-            indicators=indicators, on_step=on_step, live=live, session_id=session_id,
+            on_step=on_step, session_id=session_id,
         )
     finally:
         _REPLAY.release()
@@ -1047,16 +551,13 @@ def _run_backtest(
     seed: int = 0,
     decay: int | None = None,
     universe: str | None = None,
-    split: str | None = None,
     step: str | Sequence[str] | None = None,
     allocation: dict[str, float] | None = None,
     fee_bps: float | None = None,
     slippage_bps: float | None = None,
     purge: str | None = None,
     embargo: str | None = None,
-    indicators: Sequence[str] | None = None,
     on_step: Any = None,
-    live: bool = False,
     session_id: str = "",
 ) -> BacktestResult:
     bt = project.backtest
@@ -1114,16 +615,6 @@ def _run_backtest(
     every = rebalance or _own("rebalance") or bt.rebalance
     smoothing = int(decay) if decay is not None else (
         _own("decay") if _own("decay") is not None else bt.decay)
-    cut_at = (bt.split if split is None else split) or ""
-    if cut_at:
-        try:
-            at = pd.Timestamp(cut_at)
-        except ValueError as exc:
-            raise BacktestError(f"split must be a date, got {cut_at!r}") from exc
-        if not (pd.Timestamp(frm) < at <= pd.Timestamp(to)):
-            raise BacktestError(
-                f"the split at {cut_at} is outside the window {frm}..{to}, so one side is empty"
-            )
     if universe and project.universe(universe) is None:
         known = ", ".join(u.id for u in project.universes) or "(none defined)"
         raise BacktestError(f"unknown universe '{universe}'. This project has: {known}")
@@ -1168,22 +659,6 @@ def _run_backtest(
     # see the whole history, so it takes its copy first.
     prices = _price_frame(store, project)
 
-    # Which indicators this run scores on their own. The run may override the
-    # file, and an unknown table is refused here rather than per as-of date: the
-    # replay would otherwise fail 400 times with the same message.
-    scored: list[tuple[str, str, str]] = []     # (label, ref, column)
-    for item in (list(indicators) if indicators is not None else list(bt.indicators)):
-        ref, _, col = str(item).partition(":")
-        if not col:
-            raise BacktestError(
-                f"indicator {item!r} needs a column: write it as stage.table:column"
-            )
-        if not store.exists(ref):
-            raise BacktestError(
-                f"indicator table '{ref}' is not in the store yet. Run the pipeline first"
-            )
-        scored.append((f"{ref}:{col}", ref, col))
-
     # A table with no recognised time column is not filtered by the as-of views and
     # is not checked for lookahead either -- `_check_lookahead` returns early when it
     # cannot find a clock. That is the one gap the guard has, so the run says which
@@ -1197,26 +672,22 @@ def _run_backtest(
 
     fingerprint = data_fingerprint(store, project)
     digest = digest_of(project, root, frm, to, every, seed, smoothing, universe,
-                       cut_at, key + json.dumps(share, sort_keys=True) +
+                       "", key + json.dumps(share, sort_keys=True) +
                        f"|{costs.fee_bps}|{costs.slippage_bps}|{costs.embargo}|{held_for}",
                        data=fingerprint)
     run_id = store.start_backtest(frm, to, every, seed, digest, step=key,
-                                  live=live, session_id=session_id)
+                                  session_id=session_id)
     result = BacktestResult(run_id, frm, to, every, seed, digest)
     result.conditions = {"step": key, "steps": names, "allocation": share,
                          "from": frm, "to": to, "rebalance": every, "seed": seed,
-                         "decay": smoothing, "split": cut_at or None,
+                         "decay": smoothing,
                          "universe": universe or "(as declared on the step)",
-                         "benchmark": bt.benchmark or None,
                          "fee_bps": costs.fee_bps, "slippage_bps": costs.slippage_bps,
                          "purge": held_for, "embargo": costs.embargo,
                          "jobs_in_run": sorted(needed), "data": fingerprint,
                          "no_clock": clockless}
 
     held: dict[str, pd.Series] = {}
-    #: label -> as-of date -> the column as it stood on that date.
-    values: dict[str, dict[str, pd.Series]] = {label: {} for label, _, _ in scored}
-    scored_missing: set[str] = set()
     previous = pd.Series(dtype=float)   # the portfolio the last closed period held
     open_stop: str | None = None        # the stop waiting for a price on its far side
     progress.start(run_id, len(stops), conditions=result.conditions,
@@ -1227,33 +698,6 @@ def _run_backtest(
     if universe:
         result.notes.append(f"universe overridden to '{universe}' for this run")
 
-    #  `universe_equal_weight` is the only benchmark that needs to know what the run
-    #  was allowed to hold, so its file is read here -- once, before the replay, for
-    #  the same reason the prices are: every pass rewrites the derived tables from a
-    #  slice of the past, and a benchmark is entitled to the whole history.
-    #
-    #  Which universe is the one the run actually used: the override if there was
-    #  one, otherwise the steps' own. `_own` already refuses to choose when two
-    #  priced together disagree, and that refusal is right here too -- a basket
-    #  spanning two pools has no single pool to be measured against.
-    bench_universe: pd.DataFrame | None = None
-    if bt.benchmark == "universe_equal_weight":
-        bid = universe or _own("universe")
-        holdable = project.universe(bid) if bid else None
-        if holdable is None:
-            result.notes.append(
-                "benchmark `universe_equal_weight` needs a universe and this run has none: "
-                "no `universe:` on the step, and none passed to the run. The benchmark "
-                "lines are absent rather than zero"
-            )
-        else:
-            bench_universe = pd.read_csv(root / holdable.symbols)
-            if not is_point_in_time(bench_universe):
-                result.notes.append(
-                    f"universe '{holdable.id}' has no from/to dates, so this benchmark holds "
-                    f"today's list on every past date. It carries the same survivorship bias "
-                    f"the strategy does, which flatters both and the gap between them least"
-                )
     if clockless:
         result.notes.append(
             f"{len(clockless)} table(s) in this lineage have no time column, so the as-of "
@@ -1310,26 +754,6 @@ def _run_backtest(
                     )
                 books[name] = series
                 single = w
-            # The indicator columns as they stood at this as-of date. The pass above
-            # rewrote them from the rows visible at `cut`, so this is a plain read
-            # of a point-in-time table and not a second filter.
-            for label, ref, col in scored:
-                frame = store.read(ref)
-                lower = {c.lower(): c for c in frame.columns}
-                sym = lower.get(project.backtest.symbol_column.lower()) or lower.get("symbol")
-                if sym is None or col not in frame.columns:
-                    if label not in scored_missing:
-                        result.notes.append(
-                            f"{ref} has no {col!r} column with a symbol beside it, so "
-                            f"{label} was not scored"
-                        )
-                        scored_missing.add(label)
-                    continue
-                date = project.time_columns.get(ref) or lower.get(
-                    project.backtest.date_column.lower()) or lower.get("date")
-                rows = frame.sort_values(date) if date in frame.columns else frame
-                latest = rows.groupby(sym, as_index=False).last()
-                values[label][stop] = latest.set_index(sym)[col].astype(float)
 
             combined = combine(books, share) if len(picked) > 1 else next(iter(books.values()))
             # what was actually held is what gets saved; the per-step rows ride along
@@ -1356,36 +780,10 @@ def _run_backtest(
                 result.notes.extend(notes)
                 if period is not None:
                     result.periods.append(period)
-                    bench = benchmark_returns(prices, result.periods, bt.benchmark,
-                                              bench_universe, bt.symbol_column)
-                    result.totals = totals_of(result.periods, result.rebalance, bench)
-                    result.segments = segment(result.periods, cut_at, bt.live_from,
-                                              result.rebalance, bench)
+                    result.totals = totals_of(result.periods, result.rebalance)
                     store.save_bt_period(run_id, period)
                     previous = smoothed.get(open_stop, pd.Series(dtype=float))
-                    progress.period(asdict(period), result.totals, result.segments)
-                # Scored on the period that just closed, because that is when the
-                # return following the as-of date exists. The basket and the
-                # indicator therefore read the same two price days.
-                for label, mine in values.items():
-                    if open_stop not in mine:
-                        continue
-                    earlier = [d for d in stops[:i] if d in mine and d < open_stop]
-                    row, notes = score_indicator(
-                        prices, mine[open_stop],
-                        mine[earlier[-1]] if earlier else None,
-                        label, open_stop, stop, project, costs,
-                    )
-                    # These say something about the indicator rather than about one
-                    # date, so one of each is the whole message. Per date they would
-                    # bury the periods in four hundred copies.
-                    for note in notes:
-                        if note not in result.notes:
-                            result.notes.append(note)
-                    if row is not None:
-                        result.indicator_periods.append(row)
-                        store.save_bt_indicator(run_id, row)
-                result.indicator_summary = indicator_totals(result.indicator_periods)
+                    progress.period(asdict(period), result.totals, {})
             open_stop = stop
             if on_step:
                 on_step(stop, len(held[stop]))
@@ -1550,29 +948,3 @@ def _land_pnl(store: Store, project: Project, key: str, result: BacktestResult) 
     store.write(ref, rows, mode="replace")
 
 
-def compare(a: dict[str, Any], b: dict[str, Any]) -> dict[str, Any]:
-    """What moved between two backtests, and whether they even asked the same question."""
-    keys = ("net", "gross", "fees", "slippage", "turnover", "periods")
-    moved = {}
-    for k in keys:
-        av, bv = a.get(k), b.get(k)
-        if av is None or bv is None:
-            moved[k] = {"a": av, "b": bv, "delta": None}
-        else:
-            moved[k] = {"a": av, "b": bv, "delta": bv - av}
-    same = a.get("digest") == b.get("digest")
-    return {
-        "a": a.get("run_id"),
-        "b": b.get("run_id"),
-        "same_question": same,
-        "note": (
-            "same inputs and same window, so any difference here is the engine"
-            if same
-            else "different digest: the project, the window or the seed changed between these runs"
-        ),
-        "moved": moved,
-    }
-
-
-__all__ = ["BacktestError", "BacktestResult", "Period", "compare", "dates", "decay_weights",
-           "period_detail", "pnl_ref", "run_backtest", "score", "segment"]

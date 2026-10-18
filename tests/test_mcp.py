@@ -68,10 +68,10 @@ def test_data_offers_nothing_that_writes():
 
 def test_research_writes_results_and_never_the_project_file():
     writers = {t["name"] for t in mcp.tools_for("research") if t["writes"]}
-    assert writers == {"backtest", "record_trial"}
-    # set_bar edits qanat.yaml, so it is authoring: a hosted research caller
-    # must not be able to lower the bar the trials it records are held to
-    assert {"set_bar", "save_step", "save_source", "run"} <= {
+    assert writers == {"backtest"}
+    # Anything that edits qanat.yaml is authoring, so a research caller cannot
+    # reach it: a hosted caller may run a replay and may not rewrite the project
+    assert {"save_step", "save_source", "run"} <= {
         t["name"] for t in mcp.TOOLS if t["scope"] == "full"}
 
 
@@ -217,7 +217,7 @@ def test_conditions_are_asked_for_not_assumed(tmp_path: Path):
     session = _session(tmp_path)
     c = _call(session, "backtest_conditions")
     assert set(c["ask_the_person_for"]) == {
-        "step", "from", "to", "universe", "rebalance", "decay", "split"}
+        "step", "from", "to", "universe", "rebalance", "decay"}
     assert c["weights_in_this_project"]
     assert c["universe"]["declared_on_steps"] == ["demo8"]
     assert c["window"]["data_available"]["latest"]
@@ -251,22 +251,3 @@ def test_the_picture_and_the_agent_agree_about_what_is_stale(tmp_path: Path):
     session.close()
 
 
-def test_backtest_conditions_offers_indicator_candidates(tmp_path: Path):
-    """An agent cannot ask for a column it does not know exists, and the point of
-    this tool is that it asks rather than assumes."""
-    s = _session(tmp_path)
-    out = _call(s, "backtest_conditions")
-    cands = out["indicators"]["candidates"]
-    assert "features.momentum:momentum" in cands
-    # The clock and the symbol are not indicators, whatever their type says.
-    assert not any(c.endswith((":date", ":symbol")) for c in cands)
-
-
-def test_the_backtest_tool_scores_an_indicator_when_asked(tmp_path: Path):
-    s = _session(tmp_path)
-    bars = s.store.read("normalized.prices")
-    frm, to = str(bars["date"].min().normalize()), str(bars["date"].max().normalize())
-    out = _call(s, "backtest", {"from": frm, "to": to, "rebalance": "10d",
-                                "indicators": ["features.momentum:momentum"]})
-    assert [r["indicator"] for r in out["indicator_summary"]] == ["features.momentum:momentum"]
-    assert out["indicator_periods"], "the per-date rows should come back too"

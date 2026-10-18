@@ -39,8 +39,7 @@ SESSIONS = "_qanat_sessions"
 ASKS = "_qanat_asks"
 BT_WEIGHTS = "_qanat_bt_weights"
 BT_PERIODS = "_qanat_bt_periods"
-BT_INDICATORS = "_qanat_bt_indicators"
-META = (RUNS, EVENTS, STATE, BACKTESTS, BT_WEIGHTS, BT_PERIODS, BT_INDICATORS, SESSIONS, ASKS)
+META = (RUNS, EVENTS, STATE, BACKTESTS, BT_WEIGHTS, BT_PERIODS, SESSIONS, ASKS)
 
 #: Schema holding the as-of views a replay reads through. Named, not `asof`,
 #: because DuckDB reserves that word for ASOF JOIN.
@@ -359,19 +358,6 @@ class Store:
                     slippage    DOUBLE,
                     net         DOUBLE
                 )""")
-            # One row per indicator per closed period. It is its own table rather
-            # than columns on BT_PERIODS because a run may evaluate several
-            # indicators and a period is one row, not one per indicator.
-            self.con.execute(f"""
-                CREATE TABLE IF NOT EXISTS {BT_INDICATORS} (
-                    run_id    BIGINT,
-                    as_of     TIMESTAMP,
-                    indicator VARCHAR,
-                    n         BIGINT,
-                    ic        DOUBLE,
-                    spread    DOUBLE,
-                    autocorr  DOUBLE
-                )""")
             # No DEFAULT: when the store is an attached Postgres, DuckDB refuses a
             # DEFAULT in ALTER TABLE. Rows written since carry an explicit value,
             # and rows from before live scoring existed read as NULL, which `WHERE
@@ -423,26 +409,6 @@ class Store:
             self.con.execute(
                 f"ALTER TABLE {BACKTESTS} ADD COLUMN IF NOT EXISTS session_id VARCHAR"
             )
-            #  ---- the ledger ------------------------------------------------
-            #  A run already records what was computed. These record what it was
-            #  an attempt at, which is the part that makes a number judgeable.
-            #
-            #  `hypothesis` is why this was worth trying. `parent_run_id` is what
-            #  it was a variation of, so a sweep reads as a sweep rather than as
-            #  eight unrelated runs. `disposition` is what was decided about it --
-            #  and recording a refutation is the whole point: the losers are the
-            #  count, and a ledger that keeps only the winners cannot be divided by
-            #  anything.
-            #
-            #  `seal` is the date the searcher was clipped to when this ran, and
-            #  `proposed_by` is which model suggested it -- two runs proposed by
-            #  different models are not the same trial.
-            for col, kind in (("hypothesis", "VARCHAR"), ("parent_run_id", "BIGINT"),
-                              ("disposition", "VARCHAR"), ("seal", "VARCHAR"),
-                              ("proposed_by", "VARCHAR")):
-                self.con.execute(
-                    f"ALTER TABLE {BACKTESTS} ADD COLUMN IF NOT EXISTS {col} {kind}"
-                )
             self.con.execute(f"""
                 CREATE TABLE IF NOT EXISTS {STATE} (
                     job_id     VARCHAR PRIMARY KEY,
@@ -1009,32 +975,6 @@ class Store:
         ).df()
         return _records(df)
 
-    def save_bt_indicator(self, run_id: int, row: Any) -> None:
-        """What one indicator scored over one period: the rank correlation with the
-        return that followed, the top-minus-bottom spread, and how much the ranking
-        moved since the date before. Written as the period closes, like the period
-        itself."""
-        with self._lock:
-            self.con.execute(
-                f"INSERT INTO {BT_INDICATORS} VALUES (?, CAST(? AS TIMESTAMP), ?, ?, ?, ?, ?)",
-                [run_id, row.as_of, row.indicator, row.n, row.ic, row.spread, row.autocorr],
-            )
-
-    def bt_indicators(self, run_id: int) -> list[dict[str, Any]]:
-        df = self.rcon.execute(
-            f"SELECT * FROM {BT_INDICATORS} WHERE run_id = ? ORDER BY indicator, as_of", [run_id]
-        ).df()
-        return _records(df)
-
-    # ---- sessions ------------------------------------------------------------
-    #  A conversation, and what came of it. An earlier cut held exactly one
-    #  question in memory and dropped it when the next arrived, so asking twice was
-    #  two strangers and nothing an agent worked out survived the answer.
-    #
-    #  The id is minted here rather than read back from the CLI, and handed to it
-    #  as `--session-id`. One id then names the same thing on both sides: no
-    #  mapping table, no race, and a row that exists before the process starts --
-    #  so a crash still leaves something resumable behind.
     def open_session(self, session_id: str, cli: str = "", title: str = "") -> None:
         """Record a conversation starting. Safe to call again for one already open."""
         with self._lock:
@@ -1187,68 +1127,6 @@ class Store:
         return _records(df)
 
     # ---- the ledger ----------------------------------------------------------
-    def annotate_trial(self, run_id: int, hypothesis: str = "", parent_run_id: int = 0,
-                       disposition: str = "", seal: str = "",
-                       proposed_by: str = "") -> None:
-        """Say what a run was an attempt at. Only what is given is written.
-
-        Separate from `end_backtest` because the two are known at different
-        moments: the numbers when the replay ends, the intent when somebody --
-        or something -- decides what it meant.
-        """
-        sets, args = [], []
-        for col, val in (("hypothesis", hypothesis), ("disposition", disposition),
-                         ("seal", seal), ("proposed_by", proposed_by)):
-            if val:
-                sets.append(f"{col} = ?")
-                args.append(val)
-        if parent_run_id:
-            sets.append("parent_run_id = ?")
-            args.append(int(parent_run_id))
-        if not sets:
-            return
-        args.append(run_id)
-        with self._lock:
-            self.con.execute(
-                f"UPDATE {BACKTESTS} SET {', '.join(sets)} WHERE run_id = ?", args
-            )
-
-    def trials(self, step: str = "", limit: int = 200) -> list[dict[str, Any]]:
-        """The ledger, newest first: every attempt, whatever came of it."""
-        where, args = "WHERE status = 'ok'", []
-        if step:
-            where += " AND step = ?"
-            args.append(step)
-        df = self.rcon.execute(f"""
-            SELECT run_id, created_at, step, digest, from_date, to_date, rebalance,
-                   seed, net, turnover, periods, session_id,
-                   hypothesis, parent_run_id, disposition, seal, proposed_by
-            FROM {BACKTESTS} {where}
-            ORDER BY created_at DESC LIMIT {int(limit)}
-        """, args).df()
-        return _records(df)
-
-    def trial_count(self, step: str = "") -> int:
-        """How many distinct questions were asked before you read the answer.
-
-        Distinct **digests**, not runs. Re-running the same configuration is the
-        same question asked twice and gives the same answer, so it is one trial;
-        changing the lookback, the window, the universe or the split is a new one.
-        The digest already draws that line, which is why it is the key here.
-
-        `step` scopes it, and the scope is a judgement rather than a property of
-        the data: the number that matters is the size of the set the winner was
-        chosen from. Picking the best lookback for one rule counts that rule's
-        trials; picking the best of six rules counts all six.
-        """
-        sql = f"SELECT count(DISTINCT digest) FROM {BACKTESTS} WHERE status = 'ok'"
-        args: list[Any] = []
-        if step:
-            sql += " AND step = ?"
-            args.append(step)
-        row = self.rcon.execute(sql, args).fetchone()
-        return int(row[0]) if row else 0
-
     def steps_net(self) -> list[dict[str, Any]]:
         """Every weights table this project has backtested, newest run first.
 
