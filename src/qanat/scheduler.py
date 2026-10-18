@@ -19,14 +19,13 @@ import time
 from collections.abc import Sequence
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
 
 from croniter import croniter
 
 from qanat.models import Project, Source
-from qanat.project_io import save_project
 from qanat.runner import RunResult, run_source, run_step
 from qanat.store import Store, set_actor
+
 
 class Scheduler:
     def __init__(self, store: Store, project: Project, root: Path, workers: int = 4):

@@ -421,12 +421,6 @@ def cmd_backtest(args) -> int:
     print(f"    {'sum of periods':<16} {_money(added)}")
     print(f"    {c('net', G if net > 0 else R_)}              "
           f"{c(_money(net), G if net > 0 else R_)}  {D}compounded{X}")
-    #  Directly under net, because it changes how net reads. A rule that earned
-    #  12% in a market that rose 9% earned 3%, and printing only the first number
-    #  is the difference between a result and a claim.
-    if "benchmark_net" in t:
-        ex = t["excess_net"]
-        #  Which floor this is matters more than that there is one. Beating the market
     print(f"    per period       {_money(t['net_per_period'])}  {D}over {t['periods']} periods{X}")
     # A run that spent part of its length holding nothing has a hit rate counting
     # those periods as losses, and a per-period figure diluted by them. Saying so

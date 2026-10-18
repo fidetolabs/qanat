@@ -10,7 +10,6 @@ from __future__ import annotations
 import threading
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
 
 from qanat.models import Project
 from qanat.project import load
