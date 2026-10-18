@@ -112,15 +112,15 @@ def test_saving_keeps_every_field_a_job_declares(tmp_path: Path):
                      "key": ["symbol", "ts"], "schedule": "*/5 * * * *"}],
         "steps": [{"id": "a", "from": ["raw.t"], "to": ["w.a"], "script": "a.py",
                    "when": ["raw.t"], "rebalance": "20d", "decay": 4}],
-        "backtest": {"prices": "raw.t", "live": True, "live_from": "2026-06-01"},
+        "backtest": {"prices": "raw.t", "rebalance": "20d", "purge": "1d"},
     }
     before = Project.model_validate(spec)
     after = project_from_dict(dump_project(before))
 
     assert after.job("s").key == ["symbol", "ts"], "a source lost its dedupe key"
     assert after.job("a").when == ["raw.t"], "a step lost what it waits on"
-    assert after.backtest.live is True
-    assert after.backtest.live_from == "2026-06-01", "the frontier was not written back"
+    assert after.backtest.rebalance == "20d"
+    assert after.backtest.purge == "1d", "a backtest field was not written back"
 
 
 COMMENTED = """\

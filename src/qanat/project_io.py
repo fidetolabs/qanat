@@ -87,7 +87,7 @@ def _dump_step(st: Step) -> dict[str, Any]:
 
 
 #: One writer at a time. An agent edits from a request thread and the scheduler
-#: stamps `live_from` from its own, and a plain write_text let them interleave: two
+#: writes from its own thread, and a plain write_text let them interleave: two
 #: in four hundred reads got a half-written file, and one writer's change was lost.
 _WRITE = threading.RLock()
 

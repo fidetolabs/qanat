@@ -132,28 +132,3 @@ def delete_step(project: Project, root: Path, step_id: str) -> list[str]:
     return _edit(project, root, lambda d: remove_step(d, step_id))
 
 
-def set_bar(project: Project, root: Path, raw: dict) -> list[str]:
-    """Set how high a result has to be, given how many were tried.
-
-    Writes into `qanat.yaml` like everything else about how the project is run, so
-    the bar is readable, reviewable and in version control -- rather than a number
-    somebody remembers applying.
-    """
-    from qanat.models import Bar
-
-    if project.backtest is None:
-        raise EditorError("this project has no `backtest:` block to hold a bar")
-    try:
-        bar = Bar(**{k: v for k, v in (raw or {}).items() if v is not None})
-    except Exception as exc:
-        raise EditorError(str(exc)) from exc
-    if not 0.0 < bar.significance < 1.0:
-        raise EditorError(
-            f"significance is a level between 0 and 1, got {bar.significance}")
-    if bar.t_floor < 0:
-        raise EditorError(f"t_floor cannot be negative, got {bar.t_floor}")
-
-    def change(d: Project) -> None:
-        d.backtest.bar = bar
-
-    return _edit(project, root, change)

@@ -1,5 +1,85 @@
 # Changelog
 
+## 0.4.0 — 2026-10-18
+
+### Qanat is a data platform for investment research, not a backtesting engine
+
+> A data platform for investment research. It ingests financial data sources and computes
+> point-in-time financial metrics for valuation and screening.
+
+A data platform does four things: ingest, save, transform, serve. Plus an orchestrator that runs
+those four and checks each one did what it should. This release removes everything in the package
+that was not one of them. **2,120 lines out, 104 in.**
+
+### Nothing in it judges a result any more
+
+Gone: the significance bar (`bar:`, `read_bar`, `set_bar`), the trial ledger (`record_trial`,
+`list_trials`), the indicator IC block (`--indicator`, `indicators:`, `ic`, `spread`, `autocorr`,
+`ic_mean`, `ic_t`, `ic_hit`), run comparison (`qanat compare`, `compare`), `vol`, `sharpe` and the
+t-statistic.
+
+The reason is arithmetic rather than taste. An annual rebalance's sample size is the number of
+years, not the number of companies, because every company in one year shares that year. At fourteen
+annual rebalances, which is every year of XBRL filings there is, a significance test needs an IC of
+0.069 and a real value indicator is 0.02 to 0.06. **The test fails on a true effect at any history
+length anyone can have**, so printing it was worse than printing nothing.
+
+What replaces it: a replay reports one row per rebalance date, and `periods` sits next to the
+number. A figure from four rebalances and a figure from four hundred are not the same claim.
+
+### Nothing in it simulates holding a position
+
+Gone: the `weights` MCP tool, `benchmark:` and `benchmark_returns`, `benchmark_net`, `excess_net`,
+and the in-sample / out-of-sample split (`split:`, `segment`).
+
+A benchmark comparison and an excess return are statements about a portfolio, and a portfolio needs
+a decision about how much of each company to hold. That decision is the user's and is made outside
+this package.
+
+### Live scoring is gone
+
+Gone: `live:`, `live_steps:`, `live_from:`, the frontier that separated live from out-of-sample,
+`live_window`, and the scheduler's forward-scoring pass. Live left the scope in 2026-09-04 and the
+code had not caught up.
+
+### The unattended pass is gone
+
+Gone: `research.py` and `headless.py`, the `research:` and `agent:` blocks, and the scheduler hooks
+that fired them. That was a loop driving an installed agent CLI overnight to try to break a strategy
+and record every attempt, which is factor validation with a robot doing it.
+
+**This one is a real loss and worth naming.** It was the only part of the package that worked while
+nobody was watching, and the trial counter was the only defence against trying fifty indicators and
+reporting the best. Neither is replaced. The product no longer makes the claim they protected.
+
+### What stayed, and why
+
+`scheduler.py` and `retention.py` were both on the cut list and both came back. The scheduler is the
+orchestrator: ingestion is scheduled too, not only transformation, and a platform that only moves
+when a person asks is not a platform. Row retention is part of saving.
+
+The point-in-time replay stayed and is the most valuable code here. Each date reads only the rows
+that were public then.
+
+### The MCP surface is smaller
+
+21 tools at `full`, 13 at `research`, 6 at `data`. Was 27 / 18 / 6. Every tool definition is sent on
+every request, so this is a real cost saving per call as well as a shorter list for a model to pick
+from.
+
+### Breaking
+
+Any project with `bar:`, `benchmark:`, `split:`, `indicators:`, `groups:`, `live:`, `live_steps:`,
+`live_from:`, `research:` or `agent:` in its `qanat.yaml` will fail validation. Delete those keys.
+Callers of the removed MCP tools or `qanat compare` will get an unknown-tool error.
+
+### Not in this release
+
+Three decisions are made and not built: user-named layers instead of the five fixed kinds, versioned
+metric definitions with their values kept, and screening as one call rather than a step you write.
+The README says which parts of it are the direction rather than the present.
+
+
 ## 0.3.2 — 2026-10-12
 
 ### An indicator can be scored on its own, not only through a basket

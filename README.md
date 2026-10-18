@@ -90,11 +90,12 @@ There is no website and no dashboard. Your agent is the screen.
 
 **Qanat keeps what everyone shares.**
 
-- Your data, in layers you name. A source lands it as it arrived; steps you write clean and type it.
-  You choose the layers; Qanat ships no fixed set of them.
-- Your metric definitions, with versions, so an old answer still means something.
-- The computed metric values. A metric is the same number for everybody who asks, so it is worked out
-  once and kept.
+- Your data, in layers. A source lands it as it arrived; steps you write clean and type it.
+- Your metric definitions. A metric is the same number for everybody who asks, so it is worked out
+  once rather than per request.
+
+Two of those are not finished in 0.4.0: versioned definitions and kept values are the direction, and
+today a metric is a step you run. See [Status](#status).
 
 **Your client keeps what is yours alone.** Thresholds. Target rates. Which companies you watch. Your
 saved work.
@@ -138,9 +139,15 @@ you give it. No backfills. No incremental updates.
 **One honest limit.** The two dates stop a *step* from seeing the future. They do not stop *you*, or
 your agent, from reading ahead while deciding what to try. The data cannot cheat. A person still can.
 
-**Being rebuilt right now.** This page describes where Qanat is going. The package still carries
-pieces of what it used to be, a backtesting engine, including five fixed layer names and a results
-layer that is becoming a plain query.
+**0.4.0 took a lot out.** This was built as a backtesting engine and it is a data platform now, so
+everything that judged a result is gone: the significance bar, the trial ledger, the indicator IC
+block, portfolio weights, the benchmark, the in-sample split, and live scoring. About 1,300 lines.
+The reasoning is in [CHANGELOG.md](https://github.com/fidetolabs/qanat/blob/main/CHANGELOG.md).
+
+**Three things on this page are the direction and not 0.4.0.** The package still ships five fixed
+layer names rather than letting you name your own. Metric definitions are not versioned yet, and
+their values are not kept. And screening is still a step you write rather than one call. Each is a
+decision already made, not an open question.
 
 **What this is not.** Airflow, Dagster and Prefect run general pipelines and run them across many
 machines. Use those for that.

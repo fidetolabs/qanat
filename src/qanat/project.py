@@ -334,21 +334,6 @@ def validate(p: Project, root: Path) -> Report:
                 r.errors.append(f"backtest {field_name}: {exc}")
         if bt.fee_bps < 0 or bt.slippage_bps < 0:
             r.errors.append("backtest fee_bps and slippage_bps cannot be negative")
-        # A name with a typo in it would stop live scoring dead, and the only sign
-        # would be a line in the event log of a server nobody is watching.
-        for name in bt.live_steps:
-            if p.weights_step(name) is None:
-                known = ", ".join(a for a, _ in p.weights_steps) or "(none yet)"
-                r.errors.append(
-                    f"backtest live_steps names '{name}', which writes no weights table here. "
-                    f"This project has: {known}"
-                )
-        if bt.live and not bt.live_steps and len(p.weights_steps) > 1:
-            r.warnings.append(
-                f"live is on and this project has {len(p.weights_steps)} weights tables, but "
-                f"`live_steps:` names none of them, so nothing will be scored forward. Name one "
-                f"(or several, to hold them as one basket)"
-            )
         if weights and not [t for t in producers if t.startswith(f"{weights[0].id}.")]:
             r.warnings.append("backtest is configured but nothing writes a portfolio to price")
 

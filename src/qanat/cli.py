@@ -98,21 +98,12 @@ def _demo_fill(target: Path) -> int:
         stops = dates(frm, to, project.backtest.rebalance)
         if len(stops) > 4:
             to = stops[-3][:10]
-        # The book's headline is the out-of-sample number, so a demo without a
-        # split has nothing to report it from -- and teaches the habit of reading
-        # the whole-sample number, which is the one that measures the choosing as
-        # much as the rule.
-        stops = dates(frm, to, project.backtest.rebalance)
-        split = stops[len(stops) * 2 // 3][:10] if len(stops) > 5 else None
         def price(who, label):
             try:
-                res = run_backtest(store, project, root, frm, to, step=who, seed=7,
-                                   split=split)
+                res = run_backtest(store, project, root, frm, to, step=who, seed=7)
                 net = (res.totals or {}).get("net", 0.0)
-                oos = ((res.segments or {}).get("out_of_sample") or {}).get("net")
                 tone = G if net > 0 else R_
-                tail = "" if oos is None else \
-                    f"   {D}out of sample{X} {c(f'{oos * 100:+.2f}%', G if oos > 0 else R_)}"
+                tail = ""
                 print(f"  {c('·', D)} {label:<26} net {c(f'{net * 100:+.2f}%', tone)}{tail}")
             except BacktestError as exc:
                 print(f"  {c('warn', Y)} {label}: {exc}")
@@ -394,11 +385,10 @@ def cmd_backtest(args) -> int:
         res = run_backtest(
             store, project, root, args.frm, args.to,
             rebalance=args.rebalance, seed=args.seed,
-            decay=args.decay, universe=args.universe, split=args.split, step=args.step,
+            decay=args.decay, universe=args.universe, step=args.step,
             allocation=_allocation(args.allocation),
             fee_bps=args.fee_bps, slippage_bps=args.slippage_bps,
             purge=args.purge, embargo=args.embargo,
-            indicators=args.indicator or None,
             on_step=None if args.quiet else
             (lambda stop, n: print(f"  {c('·', D)} {stop[:19]}  {n:>3} holdings")),
         )
@@ -437,34 +427,6 @@ def cmd_backtest(args) -> int:
     if "benchmark_net" in t:
         ex = t["excess_net"]
         #  Which floor this is matters more than that there is one. Beating the market
-        #  and beating the pool you narrowed to are different achievements, and a line
-        #  that says only `benchmark` lets the easier one be read as the harder one.
-        spec = (res.conditions or {}).get("benchmark") or ""
-        against = {"equal_weight": "everything priced, equally",
-                   "universe_equal_weight": "the universe, equally"}.get(
-                       spec, f"holding {spec} instead" if spec else "doing nothing instead")
-        print(f"    {'benchmark':<16} {_money(t['benchmark_net'])}  {D}{against}{X}")
-        print(f"    {c('excess', G if ex > 0 else R_)}           "
-              f"{c(_money(ex), G if ex > 0 else R_)}  {D}what the rule added{X}")
-    print()
-    seg = res.segments or {}
-    if seg.get("in_sample") and seg.get("out_of_sample"):
-        a, b = seg["in_sample"], seg["out_of_sample"]
-        print(f"    {'in sample':<16} {_money(a.get('net'))}  {D}{a.get('periods', 0)} periods, "
-              f"{_money(a.get('net_per_period'))} each{X}")
-        print(f"    {'out of sample':<16} {_money(b.get('net'))}  {D}{b.get('periods', 0)} periods, "
-              f"{_money(b.get('net_per_period'))} each{X}")
-        print(f"    {D}split at {seg['split'][:10]}{X}")
-    if seg.get("live") and seg["live"].get("periods"):
-        lv = seg["live"]
-        print(f"    {c('live', G)}             {_money(lv.get('net'))}  {D}{lv['periods']} periods, "
-              f"{_money(lv.get('net_per_period'))} each{X}")
-        print(f"    {D}after {seg['frontier'][:10]} · these rows did not exist when you chose{X}")
-    if seg.get("in_sample") or seg.get("live"):
-        print()
-    if seg.get("warning"):
-        print(f"    {c('warn', Y)} {seg['warning']}")
-
     print(f"    per period       {_money(t['net_per_period'])}  {D}over {t['periods']} periods{X}")
     # A run that spent part of its length holding nothing has a hit rate counting
     # those periods as losses, and a per-period figure diluted by them. Saying so
@@ -487,40 +449,8 @@ def cmd_backtest(args) -> int:
               f"annualised at {t['periods_per_year']:.0f}/yr{X}")
     if t.get("max_drawdown") is not None:
         print(f"    max drawdown     {_money(t['max_drawdown'])}  {D}worst fall from a high{X}")
-    _print_indicators(res.indicator_summary)
     print(f"\n  {D}qanat report {res.run_id}   the periods, one by one{X}\n")
     return 0 if not res.failures else 1
-
-
-def _print_indicators(rows: list[dict]) -> None:
-    """The per-indicator block. A basket says what the top of a ranking paid; these
-    say whether the ranking ordered anything, and how far apart its ends were."""
-    if not rows:
-        return
-    print(f"\n  {c('indicators', B)}  {D}the ranking itself, not the basket{X}\n")
-    wide = max(len(r["indicator"]) for r in rows)
-    wide = min(max(wide, 12), 44) + 2
-    print(f"    {'':<{wide}}{'IC':>7}{'t':>7}{'hit':>7}{'spread':>9}{'turn':>7}{'n':>6}")
-    def cell(row, key, fmt, width, pct=False):
-        v = row.get(key)
-        if v is None:
-            return format("--", f">{width}")
-        return format(v * 100 if pct else v, fmt) + ("%" if pct else "")
-
-    for r in rows:
-        name = r["indicator"]
-        name = name if len(name) <= wide - 2 else "…" + name[-(wide - 3):]
-        ic = r.get("ic_mean")
-        print(f"    {name:<{wide}}"
-              f"{c(cell(r, 'ic_mean', '7.3f', 7), G if (ic or 0) > 0 else R_)}"
-              f"{cell(r, 'ic_t', '7.2f', 7)}"
-              f"{cell(r, 'ic_hit', '6.0f', 7, pct=True)}"
-              f"{cell(r, 'spread_mean', '8.2f', 9, pct=True)}"
-              f"{cell(r, 'autocorr_mean', '7.2f', 7)}"
-              f"{r['names_median']:>6}")
-    print(f"\n    {D}IC is the rank correlation with the next period's return, per date, averaged.")
-    print("    t is that mean against its own scatter. hit is the share of dates it was positive.")
-    print(f"    spread is the top group minus the bottom. turn is how much the ranking stays put.{X}")
 
 
 def cmd_backtests(args) -> int:
@@ -572,7 +502,6 @@ def cmd_report(args) -> int:
         print(f"  {p_['as_of'][:19]:<21} {p_['priced_from'][:10]} → {p_['priced_to'][:10]}   "
               f"{p_['holdings']:>5} {_money(p_['gross']):>9} {_money(-cost):>9} "
               f"{c(_money(p_['net']), G if p_['net'] > 0 else R_):>9}")
-    _print_indicators(report.get("indicator_summary", []))
     if t:
         flat = t.get("flat_periods", 0)
         held = f", {flat} of them flat" if flat else ""
@@ -580,32 +509,6 @@ def cmd_report(args) -> int:
               f"hit rate {t['hit_rate'] * 100:.0f}%{X}")
     for n in report.get("notes", [])[:10]:
         print(f"  {c('note', Y)} {n}")
-    print()
-    return 0
-
-
-def cmd_compare(args) -> int:
-    from qanat.backtest import compare
-    from qanat.store import Store
-
-    project, root = _load(args)
-    store = Store(project.store_url(root))
-    a, b = store.backtest(int(args.a)), store.backtest(int(args.b))
-    store.close()
-    for rid, row in ((args.a, a), (args.b, b)):
-        if row is None:
-            print(c(f"no backtest {rid}", R_))
-            return 1
-    out = compare(a, b)
-    print(f"\n  {c('compare', B)}  {out['a']}  →  {out['b']}")
-    print(f"  {D}{out['note']}{X}\n")
-    for k, m in out["moved"].items():
-        if m["delta"] is None:
-            print(f"    {k:<12} {'—':>12}")
-        elif k in ("periods", "turnover"):
-            print(f"    {k:<12} {m['a']:>10.3f} → {m['b']:>10.3f}   {m['delta']:+10.3f}")
-        else:
-            print(f"    {k:<12} {_money(m['a']):>10} → {_money(m['b']):>10}   {_money(m['delta']):>10}")
     print()
     return 0
 
@@ -779,7 +682,6 @@ def build_parser() -> argparse.ArgumentParser:
     bt.add_argument("--decay", type=int,
                     help="hold a blend of the last N portfolios, newest heaviest. Cuts turnover")
     bt.add_argument("--universe", help="run the step against this universe instead of the file's")
-    bt.add_argument("--split", help="first out-of-sample date. Before it is in-sample")
     bt.add_argument("--step", help="which weights table to price (needed once there is more "
                                    "than one). "
                                     "Name several, comma separated, to price them as one basket")
@@ -791,9 +693,6 @@ def build_parser() -> argparse.ArgumentParser:
                     help="slippage on turnover, in basis points")
     bt.add_argument("--purge", help="hold rows back this long before a step may read them, e.g. 1d")
     bt.add_argument("--embargo", help="wait this long after the as-of date before a return counts")
-    bt.add_argument("--indicator", action="append", metavar="STAGE.TABLE:COLUMN",
-                    help="also score this column on its own: rank correlation with the return "
-                         "that followed, and the top-minus-bottom spread. Repeatable")
     bt.add_argument("--json", action="store_true")
     bt.add_argument("--quiet", action="store_true", help="do not print each as-of date")
     bt.add_argument("--force", action="store_true", help="run even if the contract fails")
@@ -808,10 +707,6 @@ def build_parser() -> argparse.ArgumentParser:
     rp.add_argument("--json", action="store_true")
     rp.set_defaults(func=cmd_report)
 
-    cp = sub.add_parser("compare", help="what moved between two backtests")
-    cp.add_argument("a")
-    cp.add_argument("b")
-    cp.set_defaults(func=cmd_compare)
 
     mc = sub.add_parser("mcp", help="serve this project to an agent over MCP (stdio)")
     mc.add_argument("--scope", choices=list(SCOPES), default="full",

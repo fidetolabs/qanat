@@ -376,8 +376,7 @@ def _backtest_conditions(s: Session, args: dict) -> Any:
             df = s.store.read(bt.prices)
             span = {"earliest": str(df[col].min()), "latest": str(df[col].max())}
 
-    # Which columns could be scored on their own: the numeric ones in a computed
-    # stage, because that is what an indicator is -- one number per symbol per date.
+    # Which numeric columns in a computed stage a filter could be written against.
     candidates: list[str] = []
     computed = {st.id for st in s.project.stages if st.kind == "features"}
     for ref in s.project.tables():
@@ -397,7 +396,7 @@ def _backtest_conditions(s: Session, args: dict) -> Any:
                   "symbols_file": u.symbols} for u in s.project.universes]
     on_steps = sorted({st.universe for st in s.project.steps if st.universe})
     return {
-        "ask_the_person_for": ["step", "from", "to", "universe", "rebalance", "decay", "split"],
+        "ask_the_person_for": ["step", "from", "to", "universe", "rebalance", "decay"],
         "weights_in_this_project": [s.project.weights_name(a, ref)
                                     for a, ref in s.project.weights_steps],
         "step": {"note": "one name, or several to price them as one portfolio. Ask which. Two "
@@ -417,23 +416,16 @@ def _backtest_conditions(s: Session, args: dict) -> Any:
         "rebalance": {"default": bt.rebalance,
                       "note": "gap between as-of dates, e.g. 1d, 5d, 20d. Shorter means more "
                               "decisions and more turnover"},
-        "split": {"default": bt.split or None,
-                  "note": "first out-of-sample date. Everything before it is in-sample: the half "
-                          "you were allowed to look at while choosing the settings. Report both, "
-                          "and believe the out-of-sample one"},
         "decay": {"default": bt.decay,
                   "note": "hold a blend of the last N portfolios, newest heaviest. 0 or 1 is off. "
                           "Higher cuts turnover, and therefore cost, at the price of reacting later"},
         "costs_are_fixed_in_the_file": {"fee_bps": bt.fee_bps, "slippage_bps": bt.slippage_bps,
                                         "purge": bt.purge, "embargo": bt.embargo},
         "seed": {"default": 0, "note": "same seed, same answer"},
-        "indicators": {
-            "default": list(bt.indicators),
+        "metric_columns": {
             "candidates": candidates[:40],
-            "note": "columns to score on their own as well, written stage.table:column. Returns "
-                    "the rank correlation with the return that followed and the top-minus-bottom "
-                    "spread, which is a different question from what the basket earned. Scoring "
-                    "several is several attempts: record_trial each one",
+            "note": "numeric columns in a computed stage, written stage.table:column. These are "
+                    "what a filter is written against",
         },
     }
 
@@ -460,8 +452,6 @@ def _backtest_conditions(s: Session, args: dict) -> Any:
                                      "description": "share of the money per step, e.g. "
                                                     "{\"momentum\": 3, \"low_vol\": 1}. "
                                                     "Equal split if left out"},
-                      "split": {"type": "string",
-                                "description": "first out-of-sample date; before it is in-sample"},
                       "fee_bps": {"type": "number",
                                   "description": "commission on turnover, in basis points. "
                                                  "Defaults to the project's. Re-run with a "
@@ -474,15 +464,6 @@ def _backtest_conditions(s: Session, args: dict) -> Any:
                       "embargo": {"type": "string",
                                   "description": "wait this long after the as-of date before a "
                                                  "return counts, e.g. 1d"},
-                      "indicators": {"type": "array", "items": {"type": "string"},
-                                     "description": "also score these columns on their own, as "
-                                                    "stage.table:column. Returns the rank "
-                                                    "correlation with the return that followed "
-                                                    "(IC), its t-statistic, the share of dates it "
-                                                    "was positive, and the top-minus-bottom "
-                                                    "spread. A basket answers what the top of a "
-                                                    "ranking paid; this answers whether the "
-                                                    "ranking ordered anything at all"},
                       "seed": {"type": "integer", "default": 0}},
        "required": ["from", "to"]},
       writes=True,
@@ -497,19 +478,15 @@ def _backtest(s: Session, args: dict) -> Any:
             rebalance=args.get("rebalance") or None, seed=int(args.get("seed") or 0),
             decay=None if decay is None else int(decay),
             universe=args.get("universe") or None,
-            split=args.get("split") or None, step=args.get("step") or None,
+            step=args.get("step") or None,
             allocation=args.get("allocation") or None,
             fee_bps=args.get("fee_bps"), slippage_bps=args.get("slippage_bps"),
             purge=args.get("purge") or None, embargo=args.get("embargo") or None,
-            indicators=args.get("indicators") or None,
         )
     except BacktestError as exc:
         raise ToolError(str(exc)) from exc
     d = res.as_dict()
     d["periods"] = d["periods"][:200]
-    # The summary rows stay whole, because there is one per indicator. The per-date
-    # rows are the long part and a caller that wants them has `report`.
-    d["indicator_periods"] = d["indicator_periods"][:200]
     return d
 
 
@@ -564,35 +541,6 @@ def _period(s: Session, args: dict) -> Any:
         return period_detail(s.store, s.project, int(_need(args, "run_id")), _need(args, "as_of"))
     except BacktestError as exc:
         raise ToolError(str(exc)) from exc
-
-
-@tool("weights", "The portfolio a backtest held, for one as-of date or all of them.",
-      {"properties": {"run_id": {"type": "integer"}, "as_of": {"type": "string"}},
-       "required": ["run_id"]},
-      scope="research")
-def _weights(s: Session, args: dict) -> Any:
-    run_id = int(_need(args, "run_id"))
-    rows = s.store.bt_weights(run_id, args.get("as_of") or None)
-    if not rows:
-        raise ToolError(
-            f"backtest {run_id} recorded no weights"
-            + (f" at {args['as_of']}" if args.get("as_of") else "")
-            + ". Call report to see whether its periods failed."
-        )
-    return {"run_id": run_id, "count": len(rows), "weights": rows}
-
-
-@tool("compare", "What moved between two backtests, and whether they asked the same question.",
-      {"properties": {"a": {"type": "integer"}, "b": {"type": "integer"}}, "required": ["a", "b"]},
-      scope="research")
-def _compare(s: Session, args: dict) -> Any:
-    from qanat.backtest import compare
-
-    a, b = s.store.backtest(int(_need(args, "a"))), s.store.backtest(int(_need(args, "b")))
-    for rid, row in ((args["a"], a), (args["b"], b)):
-        if row is None:
-            raise ToolError(f"no backtest {rid}")
-    return compare(a, b)
 
 
 @tool("list_runs", "Recent job runs, with status and row counts.",
@@ -659,151 +607,6 @@ def _remove_step(s: Session, args: dict) -> Any:
         raise ToolError(str(exc)) from exc
     s.reload()
     return {"removed": args["id"], "warnings": written}
-
-
-@tool("read_bar",
-      "How high a result has to be in this project, given how many were tried to find it -- "
-      "and what the bar currently does to the newest run. Read this before claiming a strategy "
-      "works: the same Sharpe means opposite things at one attempt and at fifty, and nothing "
-      "inside a backtest can tell you which you are looking at.",
-      {"properties": {}, "required": []},
-      scope="research")
-def _read_bar(s: Session, args: dict) -> Any:
-    bt = s.project.backtest
-    bar = getattr(bt, "bar", None) if bt else None
-    return {
-        "bar": bar.model_dump() if bar else None,
-        "trials": s.store.trial_count(),
-        "changes": s.store.bar_history(5),
-    }
-
-
-@tool("set_bar",
-      "Set how high a result has to be. `rule` is none (report only), floor (a fixed t-stat "
-      "whatever was tried) or count (divide the significance by the number of trials, which is "
-      "the one that answers 'was this just the luckiest of fifty'). `gate` decides whether "
-      "failing it blocks anything or only says so.\n\n"
-      "Every change is recorded with who made it, and loosening the bar is logged as a "
-      "warning. That is not an accusation -- lowering a bar is sometimes right -- but you are "
-      "the thing proposing strategies, so a bar that moved just before one was promoted needs "
-      "to be a visible fact. If a result does not clear the bar, say so; do not move the bar "
-      "to make it fit.",
-      {"properties": {
-          "rule": {"type": "string", "description": "none, floor or count"},
-          "t_floor": {"type": "number",
-                      "description": "the fixed bar for `floor`. 3.0 is what Harvey, Liu and "
-                                     "Zhu argued for after counting how many factors had "
-                                     "already been tested"},
-          "significance": {"type": "number",
-                    "description": "the significance one test would have needed, before it is "
-                                   "divided by the number of tests. For `count`"},
-          "gate": {"type": "boolean",
-                   "description": "whether failing this stops anything, or only reports"},
-      }, "required": ["rule"]},
-      writes=True,
-      scope="full")
-def _set_bar(s: Session, args: dict) -> Any:
-    from qanat.editor import EditorError, set_bar
-
-    bt = s.project.backtest
-    was = getattr(bt, "bar", None) if bt else None
-    try:
-        warnings = set_bar(s.project, s.root, dict(args))
-    except EditorError as exc:
-        raise ToolError(str(exc)) from exc
-    s.reload()
-    now = s.project.backtest.bar
-
-    def strength(b: Any) -> tuple[int, float]:
-        if b is None or getattr(b, "rule", "none") == "none":
-            return (0, 0.0)
-        if b.rule == "floor":
-            return (1 if b.gate else 0, float(b.t_floor))
-        return (1 if b.gate else 0, 1.0 / max(1e-9, float(b.significance)))
-
-    loosened = strength(now) < strength(was)
-    s.store.event("warn" if loosened else "info", "bar",
-                  f"bar set to {now.rule}" + (" (loosened)" if loosened else ""))
-    return {"bar": now.model_dump(), "loosened": loosened, "warnings": warnings}
-
-
-@tool("record_trial",
-      "Say what a replay was an attempt at: its hypothesis, what it was a variation of, and "
-      "what you decided about it. Call this after every backtest, whether it worked or not -- "
-      "especially when it did not. The attempts that failed are the count that makes a "
-      "surviving number mean anything, and they are the one thing nobody writes down. Do not "
-      "record a conclusion the run did not reach: one replay that lost money is a result for "
-      "that configuration, not evidence the idea is wrong.\n\n"
-      "`disposition: live` is the one value that can be refused. When the project's bar is set "
-      "to gate and the run does not clear it, this call fails and says why. That is not "
-      "something to work around by moving the bar -- report that it did not clear.",
-      {"properties": {
-          "run_id": {"type": "integer", "description": "the backtest this describes"},
-          "hypothesis": {"type": "string",
-                         "description": "one line: what you were testing, in plain English"},
-          "parent_run_id": {"type": "integer",
-                            "description": "the run this varies, when it varies one. A sweep "
-                                           "reads as a sweep rather than as eight unrelated "
-                                           "runs"},
-          "disposition": {"type": "string",
-                          "description": "live, candidate, shelved or refuted"},
-          "seal": {"type": "string",
-                   "description": "the date the search was clipped to, when it was"},
-          "proposed_by": {"type": "string",
-                          "description": "which model suggested it. Two runs proposed by "
-                                         "different models are not the same trial"},
-      }, "required": ["run_id"]},
-      writes=True,
-      scope="research")
-def _record_trial(s: Session, args: dict) -> Any:
-    run_id = int(_need(args, "run_id"))
-    if s.store.backtest(run_id) is None:
-        raise ToolError(f"no backtest {run_id}")
-    allowed = {"", "live", "shelved", "refuted", "candidate"}
-    disposition = str(args.get("disposition") or "").strip()
-    if disposition not in allowed:
-        raise ToolError(f"disposition must be one of {sorted(allowed - {''})}")
-    #  Same gate as the HTTP door. The agent reaching the project either way
-    #  must meet the same bar, or the bar is a property of which client you
-    #  happened to use.
-    if disposition == "live":
-        from qanat.backtest import gate_promotion
-
-        why = gate_promotion(s.store, s.project, run_id)
-        if why:
-            raise ToolError(why)
-    s.store.annotate_trial(
-        run_id,
-        hypothesis=str(args.get("hypothesis") or "").strip(),
-        parent_run_id=int(args.get("parent_run_id") or 0),
-        disposition=disposition,
-        seal=str(args.get("seal") or "").strip(),
-        proposed_by=str(args.get("proposed_by") or "").strip(),
-    )
-    return {"run_id": run_id, "trials": s.store.trial_count()}
-
-
-@tool("list_trials",
-      "The ledger: every attempt this project has replayed, and how many distinct questions "
-      "they amount to. `count` is the number that makes a result judgeable -- a Sharpe of 2.2 "
-      "from one attempt is interesting, and the same figure picked out of fifty is what noise "
-      "looks like. Nothing inside a backtest can tell those apart, so read this before "
-      "quoting one.",
-      {"properties": {
-          "step": {"type": "string",
-                   "description": "scope the count to one weights table. The number that "
-                                  "matters is the size of the set the winner was chosen from: "
-                                  "leave this out when comparing several"},
-          "limit": {"type": "integer", "description": "how many rows, newest first"},
-      }, "required": []},
-      scope="research")
-def _list_trials(s: Session, args: dict) -> Any:
-    step = str(args.get("step") or "").strip()
-    return {
-        "step": step,
-        "count": s.store.trial_count(step),
-        "trials": s.store.trials(step, int(args.get("limit") or 200)),
-    }
 
 
 @tool("save_universe",

@@ -28,10 +28,6 @@ from qanat.project_io import save_project
 from qanat.runner import RunResult, run_source, run_step
 from qanat.store import Store, set_actor
 
-#: the job id a live replay reports under, so it shows in the log like any other
-_LIVE = "backtest"
-
-
 class Scheduler:
     def __init__(self, store: Store, project: Project, root: Path, workers: int = 4):
         self.store = store
@@ -47,15 +43,9 @@ class Scheduler:
         self._lock = threading.Lock()
         self.next_at: dict[str, datetime] = {}
         self._last_retention = 0.0
-        self._last_live = 0.0
         #  Where the unattended pass reaches the project, and the state object it
         #  drives. Both are handed over by `serve`, which is the only caller that
         #  has an API to point at -- so a bare Scheduler simply never researches.
-        #: Set when live is on but cannot be run as configured. A misconfiguration
-        #: does not get better by being retried every thirty seconds, and the log
-        #: line it writes each time buries everything else. Cleared on reload,
-        #: because editing the file is how it gets fixed.
-        self._live_halt = ""
         self._rebuild_jobs()
 
     def _rebuild_jobs(self) -> None:
@@ -70,7 +60,6 @@ class Scheduler:
         self.project = project
         with self._lock:
             running = set(self._inflight)
-        self._live_halt = ""          # the file changed; give live another go
         self._rebuild_jobs()
         self.store.event("info", "scheduler", f"reloaded · {len(self._jobs)} scheduled job(s)")
         if running:
@@ -119,107 +108,7 @@ class Scheduler:
                 from qanat.retention import run_retention
 
                 run_retention(self.store, self.project)
-            if time.time() - self._last_live >= 30:
-                self._last_live = time.time()
-                self.score_forward()
             self._stop.wait(1.0)
-
-    def live_steps(self) -> list[str] | None:
-        """Which weights tables a live pass prices, or None when nothing can say.
-
-        One in the project needs no instruction. Several, and the choice is
-        not ours: pricing two together is a third strategy, and picking one of them
-        silently would report a number for a portfolio nobody asked to hold.
-        """
-        bt = self.project.backtest
-        if bt is None:
-            return None
-        if bt.live_steps:
-            return list(bt.live_steps)
-        declared = [a for a, _ in self.project.weights_steps]
-        return [declared[0]] if len(declared) == 1 else None
-
-    def score_forward(self) -> bool:
-        """Run a live pass if the data has reached the next rebalance date.
-
-        Started in its own thread and guarded like any other job, so a replay
-        that outlives the gap between checks is not started twice.
-        """
-        from qanat.backtest import live_window
-
-        if self.project.backtest is None or not self.project.backtest.live:
-            return False
-        if self._live_halt:
-            return False
-        with self._lock:
-            if _LIVE in self._inflight:
-                return False
-        # Asked before the window, because a project that cannot say which step to
-        # price is not going to be able to price one when the next date arrives
-        # either. This used to be discovered inside `run_backtest`, which raised,
-        # which was logged and swallowed -- on a loop, forever, while `status`
-        # went on reporting that everything was fine.
-        step = self.live_steps()
-        if step is None:
-            declared = [a for a, _ in self.project.weights_steps]
-            self._live_halt = "nothing named"
-            self.store.event(
-                "error", _LIVE,
-                f"live is on, but this project has {len(declared)} weights tables and none is "
-                f"named to price: {', '.join(declared)}. Set `live_steps:` in the backtest "
-                f"block to one "
-                f"of them (or several, to hold them as one basket). Nothing is being scored "
-                f"until you do.",
-            )
-            return False
-        try:
-            window = live_window(self.store, self.project)
-        except Exception as exc:  # noqa: BLE001 -- a bad window must not stop the loop
-            self.store.event("error", _LIVE, f"{type(exc).__name__}: {exc}")
-            return False
-        if window is None:
-            return False
-        with self._lock:
-            self._inflight.add(_LIVE)
-        threading.Thread(target=self._score, args=(*window, step), daemon=True).start()
-        return True
-
-    def note_frontier(self, to: str) -> bool:
-        """Write down where the data ended when live scoring began. Once, ever.
-
-        Everything after this date is a period nobody could see when the step was
-        chosen. Worked out fresh on each pass it would move forward every day, and
-        the live segment would collapse back into out of sample.
-
-        It goes in the file rather than the store because a replay rebuilds the
-        store, and the frontier has to outlive that. Returns whether it wrote.
-        """
-        bt = self.project.backtest
-        if bt is None or bt.live_from:
-            return False
-        bt.live_from = to
-        save_project(self.project, self.root)
-        self.store.event("info", _LIVE, f"live from {to} · periods after it were "
-                                        "not on disk when the step was chosen")
-        return True
-
-    def _score(self, frm: str, to: str, step: list[str]) -> None:
-        from qanat.backtest import run_backtest
-
-        try:
-            self.store.event("info", _LIVE, f"scoring {frm} to {to} · {', '.join(step)}")
-            run_backtest(self.store, self.project, self.root, frm, to, step=step, live=True)
-            # Stamped only once a pass has landed. Written before the run, a run that
-            # then failed still moved the frontier -- and `note_frontier` writes once
-            # and never again, so the date defining out-of-sample was left pointing at
-            # a moment nothing had ever been scored at, permanently, with nothing in
-            # the file to say it was wrong.
-            self.note_frontier(to)
-        except Exception as exc:  # noqa: BLE001 -- same
-            self.store.event("error", _LIVE, f"{type(exc).__name__}: {exc}")
-        finally:
-            with self._lock:
-                self._inflight.discard(_LIVE)
 
     def limit(self, job_id: str) -> float | None:
         """How long this job gets, in seconds, or None for as long as it takes."""
