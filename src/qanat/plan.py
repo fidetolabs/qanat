@@ -59,11 +59,6 @@ def job_spec(job: Source | Step, root: Path) -> dict:
         "schedule": job.schedule,
         "universe": job.universe,
         "options": job.options,
-        # These change every number the step produces, and were not in the snapshot:
-        # moving a step from a 1d to a 21d rebalance left `qanat plan` saying
-        # nothing had changed.
-        "rebalance": job.rebalance,
-        "decay": job.decay,
         "when": sorted(job.when),
         "timeout": job.timeout,
     }
@@ -185,25 +180,6 @@ def _diff_specs(old: dict, new: dict) -> list[str]:
     return out
 
 
-def _replay_writes(project: Project, store: Store) -> set[str]:
-    """Where a backtest lands its results: one table per weights table, plus one for every
-    blend that has been run. Derived the same way the engine derives it, so the
-    two cannot disagree about which tables are results."""
-    stage = next((x for x in project.stages if x.kind == "pnl"), None)
-    if stage is None:
-        return set()
-    keys = [a for a, _ in project.weights_steps]
-    # a store written before blends existed has no rows to add here, and that is
-    # the only reason this can come back empty
-    keys += [row["step"] for row in store.steps_net() if row.get("step")]
-    out = set()
-    for key in keys:
-        ids = [x for x in str(key).split("+") if x]
-        if ids:
-            out.add(f"{stage.id}." + "_".join(ids))
-    return out
-
-
 def plan(project: Project, root: Path, store: Store) -> Plan:
     p = Plan()
     state = store.load_state()
@@ -216,11 +192,7 @@ def plan(project: Project, root: Path, store: Store) -> Plan:
     for ref in sorted(declared - present):
         p.creates.append(Change("create", ref, f"from {producers[ref]}"))
 
-    # A PnL table is written by a replay, not by a job, so nothing in the file
-    # declares it. Without this it looks like an orphan and `qanat prune` deletes
-    # every backtest result the project has -- the one thing in the store that
-    # cannot be recomputed by running the pipeline again.
-    for ref in sorted(present - declared - _replay_writes(project, store)):
+    for ref in sorted(present - declared):
         info = store.table_info(ref)
         rows = f"{info.rows:,} rows" if info else "unknown size"
         p.orphans.append(Change("orphan", ref, f"nothing produces it · {rows}"))

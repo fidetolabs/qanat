@@ -7,7 +7,7 @@ Each word means exactly one thing, and there is no second word for it.
 | **stage** | One step of the pipeline, holding tables. Order in `qanat.yaml` is order in the pipeline. |
 | **table** | One dataset inside a stage. Always addressed `stage.table` — never as two fields. |
 | **source** | Brings a table in from outside. |
-| **connector** | *How* a source connects: `rest`, `sql`, `csv`, `synthetic`. |
+| **connector** | *How* a source connects: `sec`, `yfinance`, `rest`, `sql`, `csv`. |
 | **step** | A script that turns tables into tables. |
 | **universe** | The symbols a portfolio is allowed to hold. Point-in-time when its file carries `from` and `to`. |
 | **lineage** | What a step reads, back to the source. Steps share lineage; that is why they are comparable. |
@@ -18,22 +18,25 @@ One word belongs to the picture: a **slab** is one **table** drawn in the graph.
 tables as boxes and steps as the arrows between them — `table — (step) — table` — because that is
 what a pipeline is.
 
-Four more words belong to `qanat backtest`:
+Seven words belong to the screen:
 
 | Word | What it is |
 | --- | --- |
-| **replay** | Running the graph once per as-of date, over data that already landed. |
-| **as-of** | The moment a pass is pretending to be. Nothing newer is readable, and nothing newer may be written. |
-| **period** | The gap between one as-of date and the next. What was held across it, and what that returned. |
-| **net** | What the money did: the periods compounded. The number a backtest reports as its answer. |
-| **net sum** | The same periods added instead of compounded. Gross minus fees minus slippage reconciles against this one. |
-| **decay** | Holding a blend of the last N portfolios, newest heaviest, to stop paying fees for noise. |
-| **live** | Scoring forward as data arrives, instead of once over a window that already happened. |
-| **frontier** | The last date the data held when live scoring was switched on. Stamped once. Everything after it is a return nobody could have looked at while choosing the step. |
-| **held** | A period the step held something. A period that held nothing is still a period and still in the money -- it is not a decision, so the averages say both. |
-| **indicator** | One number per symbol per date, computed by a step. A column, not a basket: it says nothing about what to hold. |
-| **IC** | Rank correlation between an indicator and the return that followed, per as-of date. Whether the order was right, not whether the top paid. |
-| **spread** | The top group's mean return minus the bottom group's, over the same period. How far apart the ends of the ranking were. |
+| **screen** | The verb, and the only one. Ask who passed a filter — on one date, or on every date in a window. A window of one is a single date, so there is one verb and not two. **There is no noun `screen`**: what you save is a *filter*, and what happened is a *run*. |
+| **filter** | A named rule, holding one or more clauses. Versioned. "My usual set" is a filter. |
+| **clause** | One condition inside a filter: a metric against a threshold. It has no name and no version of its own, and is never a table. |
+| **metric** | A formula with a name and a version. Arithmetic, no judgement: `pe = price / diluted EPS`. Shared, because it is the same number for everybody. |
+| **threshold** | The number a clause compares a metric against. A judgement, so it belongs to whoever set it and never to the project. |
+| **as-of** | The date being asked about. Nothing published later is readable. |
+| **run** | One application of filters, with what ran recorded as data rather than as a pointer. |
+
+The split that matters is **formula against threshold**. A formula is not an
+opinion, so it is shared and computed once. A threshold is an opinion, so it is
+one person's. A clause is where the two meet.
+
+**`replay` and `re-run` are not words here.** There was a `replay` for running
+the graph once per as-of date, and it meant the same thing as screening over a
+window. One of them had to go, and the product is named after the other.
 
 Three more words belong to `qanat plan`:
 
@@ -43,14 +46,14 @@ Three more words belong to `qanat plan`:
 | **orphan** | A table still in the database that nothing in the file produces any more. |
 | **stale** | A table whose rows were computed by a job that has changed since. Not deleted — just no longer current. |
 
-A **stage** has a **kind**: `raw`, `normalized`, `features`, `weights` or `pnl`.
+A **stage** has an **id** you choose and a **kind**. The only kind that means anything to
+the platform is `raw`: a landed stage, written by sources and never by a step. Everything
+else is a stage with a name you picked.
 
-**A step that writes into the weights stage is terminal, and there is exactly one weights
-stage.** There is no separate word for such a step, and there used to be: it was called an
-alpha, and the definition was *the step that writes a weights table*, which is `step` plus a
-destination stage and no information of its own. A second word for one thing is what the first
-line of this file forbids, so it was deleted on 2026-10-11 rather than renamed. Finding them is
-`list_steps(stage: "weights")`, and the stage is what identifies them.
+**The five fixed kinds are gone.** `raw`, `normalized`, `features`, `weights` and `pnl` were
+an enum, and a project had to be shaped like the one product they were written for. A stage
+now declares what is true of it rather than which slot it fills, and what `check` enforces is
+in [contract.md](contract.md). `normalized` in the starter project is a name, not a keyword.
 
 ## The fields, one spelling each
 
@@ -58,19 +61,18 @@ line of this file forbids, so it was deleted on 2026-10-11 rather than renamed. 
 | --- | --- | --- |
 | `from:` | step | the tables it reads |
 | `to:` | source, step | the tables it writes |
-| `connector:` | source | rest · sql · csv · synthetic |
+| `connector:` | source | sec · yfinance · rest · sql · csv |
 | `script:` | step | path to a `.sql` or `.py` file |
 | `schedule:` | source, step | a cron line |
 | `options:` | source, step | free configuration, passed through |
 | `universe:` | step | which universe it may hold |
-| `rebalance:` | step | how often this step wants to decide; a backtest uses it unless told otherwise |
-| `decay:` | step | how many baskets this step wants blended |
 | `mode:` | source | `append` or `replace` |
-| `kind:` | stage | `raw` · `normalized` · `features` · `weights` · `pnl` |
+| `kind:` | stage | `raw` for a landed stage; otherwise a name you choose |
+| `time_columns:` | project | which column on a table says when a row became public. The one line the point-in-time reads depend on |
+| `metrics:` | project | the formulas this project defines, each with a version |
+| `returns:` | project | which table says what a company did next, so a screen can report it |
+| `corpus:` | project | which tables hold documents, their text and their facts, for the reading tools |
 | `store:` | project | path to the one DuckDB file |
-| `backtest:` | project | what prices the portfolio, and what holding it costs |
-| `indicators:` | backtest | columns scored on their own as well, written `stage.table:column` |
-| `groups:` | backtest | how many groups the spread splits a ranking into; 5 is quintiles |
 
 A source and a step both say `to:`, because writing a table is the same act whichever one does it.
 

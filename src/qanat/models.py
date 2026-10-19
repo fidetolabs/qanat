@@ -5,7 +5,7 @@ Eight words, and each one means exactly one thing:
     stage      an ordered stage that holds tables
     table      one dataset inside a stage, addressed `stage.table`
     source     brings a table in from outside, through a connector
-    connector  how a source connects: rest, sql, csv, synthetic
+    connector  how a source connects: rest, sql, csv, sec, yfinance
     step       a script that turns tables into tables
     universe     the symbols a portfolio is allowed to hold
     job        a source or a step -- anything that runs
@@ -31,8 +31,12 @@ from pydantic import (
     model_validator,
 )
 
-StageKind = Literal["raw", "normalized", "features", "weights", "pnl"]
-Connector = Literal["rest", "sql", "csv", "synthetic"]
+#: What a stage declares about itself. `raw` is the only value the platform
+#: acts on: a landed stage, written by sources and never by a step. Everything
+#: else is a name the user chose, and `check` enforces properties rather than
+#: names. This was an enum of five until the five described one workflow.
+StageKind = str
+Connector = Literal["rest", "sql", "csv", "sec", "yfinance"]
 WriteMode = Literal["append", "replace"]
 
 _NAME = r"^[a-z][a-z0-9_]*$"
@@ -68,7 +72,7 @@ class Stage(Base):
     """One stage of the pipeline. Order in the file is order in the pipeline."""
 
     id: str = Field(pattern=_NAME)
-    kind: StageKind = "features"
+    kind: StageKind = ""
     description: str = ""
 
 
@@ -143,12 +147,6 @@ class Step(Base):
     universe: str | None = None
     timeout: str | None = None
     options: dict[str, Any] = Field(default_factory=dict)
-    # How this step is *executed* when it writes the weights stage. A five-day
-    # sixty-day momentum are not asking for the same rebalance gap, and the gap is
-    # part of the rule, not of the project. Left unset, the run falls back to the
-    # `backtest:` block -- these only say what this step wants by default.
-    rebalance: str | None = None
-    decay: int | None = None
 
     @field_validator("reads", "writes", "when")
     @classmethod
@@ -166,47 +164,73 @@ class Step(Base):
         return self
 
 
-class Backtest(Base):
-    """How a replay turns the weights table into a net-edge number.
+class Corpus(Base):
+    """Which tables hold documents, their text and their tagged numbers.
 
-    The weights table says what to hold; this says what holding it costs. Every
-    figure the report prints comes from these fields, so a backtest that flatters
-    itself has to do it here, in the open.
+    The reading tools need to know where to look, and the platform does not
+    name layers, so the project says. Same shape as `returns:`: a default so a
+    caller does not repeat it, and nothing hard-coded in the engine.
+
+    Unset, the reading tools are simply not offered. A project of prices has
+    no documents to read and should not be told it has.
     """
 
-    prices: str                       # stage.table carrying the price per symbol per date
-    price_column: str = "close"
-    symbol_column: str = "symbol"
-    date_column: str = "date"
-    fee_bps: float = 0.0              # charged on turnover, in basis points
-    slippage_bps: float = 0.0         # estimated, charged on turnover too
-    rebalance: str = "1d"             # gap between as-of dates
-    purge: str = "0d"                 # hold rows back this long before a step may read them
-    embargo: str = "0d"               # wait this long after as_of before a return counts
-    decay: int = 0                    # smooth the portfolio over this many rebalances; 0 is off
+    documents: str = ""
+    spans: str = ""
+    facts: str = ""
 
-    @field_validator("prices")
+
+class Metric(Base):
+    """A formula with a name and a version. Shared, and not an opinion.
+
+    `PER = price / diluted EPS` is arithmetic. There is no judgement in it, so
+    it is computed once and the answer is the same for everybody. The judgement
+    is the threshold somebody puts next to it, and that belongs to whoever set
+    it.
+
+    **The version is load-bearing and it is yours to bump.** A saved answer
+    points at a definition version, so editing a formula in place silently
+    changes what an old answer meant. Bump `version` instead: the new one is
+    written alongside the old and both still resolve.
+    """
+
+    id: str = Field(pattern=_NAME)
+    #: The formula, as SQL over the tables this project holds. One row out per
+    #: subject, with a `value` column. `:as_of` is replaced with the date being
+    #: screened, so a definition filters its own history.
+    sql: str
+    version: int = 1
+    unit: str = ""
+    description: str = ""
+
+    @field_validator("version")
     @classmethod
-    def _prices_qualified(cls, v: str) -> str:
-        return _qualified([v])[0]
-
-    def _indicators_qualified(cls, v: list[str]) -> list[str]:
-        out = []
-        for item in v:
-            ref, _, col = str(item).partition(":")
-            if not col:
-                raise ValueError(
-                    f"indicator {item!r} needs a column: write it as stage.table:column, "
-                    f"e.g. features.momentum:momentum"
-                )
-            out.append(f"{_qualified([ref])[0]}:{col}")
-        return out
-
-    @classmethod
-    def _groups_sane(cls, v: int) -> int:
-        if v < 2:
-            raise ValueError(f"groups is {v}: a spread needs at least two ends")
+    def _positive(cls, v: int) -> int:
+        if v < 1:
+            raise ValueError(f"version is {v}: versions start at 1 and only go up")
         return v
+
+
+class Returns(Base):
+    """Where a screen finds what a company did next.
+
+    A screen says who passed. Whether that list was any good is answered by
+    what each name returned afterwards, and that needs a price. Which table
+    holds one is the project's to say, because the platform does not name
+    layers: this is the same shape as passing the table as an argument, with
+    a default so a caller does not repeat it on every call.
+
+    The return is **per company, from its own date to its own next date**.
+    Companies file on different days, so there is no common calendar to price
+    them on, and forcing one would compare a year for one name against
+    thirteen months for another.
+    """
+
+    #: `stage.table`, holding one row per subject per date with a price on it.
+    table: str
+    subject_column: str = "subject"
+    date_column: str = "as_of"
+    price_column: str = "close"
 
 
 class Project(Base):
@@ -216,12 +240,14 @@ class Project(Base):
     universes: list[Universe] = Field(default_factory=list)
     sources: list[Source] = Field(default_factory=list)
     steps: list[Step] = Field(default_factory=list)
+    metrics: list[Metric] = Field(default_factory=list)
     retention: dict[str, str] = Field(default_factory=dict)
     time_columns: dict[str, str] = Field(default_factory=dict)
     # How long any job gets, unless it says otherwise. A job with no limit holds a
     # worker until the process ends, and four of those stop the scheduler dead.
     job_timeout: str | None = None
-    backtest: Backtest | None = None
+    returns: Returns | None = None
+    corpus: Corpus | None = None
 
     # ---- lookups -------------------------------------------------------------
     def store_url(self, root: Path) -> str:
@@ -242,62 +268,11 @@ class Project(Base):
     def universe(self, bid: str) -> Universe | None:
         return next((x for x in self.universes if x.id == bid), None)
 
-    @property
-    def weights_stage(self) -> Stage | None:
-        return next((x for x in self.stages if x.kind == "weights"), None)
-
-    @property
-    def pnl_stage(self) -> Stage | None:
-        """Where a replay writes what a weights table earned, if the project keeps one."""
-        return next((x for x in self.stages if x.kind == "pnl"), None)
-
-    @property
-    def weights_steps(self) -> list[tuple[str, str]]:
-        """(step id, weights table) for every step that writes the weights stage.
-
-        **A step from features to weights is the end of the pipeline.** It has no
-        separate name: the stage it writes is what identifies it, which is why
-        `list_steps` finds these by filtering on stage rather than by a word. Its
-        DAG is its *lineage*: what it depends on, shared with whatever else depends
-        on it. Freeze that lineage and you have the bundle you archive to reproduce
-        it.
-
-        One weights table per step, so the record reads straight off the file.
-        """
-        wl = self.weights_stage
-        if wl is None:
-            return []
-        out = []
-        for st in self.steps:
-            for ref in st.writes:
-                if ref.startswith(f"{wl.id}."):
-                    out.append((st.id, ref))
-        return sorted(out)
-
-    @staticmethod
-    def weights_name(step_id: str, ref: str = "") -> str:
-        """What to call a weights table in front of a person.
-
-        Its weights table, its PnL table and its short name are the same word, so
-        one name follows it through the pipeline.
-
-        Several priced as one portfolio are joined by `+`, and read out the same
-        way: "momentum + low_vol" is one basket made of two.
-        """
-        if "+" in step_id:
-            return " + ".join(x for x in step_id.split("+") if x)
-        return ref.partition(".")[2] if ref else step_id
-
-    def weights_step(self, name: str) -> tuple[str, str] | None:
-        """Find a weights-writing step by its short name, its id, or its table."""
-        for step_id, ref in self.weights_steps:
-            if name in (step_id, ref, ref.partition(".")[2]):
-                return step_id, ref
-        return None
+    def metric(self, mid: str) -> Metric | None:
+        return next((x for x in self.metrics if x.id == mid), None)
 
     @property
     def jobs(self) -> list[Source | Step]:
-        """Everything that runs, sources first."""
         return [*self.sources, *self.steps]
 
     def job(self, jid: str) -> Source | Step | None:

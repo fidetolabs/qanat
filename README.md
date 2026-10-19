@@ -21,6 +21,11 @@ Qanat is a data platform for investment research. You load company data into it,
 write the formulas you care about, and ask for the numbers as they stood on any
 past date.
 
+What you came for is a **screen**: define a metric, set a threshold, get the
+companies that pass. Every stock screener on the internet screens *today*. This
+one screens **as of any past filing date, with no look-ahead** -- which is the
+whole difference, and the reason for everything below.
+
 It does four things:
 
 | | |
@@ -47,13 +52,16 @@ became public. Ask about a past date and you get what was public by then.
 **One store.** A DuckDB file, or Postgres on localhost.
 
 **Layers.** Data moves forward through them. The first layer holds what arrived
-and nobody edits it. The ones after hold what you worked out.
+and nobody edits it. The ones after hold what you worked out. You name them.
 
 **Steps.** A `.sql` file, or a `.py` file with a `run(ctx)`. A step says which
 tables it reads and writes, and it can only read what it declared.
 
-**Sources.** Four connectors: HTTP, SQL, CSV, and a fake market you can use
-before you have any API key.
+**Sources.** Five connectors: SEC EDGAR, Yahoo Finance, HTTP, SQL and CSV.
+
+**Metrics.** A formula with a name and a version. Shared, because
+`price / diluted EPS` is arithmetic with no judgement in it. The threshold you
+compare it against is yours and never lives in the project.
 
 **The MCP server.** How you talk to it. There is no website. Your agent is the
 screen.
@@ -64,11 +72,13 @@ You need Python 3.10 or newer.
 
 ```bash
 uv tool install qanat-fdtl                 # or: pip install qanat-fdtl
+export SEC_USER_AGENT="your name you@example.com"
 qanat init my-research --demo && cd my-research
 ```
 
-The demo builds a small project and runs it in about ten seconds. The data is
-made up, so you need no API key and no network.
+The demo pulls four real 10-K filings from SEC EDGAR and reads the numbers out
+of them, in under a minute. There is no API key and no account: the SEC asks
+only for a contact address so it can see who is making the requests.
 
 Then point an agent at it:
 
@@ -96,9 +106,9 @@ Now you can ask for things:
 
 | | Tools | What it can do |
 | --- | --- | --- |
-| `--scope data` | 6 | read the tables, including as they stood on a past date |
-| `--scope research` | 13 | and read a step, run a replay, read the result |
-| *(default)* | 21 | and write steps, sources and universes |
+| `--scope data` | 12 | read the tables as they stood on a past date, and read the filings |
+| `--scope research` | 15 | and read a step, and screen |
+| *(default)* | 23 | and write steps, sources and universes |
 
 Every tool description is sent to the model on every request. A smaller scope
 costs fewer tokens and gives the agent a shorter list to choose from, so pick
@@ -109,62 +119,104 @@ the smallest one that does your job.
 Everything is in one `qanat.yaml`.
 
 ```yaml
-project: equity
+project: research
 store: ./data/qanat.duckdb
 
 stages:
   - { id: raw,        kind: raw }         # what arrived, never edited
   - { id: normalized, kind: normalized }  # typed and de-duplicated
-  - { id: features,   kind: features }    # what you measure
-  - { id: weights,    kind: weights }
-  - { id: pnl,        kind: pnl }
+
+# Which column says when a row became public. Without this, a screen reads
+# every row ever written, including the ones published after the date it is
+# pretending to be.
+time_columns:
+  raw.documents: published_at
 
 sources:
-  - id: prices
-    to: [raw.daily_prices]
-    connector: rest
-    options: { url: https://api.example.com/v1/bars }
+  - id: filings
+    to: [raw.documents]
+    connector: sec
+    options:
+      companies: [AAPL, MSFT]
+      form: 10-K
+      years: 5
+      user_agent: ${SEC_USER_AGENT}
 
 steps:
-  - id: normalize
-    from: [raw.daily_prices]
-    to:   [normalized.prices]
-    script: steps/normalize.sql
-
-  - id: momentum
-    from: [normalized.prices]
-    to:   [features.momentum]
-    script: steps/momentum.py
-    options: { reads: normalized.prices, lookback: 20 }
+  - id: parse_facts
+    from: [raw.documents]
+    to:   [normalized.facts]
+    script: steps/parse_facts.py
+    options: { reads: raw.documents }
 ```
 
 A step in Python:
 
 ```python
 def run(ctx):
-    bars = ctx.read("normalized.prices")   # only tables listed in `from`
+    docs = ctx.read("raw.documents")   # only tables listed in `from`
     return df
 ```
 
 `ctx.read()` refuses any table the step did not declare, so a missing dependency
 is an error you see instead of a wrong number you don't.
 
+**You choose the layers and what they are called.** Qanat enforces four
+properties and no names: a landed layer is never written by a step, a step
+reads and writes only what it declared, the graph has no cycles, and every row
+carries both dates. `raw` and `normalized` above are a worked example, not a
+required shape.
+
+**A pipeline stops at clean dated facts.** There is no metrics layer and no
+results layer, because a metric is a query over the facts and a screen is a
+call that returns a list. Neither is a table Qanat owes you, so neither needs
+a stage to land in. `qanat check` warns that nothing reads `normalized.facts`,
+and that warning is correct.
+
 Run `qanat check` before anything else. It reads the file and tells you what is
 wrong with it.
 
-### Running over history
+### Screening
+
+One verb, one date or a window. A window of one is a single date, so the rows
+come back the same shape either way and you never branch on which you asked
+for.
 
 ```bash
-qanat backtest --from 2026-01-01 --to 2026-09-30 --step sort_on_trailing_return
+qanat screen --filter '[{"metric":"pe","op":"<","value":30}]' --as-of 2025-12-31
+qanat screen --filter '[{"metric":"pe","op":"<","value":30}]' --from 2021-12-31 --to 2025-12-31
 ```
 
-This walks the window one date at a time. On each date every step sees only the
-rows that were public then. You get one row per date, with the number of dates
-next to the result, because a figure from four dates and a figure from four
-hundred are different claims.
+Three things come back, and nothing else:
 
-More in [docs/backtest.md](https://github.com/fidetolabs/qanat/blob/main/docs/backtest.md),
-[docs/contract.md](https://github.com/fidetolabs/qanat/blob/main/docs/contract.md)
+| | |
+| --- | --- |
+| **the list** | who passed, on each date |
+| **the return** | per company, from its own filing to its next one |
+| **the count** | how many could be evaluated, and how many could not |
+
+**The count is there because a list is a claim.** A screen that quietly
+dropped half the market has told you something false about who passed.
+
+**Nothing is added up.** No average across years, no comparison against the
+companies that failed, no equity curve. Adding returns together needs a
+decision about how much of each company to hold, and that decision is yours
+and is made outside this tool.
+
+The returns run between each company's **own** dates. Costco files in October
+and Walmart in March, so there is no shared calendar to price them on.
+
+### Forty real filings to try it on
+
+[`examples/sec-10k`](https://github.com/fidetolabs/qanat/tree/main/examples/sec-10k)
+is eight companies over five years, downloaded from EDGAR: Apple, Microsoft,
+Alphabet, Meta, NVIDIA, Walmart, Target and Costco. 43,104 tagged numbers and
+904 document sections. Their fiscal years end in January, February, June,
+August, September and December, so the two-date clock gets a real test rather
+than a convenient one.
+
+More in [docs/contract.md](https://github.com/fidetolabs/qanat/blob/main/docs/contract.md),
+[docs/words.md](https://github.com/fidetolabs/qanat/blob/main/docs/words.md)
 and [docs/agents.md](https://github.com/fidetolabs/qanat/blob/main/docs/agents.md).
 
 ## Cautions
@@ -173,8 +225,13 @@ and [docs/agents.md](https://github.com/fidetolabs/qanat/blob/main/docs/agents.m
 something breaks, open an [issue](https://github.com/fidetolabs/qanat/issues) or
 say so on [Discord](https://discord.gg/JUmwATScS8).
 
-**You bring the data.** There is no SEC filing parser in here. You write the
-connector, or point it at a feed you already have.
+**One connector so far.** SEC EDGAR, and it reads 10-K filings. Anything else
+you bring yourself through the HTTP, SQL or CSV connectors. More will be added
+one at a time, each finished before the next is started.
+
+**No prices.** A filing does not contain one, and nothing in here fetches one
+yet. So you can screen on what a company reported and you cannot yet ask what
+the list did next.
 
 **You write the formulas and pick the numbers.** Qanat works out what you asked
 for and reports what came out. Choosing a threshold is your job.
@@ -184,12 +241,20 @@ your agent still can, while you are deciding what to try.
 
 **It cannot place an order,** and no agent it serves ever will.
 
+**Prices come from Yahoo, through `yfinance`.** That is not an API with a
+contract behind it, and Yahoo's terms do not grant redistribution. Every row
+carries `source: yfinance` so a later cleanup has something to act on, and it
+is behind the `prices` extra rather than installed by default. It is also
+unofficial: Yahoo changes its endpoints and the library catches up afterwards.
+
+**Section detection is a heuristic.** A 10-K names every Item on its contents
+page and again throughout the prose, so most matches for "Item 1A" are not the
+heading. It gets all 904 sections in the bundled example right and it will meet
+documents it has not seen. Every span carries the rule that found it, so you
+can tell how much to trust one.
+
 **Still missing:** industry grouping, so a ranking is against whatever list of
 companies you hand it. Also backfills and incremental updates.
-
-**Two layer names are out of date.** The last two stages are still called
-`weights` and `pnl`, from when this was built as a backtesting engine. The code
-is a screening platform now and the names have not caught up.
 
 **For general pipelines, use something else.** Airflow, Dagster and Prefect run
 any DAG and run it across many machines. Qanat runs one shape.

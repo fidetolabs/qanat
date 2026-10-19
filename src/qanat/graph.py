@@ -306,8 +306,6 @@ def model(g: dict[str, Any]) -> Model:
     """The read model from `build_graph`, laid out in layers ready to draw."""
     stages = g.get("stages", [])
     order = {s["id"]: i for i, s in enumerate(stages)}
-    weights_stage = next((s["id"] for s in stages if s["kind"] == "weights"), None)
-    writes = {j["id"]: list(j.get("to") or []) for j in g.get("jobs", [])}
 
     nodes: dict[str, Node] = {}
     for i, t in enumerate(g.get("tables", [])):
@@ -319,23 +317,13 @@ def model(g: dict[str, Any]) -> Model:
             state=t.get("status") or "idle",
             rows=int(t.get("rows") or 0),
             stale=bool(t.get("stale")),
-            via=("backtest" if t.get("written_by_replay") else (t.get("producer") or "")),
+            via=("backtest" if t.get("written_by_screen") else (t.get("producer") or "")),
             note=_ago(t.get("updated_at")),
             seq=i,
         )
 
     edges = [(e["from"], e["to"]) for e in g.get("edges", [])
              if e["from"] in nodes and e["to"] in nodes]
-
-    # A replay writes the PnL tables, so no step declares that edge -- but the
-    # arrow is real, and without it every PnL table floats unattached.
-    for t in g.get("tables", []):
-        if not t.get("written_by_replay"):
-            continue
-        for maker in (t.get("producers") or ([t["producer"]] if t.get("producer") else [])):
-            for ref in writes.get(maker, []):
-                if weights_stage and ref.startswith(f"{weights_stage}.") and ref in nodes:
-                    edges.append((ref, t["ref"]))
 
     edges = list(dict.fromkeys(edges))
     parents: dict[str, list[str]] = {k: [] for k in nodes}
@@ -736,43 +724,8 @@ def build_graph(
 
     ok = sum(1 for t in tables if t["status"] == "ok")
     bad = sum(1 for t in tables if t["status"] == "failed")
-    pnl_stage = project.pnl_stage
-    if pnl_stage is not None:
-        from qanat.backtest import pnl_ref, step_ids_of
-
-        # One PnL table per weights table, plus one for every blend that has been
-        # run: a blend is not declared anywhere, it exists because somebody priced
-        # two together, so history is the only place it can be read from.
-        keys = [a for a, _ in project.weights_steps]
-        declared = set(keys)
-        for row in store.steps_net():
-            k = row.get("step") or ""
-            if "+" in k and k not in declared and all(i in declared for i in step_ids_of(k)):
-                keys.append(k)
-
-        seen = {t["ref"] for t in tables}
-        for key in keys:
-            ref = pnl_ref(project, key)
-            if ref is None:
-                continue
-            makers = step_ids_of(key)
-            if ref in seen:
-                # already listed (the store has it as an orphan); name its maker
-                for t in tables:
-                    if t["ref"] == ref:
-                        t.update(producer=makers[0], producers=makers, producer_kind="replay",
-                                 stage_kind="pnl", status="ok", written_by_replay=True)
-                continue
-            info = store.table_info(ref)
-            tables.append({
-                "ref": ref, "stage": pnl_stage.id, "stage_kind": "pnl",
-                "name": ref.partition(".")[2], "producer": makers[0], "producers": makers,
-                "producer_kind": "replay", "producer_connector": None,
-                "rows": info.rows if info else 0,
-                "columns": ([{"name": c, "type": t} for c, t in info.columns] if info else []),
-                "updated_at": info.updated_at if info else None,
-                "status": "ok" if info else "idle", "written_by_replay": True,
-            })
+    # Nothing projects a pnl table any more: the package prices no baskets,
+    # so the graph holds only tables a source or a step wrote.
 
     return {
         "project": project.name,

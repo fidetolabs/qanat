@@ -1,5 +1,7 @@
-"""Qanat: an MCP server that turns filings and prices into valuation indicators, and
-tests each one inside its own industry.
+"""Qanat: a data platform for investment research.
+
+It ingests financial data sources and computes point-in-time financial metrics
+for valuation and screening. Delivered as an MCP server.
 
 A qanat is the underground channel that carried water across the desert for two
 thousand years: it moved the water, it never owned it.

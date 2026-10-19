@@ -1,33 +1,38 @@
 # Notes on the agent surface
 
 The README covers adding qanat to an MCP client. These are the parts that only matter once you are
-using them. There are 21 tools at `full`, 13 at `research` and 6 at `data`.
+using them. There are 23 tools at `full`, 15 at `research` and 12 at `data`.
 
 ## The agent's surface is wider than the CLI's
 
-Five tools share a name with a command and do the same thing: `check`, `plan`, `run`, `backtest`,
-`report`. One is renamed — `qanat backtests` is `list_backtests`. Everything else differs,
-deliberately.
+Four tools share a name with a command and do the same thing: `check`, `plan`, `run` and
+`screen`. Everything else differs, deliberately.
 
 An agent navigates where a person reads. `qanat ls` prints stages, tables and jobs in one dump;
 an agent gets `list_tables`, `list_steps` and `describe_table` separately, and `describe_table`
-plus `sample_table` to look inside one. `qanat report` prints a whole run; an agent also gets
-`period` to open one point on it.
+plus `sample_table` to look inside one.
 
 Going the other way, `save_step`, `save_source` and `save_universe` have no CLI at
 all. You author a step in your editor; an agent authors one through the API.
 
-Five commands have no tool. `init` and `prune` because an agent works inside a project that
+Four commands have no tool. `init` and `prune` because an agent works inside a project that
 already exists and does not drop tables; `serve` because starting a scheduler is not something an
 agent should do mid-question; `mcp` because it is the transport; `ls` because it is three tools
 here.
 
 ## Nothing here judges a result
 
-`backtest` returns what a selection did. It does not say whether it worked, and no tool on this
-surface does.
+`screen` returns who passed and what each name did next. It does not say whether that was good,
+and no tool on this surface does.
 
-Removed in 0.4.0: `record_trial`, `list_trials`, `read_bar`, `set_bar`, `compare`, `weights`. The
+The reading tools hold the same line in the other direction. `check_number` puts a number you
+read in prose next to the tagged numbers near it and reports the difference. It never says which
+is right, because a gap has two explanations — the prose was read wrong, or the two are different
+measures of the same subject — and the tool can tell neither from the other.
+
+Removed in 0.4.0: `record_trial`, `list_trials`, `read_bar`, `set_bar`, `compare`, `weights`.
+Removed in 0.5.0: `backtest`, `backtest_conditions`, `list_backtests`, `report`, `period` — the
+package no longer prices a basket, so there is no run to report on. The
 first four were a trial ledger and a significance bar, which only mean something if the product
 certifies indicators. It does not. The arithmetic is in the fdtl-kb record, `O-20261018-04`: at
 fourteen annual rebalances the significance bar lands at an IC of 0.069 and a real indicator is
@@ -60,30 +65,37 @@ built on it is flattered by the names that survived. `qanat check` says so out l
 
 ## `sample_table` honours `as_of`
 
-Passing an as-of date reads the table through the same point-in-time view a replay uses, so an
+Passing an as-of date reads the table through the same point-in-time view a screen uses, so an
 agent inspecting history sees what a step would have seen on that date. Without it, an agent
 reasoning about the past reasons about rows that had not happened yet.
 
-## `backtest_conditions` exists to stop a guess
+## The reading surface is five tools and a rule each
 
-A window nobody chose produces a number nobody should act on. This tool returns the dates the data
-actually covers, the universes declared, the current defaults for `rebalance` and `decay`, and an
-explicit `ask_the_person_for` list. It is the one tool whose job is to make the agent stop and ask.
+`list_sections` reports how long each section is **before** you open one, so an agent picks
+knowing the cost. `read_section` pages and never returns a whole Item: Item 1A runs past 100 KB
+in a large filer, and a tool that hands that over has spent the context the agent needed to think
+with. `search_documents` returns locations and never bodies — find, then read. `read_facts` gives
+the tagged numbers with both period dates on them. `check_number` is the honesty check described
+above.
+
+`list_sections` also reports which rule decided each boundary. A 10-K names every Item on its
+contents page and again throughout the prose, so most matches are not the heading. A boundary
+tool that returns a confident wrong offset is worse than one that admits it guessed.
 
 ## `--scope`
 
 Three scopes, nested. Each one contains the one before it, and `full` is the default.
 
 ```bash
-qanat mcp --scope data       #  6 tools
-qanat mcp --scope research   # 13 tools
-qanat mcp                    # 21 tools
+qanat mcp --scope data       # 12 tools
+qanat mcp --scope research   # 15 tools
+qanat mcp                    # 23 tools
 ```
 
 | scope | adds | tools |
 | --- | --- | --- |
-| `data` | read the tables | `list_tables` `describe_table` `sample_table` `profile_table` `lineage` `stale_tables` |
-| `research` | read the graph, run a replay, read its result | `list_steps` `read_step` `backtest_conditions` `backtest` `report` `period` `list_backtests` |
+| `data` | read the tables, and read the documents | `list_tables` `describe_table` `sample_table` `profile_table` `lineage` `stale_tables` `list_metrics` `list_sections` `read_section` `search_documents` `read_facts` `check_number` |
+| `research` | read the graph, and screen | `list_steps` `read_step` `screen` |
 | `full` | author, ingest, schedule | `check` `plan` `run` `list_runs` `save_step` `remove_step` `save_source` `save_universe` |
 
 **It is one server and one service layer.** The scope decides which tools are listed, nothing
@@ -97,13 +109,12 @@ different things, and the difference starts to cost money the day the server is 
 answering to more than one project.
 
 **What a tool list costs.** Every definition is sent on every request. An agent that wants rows
-out of one table should not carry twenty-one descriptions to use four, and a long list makes it
+out of one table should not carry twenty-three descriptions to use four, and a long list makes it
 worse at picking from the list.
 
-**Nothing in `research` touches `qanat.yaml`.** That is the boundary doing work rather than
-describing itself: a caller at `research` can run a replay and read the result, and cannot rewrite
-the project it ran against. `backtest` is the only tool in `research` that writes anything, and
-what it writes is a run record.
+**Nothing in `research` touches `qanat.yaml`, and nothing in it writes at all.** A screen is a
+query: it reads the facts, applies your thresholds and returns a list. There is nowhere in Qanat
+a per-user result could correctly live, because the store cannot tell two callers apart.
 
 **Each scope is a contract.** Adding a tool to `data` changes what somebody has already built
 against, so the line moves on purpose or not at all. A tool that exists above your scope says so

@@ -64,28 +64,11 @@ def test_an_edge_that_skips_a_column_is_given_somewhere_to_pass_through():
         "the long edge should run through the pass-through, not straight over the column"
 
 
-def test_a_replay_written_pnl_table_is_still_attached_to_its_step():
-    """Nothing declares that edge -- a backtest writes the table -- but it is real."""
-    g = a_graph(
-        [("weights", "weights"), ("pnl", "pnl")],
-        [("weights.momentum", "sort_momentum", 4, "ok")],
-        [],
-        [("sort_momentum", ["weights.momentum"])],
-    )
-    g["tables"].append({
-        "ref": "pnl.momentum", "stage": "pnl", "stage_kind": "pnl", "name": "momentum",
-        "producer": "sort_momentum", "producers": ["sort_momentum"], "rows": 81,
-        "status": "ok", "updated_at": None, "stale": False, "written_by_replay": True,
-    })
-    m = model(g)
-    assert ("weights.momentum", "pnl.momentum") in m.edges
-    assert m.nodes["pnl.momentum"].via == "backtest"
-
-
 def test_the_drawing_names_every_table_and_every_step(tmp_path: Path):
+    from conftest import write_demo_project as write_project
+
     from qanat.graph import build_graph
     from qanat.project import load
-    from qanat.scaffold import write_project
     from qanat.store import Store
 
     write_project(tmp_path, "demo")
@@ -104,9 +87,10 @@ def test_the_drawing_names_every_table_and_every_step(tmp_path: Path):
 
 
 def test_every_box_in_a_column_starts_at_the_same_place(tmp_path: Path):
+    from conftest import write_demo_project as write_project
+
     from qanat.graph import build_graph
     from qanat.project import load
-    from qanat.scaffold import write_project
     from qanat.store import Store
 
     write_project(tmp_path, "demo")
@@ -119,7 +103,7 @@ def test_every_box_in_a_column_starts_at_the_same_place(tmp_path: Path):
     tops = {mt.start() for ln in lines for mt in re.finditer("╭─", ln)}
     bottoms = {mt.start() for ln in lines for mt in re.finditer("╰─", ln)}
     assert tops == bottoms
-    assert len(tops) == 5, f"one column per stage, got {sorted(tops)}"
+    assert len(tops) == 4, f"one column per stage, got {sorted(tops)}"
 
 
 def test_colour_is_the_stage_and_nothing_else():
@@ -155,8 +139,9 @@ def test_it_gives_up_the_step_names_before_it_overflows_the_terminal():
 
 
 def test_the_command_runs(tmp_path: Path, capsys):
+    from conftest import write_demo_project as write_project
+
     from qanat.cli import main
-    from qanat.scaffold import write_project
 
     write_project(tmp_path, "demo")
     assert main(["-p", str(tmp_path), "graph", "--color", "never"]) == 0

@@ -4,11 +4,11 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
+from conftest import write_demo_project as write_project
 
 from qanat.project import load, validate
 from qanat.project_io import dump_project, save_project
 from qanat.retention import apply_retention, parse_duration, run_retention
-from qanat.scaffold import write_project
 from qanat.store import Store
 
 
@@ -77,23 +77,23 @@ def test_run_retention_from_project(tmp_path: Path):
 def test_saving_a_step_keeps_the_rest_of_the_file(tmp_path: Path):
     """Everything the model holds must survive a round trip, or editing one step
     silently deletes the block next to it."""
+    from conftest import write_demo_project as write_project
+
     from qanat.editor import save_step
     from qanat.project import load
-    from qanat.scaffold import write_project
 
     write_project(tmp_path, "demo")
     (tmp_path / "qanat.yaml").write_text(
         (tmp_path / "qanat.yaml").read_text() + "\ntime_columns:\n  raw.daily_prices: ts\n"
     )
     before, root = load(tmp_path)
-    assert before.backtest is not None and before.time_columns
+    assert before.time_columns
 
     save_step(before, root, {"id": "momentum", "from": ["normalized.prices"],
                              "to": ["features.momentum"], "script": "steps/momentum.py",
                              "options": {"lookback": 30}}, create_script=False)
 
     after, _ = load(tmp_path)
-    assert after.backtest == before.backtest
     assert after.time_columns == before.time_columns
     assert after.job("momentum").options["lookback"] == 30
 
@@ -108,19 +108,16 @@ def test_saving_keeps_every_field_a_job_declares(tmp_path: Path):
         "project": "p", "store": "./d.duckdb",
         "stages": [{"id": "raw", "kind": "raw"}, {"id": "f", "kind": "features"},
                    {"id": "w", "kind": "weights"}],
-        "sources": [{"id": "s", "to": ["raw.t"], "connector": "synthetic",
+        "sources": [{"id": "s", "to": ["raw.t"], "connector": "csv", "options": {"path": "./seed/x.csv"},
                      "key": ["symbol", "ts"], "schedule": "*/5 * * * *"}],
         "steps": [{"id": "a", "from": ["raw.t"], "to": ["w.a"], "script": "a.py",
-                   "when": ["raw.t"], "rebalance": "20d", "decay": 4}],
-        "backtest": {"prices": "raw.t", "rebalance": "20d", "purge": "1d"},
+                   "when": ["raw.t"]}],
     }
     before = Project.model_validate(spec)
     after = project_from_dict(dump_project(before))
 
     assert after.job("s").key == ["symbol", "ts"], "a source lost its dedupe key"
     assert after.job("a").when == ["raw.t"], "a step lost what it waits on"
-    assert after.backtest.rebalance == "20d"
-    assert after.backtest.purge == "1d", "a backtest field was not written back"
 
 
 COMMENTED = """\
@@ -140,7 +137,7 @@ sources:
 - id: bars                       # the only feed
   to:
   - raw.bars
-  connector: synthetic
+  connector: csv
   # landed exactly as it arrived, never edited
   options:
     series: bars
@@ -162,7 +159,7 @@ def test_saving_keeps_the_comments_somebody_wrote(tmp_path):
     """An edit must not delete the notes in qanat.yaml.
 
     `yaml.safe_dump` cannot round-trip a comment, so the first edit an agent made
-    stripped every one -- including the header on `examples/fx-bundled` saying
+    stripped every one -- including the header on a bundled example saying
     what the dataset is. A tool that deletes your notes on its way past is one you
     cannot leave alone with the file.
     """

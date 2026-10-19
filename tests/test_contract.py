@@ -3,10 +3,10 @@
 from pathlib import Path
 
 import pytest
+from conftest import write_demo_project as write_project
 
 from qanat.models import Project
 from qanat.project import validate
-from qanat.scaffold import write_project
 
 BASE = {
     "project": "t",
@@ -15,7 +15,7 @@ BASE = {
         {"id": "features", "kind": "features"},
         {"id": "weights", "kind": "weights"},
     ],
-    "sources": [{"id": "s", "to": ["raw.bars"], "connector": "synthetic"}],
+    "sources": [{"id": "s", "to": ["raw.bars"], "connector": "csv", "options": {"path": "./seed/x.csv"}}],
 }
 
 

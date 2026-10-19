@@ -2,13 +2,14 @@
 
 from pathlib import Path
 
+from conftest import write_demo_project as write_project
+
 from qanat.project import load
 from qanat.runner import run_all
-from qanat.scaffold import write_project
 from qanat.store import Store
 
 
-def test_run_all_lands_a_portfolio(tmp_path: Path):
+def test_run_all_lands_every_table(tmp_path: Path):
     write_project(tmp_path, "demo")
     project, root = load(tmp_path)
     store = Store(project.store_url(root))
@@ -16,7 +17,7 @@ def test_run_all_lands_a_portfolio(tmp_path: Path):
     results = run_all(store, project, root)
     assert all(r.ok for r in results), [r for r in results if not r.ok]
 
-    weights = store.read("weights.target")
+    weights = store.read("features.target")
     assert not weights.empty
     assert {"symbol", "weight"} <= set(weights.columns)
     assert abs(weights["weight"].sum() - 1.0) < 1e-6
@@ -171,7 +172,7 @@ def test_new_rows_wake_the_steps_that_read_them(tmp_path: Path):
     assert project.waiting_on(["raw.nobody_reads_this"]) == []
 
 
-def test_the_chain_reaches_a_portfolio(tmp_path: Path):
+def test_the_chain_reaches_the_last_table(tmp_path: Path):
     """Each woken step wakes whatever waits on its own tables, so one source
     landing rows reaches the far end without anything walking the graph."""
     write_project(tmp_path, "demo")
@@ -186,8 +187,8 @@ def test_the_chain_reaches_a_portfolio(tmp_path: Path):
         frontier = [t for s in woken for t in s.writes if t not in seen]
         seen.update(frontier)
 
-    assert any(t.startswith("weights.") for t in seen), \
-        f"the chain stopped short of a portfolio: reached {sorted(reached)}"
+    assert "features.target" in seen, \
+        f"the chain stopped short: reached {sorted(reached)}"
 
 
 def test_waking_actually_runs_the_step(tmp_path: Path):
@@ -224,96 +225,87 @@ def test_a_step_cannot_wait_on_a_table_it_does_not_read(tmp_path: Path):
 
 
 # ------------------------------------- what a new project looks like on day one
-def test_demo_wires_one_indicator_and_one_sort(tmp_path: Path):
-    """Day one is two ordinary steps. The indicator writes a column into features,
-    the sort reads that column and writes the weights table. The four shelf scripts
-    this replaced were four ways of computing one number, which is an indicator."""
-    from qanat.scaffold import DEMO_INDICATOR, DEMO_SORT, add_demo_steps
-
-    write_project(tmp_path, "demo")
-    added = add_demo_steps(tmp_path)
-    assert added == [DEMO_INDICATOR, DEMO_SORT]
-
-    project, root = load(tmp_path)
-    ind = project.job(DEMO_INDICATOR)
-    assert ind is not None and ind.writes == [f"features.{DEMO_INDICATOR}"]
-    assert (root / ind.script).exists(), "the indicator script was not written"
-
-    srt = project.job(DEMO_SORT)
-    assert srt is not None and srt.writes == [f"weights.{DEMO_INDICATOR}"]
-    assert srt.reads == [f"features.{DEMO_INDICATOR}"], "the sort reads the column"
-    assert srt.universe, "a step that holds a basket holds itself to a universe"
-    assert srt.options["column"] == "trailing_return", "the variation is the column"
-
-
-def test_demo_is_idempotent(tmp_path: Path):
-    from qanat.scaffold import add_demo_steps
-
-    write_project(tmp_path, "demo")
-    assert add_demo_steps(tmp_path)
-    assert add_demo_steps(tmp_path) == [], "running it twice added the steps again"
-
-
-def test_the_demo_project_still_obeys_the_contract(tmp_path: Path):
-    """The sort reads features and writes weights, which is what the stage contract
-    is for -- and no weights step may read another, so check has to keep saying so."""
+def test_the_scaffold_is_a_valid_project(tmp_path: Path):
+    """`qanat init` has to produce something `qanat check` accepts, without
+    running it -- the scaffold points at EDGAR and a test has no network."""
     from qanat.project import validate
-    from qanat.scaffold import add_demo_steps
+    from qanat.scaffold import write_project as write_scaffold
 
-    write_project(tmp_path, "demo")
-    add_demo_steps(tmp_path)
+    write_scaffold(tmp_path, "demo")
     project, root = load(tmp_path)
     rep = validate(project, root)
     assert rep.ok, rep.errors
 
 
-# ------------------------------------- the one real dataset that ships with it
-def test_the_bundled_dataset_runs_with_no_network(tmp_path: Path):
-    """Synthetic data proves the pipeline runs; it cannot say whether a rule
-    works. This is real, in the repo, and needs nothing from outside."""
-    import shutil
+def test_the_scaffold_stops_at_facts(tmp_path: Path):
+    """No weights stage and no pnl stage. A metric is a query over the facts, so
+    there is nothing for a further stage to hold."""
+    from qanat.scaffold import write_project as write_scaffold
 
+    write_scaffold(tmp_path, "demo")
+    project, _ = load(tmp_path)
+    kinds = [s.kind for s in project.stages]
+    assert kinds == ["raw", "normalized"], kinds
+    assert not any(s.kind in ("weights", "pnl") for s in project.stages), (
+        "the five fixed kinds are gone; a stage declares what is true of it"
+    )
+
+
+def test_the_scaffold_dates_its_rows_by_when_they_were_published(tmp_path: Path):
+    """The whole point-in-time story rests on this one line being right."""
+    from qanat.scaffold import write_project as write_scaffold
+
+    write_scaffold(tmp_path, "demo")
+    project, _ = load(tmp_path)
+    assert project.time_columns["raw.documents"] == "published_at"
+    assert "period_end" not in project.time_columns.values(), (
+        "period_end is what the numbers are about, never permission to see them"
+    )
+
+
+def test_the_scaffold_asks_the_sec_for_a_contact(tmp_path: Path):
+    """The SEC refuses anonymous requests, so the scaffold has to prompt for one
+    rather than ship a shared identity."""
+    from qanat.scaffold import write_project as write_scaffold
+
+    write_scaffold(tmp_path, "demo")
+    body = (tmp_path / "qanat.yaml").read_text()
+    assert "SEC_USER_AGENT" in body
+
+
+# ------------------------------------- the example that ships with it
+def test_the_bundled_example_is_a_valid_project():
+    """`examples/sec-10k` downloads forty real filings, so it cannot be run
+    here. Its contract can still be checked."""
     from qanat.project import validate
 
-    src = Path(__file__).resolve().parents[1] / "examples" / "fx-bundled"
-    project_dir = tmp_path / "fx"
-    shutil.copytree(src, project_dir, ignore=shutil.ignore_patterns("*.duckdb"))
-
-    project, root = load(project_dir)
-    assert validate(project, root).ok
-
-    store = Store(project.store_url(root))
-    results = run_all(store, project, root)
-    assert all(r.ok for r in results), [r for r in results if not r.ok]
-
-    rates = store.read("normalized.fx")
-    assert len(rates) > 40_000, f"only {len(rates)} rates landed"
-    assert str(rates["date"].min())[:4] == "1999"
-    assert not store.read("weights.target").empty
-    store.close()
+    src = Path(__file__).resolve().parents[1] / "examples" / "sec-10k"
+    project, root = load(src)
+    rep = validate(project, root)
+    assert rep.ok, rep.errors
+    assert {s.id for s in project.stages} == {"raw", "normalized"}
+    assert project.time_columns["raw.documents"] == "published_at"
 
 
-def test_the_bundled_and_fetched_projects_differ_only_in_the_source(tmp_path: Path):
-    """The README says point `sources:` at a real feed and nothing else changes.
-    These two projects are that claim, written out so it can be checked."""
-    import yaml
+def test_every_bundled_example_passes_check():
+    """`examples/` used to ship three projects that `qanat check` rejected,
+    because nothing ever held them against it. This is that check."""
+    from qanat.project import validate
 
     root = Path(__file__).resolve().parents[1] / "examples"
-    a = yaml.safe_load((root / "fx-bundled" / "qanat.yaml").read_text())
-    b = yaml.safe_load((root / "fx-real" / "qanat.yaml").read_text())
-
-    for part in ("stages", "steps", "universes", "backtest"):
-        assert a[part] == b[part], f"{part} differs between the two fx projects"
-    assert a["sources"] != b["sources"], "the sources are the whole difference"
-    assert a["sources"][0]["to"] == b["sources"][0]["to"], "and they land the same table"
+    found = sorted(p for p in root.iterdir() if (p / "qanat.yaml").exists())
+    assert found, "no examples found at all"
+    for d in found:
+        project, proot = load(d)
+        rep = validate(project, proot)
+        assert rep.ok, f"{d.name}: {rep.errors}"
 
 
 def test_init_can_be_told_where_the_store_goes(tmp_path: Path):
     """The container needs the demo built in the store it actually uses. Writing
     qanat.yaml and rewriting `store:` afterwards would build it in the wrong one."""
     import yaml
-
-    from qanat.scaffold import write_project
+    from conftest import write_demo_project as write_project
 
     dsn = "postgresql://qanat:qanat@postgres:5432/qanat"
     write_project(tmp_path, "demo", store=dsn)

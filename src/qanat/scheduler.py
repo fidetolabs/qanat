@@ -75,7 +75,7 @@ class Scheduler:
     def quiet(self, timeout: float = 300.0) -> bool:
         """Block until nothing is running. False if it was still busy at timeout.
 
-        The default is generous on purpose: a live pass is a whole replay, and a
+        The default is generous on purpose: a live pass is a whole screen, and a
         slow CI runner takes several minutes over what takes seconds here.
         """
         deadline = time.time() + timeout

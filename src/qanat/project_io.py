@@ -36,10 +36,8 @@ def dump_project(project: Project) -> dict[str, Any]:
         data["time_columns"] = dict(project.time_columns)
     if project.job_timeout:
         data["job_timeout"] = project.job_timeout
-    if project.backtest is not None:
         # Anything the model holds has to be written back, or saving one step
         # quietly deletes the rest of the file.
-        data["backtest"] = project.backtest.model_dump()
     return data
 
 
@@ -77,10 +75,6 @@ def _dump_step(st: Step) -> dict[str, Any]:
         row["universe"] = st.universe
     if st.timeout:
         row["timeout"] = st.timeout
-    if st.rebalance:
-        row["rebalance"] = st.rebalance
-    if st.decay:
-        row["decay"] = st.decay
     if st.options:
         row["options"] = st.options
     return row
@@ -151,8 +145,8 @@ def render_project(data: dict[str, Any], path: Path) -> str:
     """The project as YAML, keeping whatever comments the file already had.
 
     `yaml.safe_dump` cannot round-trip a comment, so the first edit an agent made
-    stripped every one of them -- including the twelve-line header on
-    `examples/fx-bundled` explaining what the dataset is and where it came from.
+    stripped every one of them -- including the header on a bundled example
+    explaining what the dataset is and where it came from.
     Somebody writes those to be read later, and a tool that deletes them on its
     way past is a tool you cannot leave alone with your file.
     """

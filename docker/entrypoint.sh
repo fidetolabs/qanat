@@ -13,8 +13,12 @@ fi
 if [ ! -f qanat.yaml ]; then
   echo "Scaffolding demo project in $PROJECT_DIR ..."
   # --store here rather than rewriting qanat.yaml afterwards: --demo runs the
-  # pipeline and prices every weights table as part of init, and it has to build all of
-  # that in the store this container actually uses.
+  # pipeline as part of init, and it has to build into the store this container
+  # actually uses.
+  #
+  # --demo reaches SEC EDGAR, which wants a contact in the User-Agent. Without
+  # SEC_USER_AGENT in the environment the fetch fails and the container comes up
+  # with an empty project rather than a wrong one.
   if [ -n "$QANAT_STORE" ]; then
     qanat init . --name demo --force --demo --store "$QANAT_STORE"
   else

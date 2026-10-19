@@ -1,5 +1,194 @@
 # Changelog
 
+## 0.5.0 — 2026-10-19
+
+### Real filings, and nothing invented left in the package
+
+Every bundled example was made up, and three of the five did not load at all:
+`equity`, `filings-sample` and `scheduled-ingest` still carried `split:`,
+`benchmark:`, `bar:` and a double producer, which 0.4.0 made validation errors.
+Nothing held them against `qanat check`, so nobody found out.
+
+All five are gone, along with the `synthetic` connector that fed them. In their
+place is one example built from documents the SEC published.
+
+**`examples/sec-10k`** — eight companies, five years each, forty 10-K filings
+downloaded from EDGAR on the first run. Apple, Microsoft, Alphabet, Meta,
+NVIDIA, Walmart, Target and Costco: two groups that are each internally
+comparable and not comparable with each other, which is what a relative screen
+needs and what an honest one admits. 43,104 tagged numbers and 904 document
+sections.
+
+Their fiscal years end in January, February, June, August, September and
+December, and the gap between period end and filing runs from 24 to 47 days. A
+pipeline that only ever sees 31 December year-ends never has to get the clock
+right. This one does.
+
+### Three new pieces
+
+**`sec` connector.** Resolves tickers, follows the paginated submissions pages
+that a frequent filer's older 10-Ks hide behind, fetches each primary document
+and stores it gzipped. The row it lands uses the platform's names — `id`,
+`entity`, `doc_type`, `published_at`, `period_end`, `source` — with the SEC's
+own keys in one `source_keys` field, so the core schema never learns what a CIK
+is. Needs a contact in the User-Agent, which the SEC requires and which this
+refuses to guess.
+
+**`qanat.xbrl`.** Reads inline XBRL: resolves every context into a period and a
+dimension set, resolves units including ratios, and applies `scale`, `sign` and
+the transform a `format` names. Those three are the ones that matter — get any
+wrong and the number is off by an order of magnitude or by its sign, and stays
+plausible. Dimensions are kept as sorted JSON, because segment revenue and
+total revenue are otherwise the same row. No new dependency: inline XBRL is
+XHTML and the standard library parses it.
+
+**`qanat.sections`.** Splits a filing into its Items and records how each
+boundary was decided. Most matches for "Item 1A" in a 10-K are the contents
+page or a cross-reference, not the heading, so the title is the signal and the
+`rule` travels with the span.
+
+### `qanat init` scaffolds against EDGAR
+
+The starter pulled from the fake market and ran offline. It now pulls two
+companies and two years of real 10-Ks, which needs a network and
+`SEC_USER_AGENT` but no account and no API key. `--demo` runs the pipeline
+instead of wiring a basket and pricing it.
+
+The test suite grew a `conftest.py` that writes its own CSV-backed project, so
+tests stay offline. A fixture may be invented where an example may not.
+
+### Fixed
+
+The package description 0.4.1 corrected in `pyproject.toml` was still in two
+other places: `qanat --help` and `qanat/__init__.py` both announced an MCP
+server that "tests each one inside its own industry", which is the claim 0.4.0
+removed.
+
+`examples/` is now held against `qanat check` by a test, which is how three
+broken examples shipped.
+
+### Screen is the only word, and it takes one date or a window
+
+`qanat backtest` is gone, and so is the engine behind it. What replaces it is
+`qanat screen` and a `screen` MCP tool, which answer the question the product
+is named after.
+
+```bash
+qanat screen --filter '[{"metric":"pe","op":"<","value":30}]' --as-of 2025-12-31
+qanat screen --filter '[{"metric":"pe","op":"<","value":30}]' --from 2021-12-31 --to 2025-12-31
+```
+
+A window of one is a single date, so the rows come back the same shape either
+way and a caller never branches on which form it asked for.
+
+**Three outputs, and nothing else.** The list of who passed. Each company's
+own forward return, from its filing to its next one. And the count of how many
+could be evaluated at all, because a screen that quietly dropped half the
+market has said something false about who passed.
+
+Nothing is added up. No average across years, no comparison against the
+companies that failed, no equity curve. The returns run between each company's
+own dates, because Costco files in October and Walmart in March and there is
+no shared calendar to price them on.
+
+**`replay` is not a word any more, in the engine either.** It meant running
+the graph once per as-of date, which is what screening over a window is. One
+of the two had to go and the product is named after the other. 124 occurrences
+across the package, including the marker written into the store — which is
+read under both spellings so a store from 0.4.x still recovers correctly.
+
+### Nothing simulates holding a position
+
+Gone: turnover, fees, slippage, net, the equity curve, the hit rate, decay
+blending, basket combining, the `pnl` stage and the `backtest:` block. Pricing
+a selection as a portfolio needs a decision about how much of each company to
+hold, and that decision is the user's and is made outside this package.
+
+This is the second half of a cut 0.4.0 started. 0.4.0 removed the `weights`
+MCP tool; the engine behind it stayed, and the README had to carry a paragraph
+apologising for it.
+
+### The layers are yours
+
+`kind` stops being an enum of five. Only `raw` means anything to the platform:
+a landed stage, written by sources and never by a step. Everything else is a
+name you chose. `weights_stage`, `pnl_stage`, `weights_steps`, `weights_name`
+and `weights_step` are gone from the model.
+
+`docs/contract.md` is rewritten around the four properties that survive. The
+cost is real and it is stated there: `check` can no longer catch a cleaning
+layer placed after something computed, so a pipeline can be valid and still
+compute nonsense.
+
+### Metrics, and the line between a formula and a threshold
+
+A `metrics:` block defines formulas with names and versions. A metric is
+arithmetic — `pe = price / diluted EPS` — so it is shared and the same for
+everybody. A threshold is a judgement, so it arrives with the call and never
+lives in the project. A clause pairs the two.
+
+Bump `version` rather than editing a formula in place: a saved answer points
+at a version, so an edit silently changes what an old answer meant.
+
+### The reading surface: five tools
+
+`list_sections`, `read_section`, `search_documents`, `read_facts` and
+`check_number`. Each has one rule behind it.
+
+`read_section` pages and never returns a whole Item — Item 1A runs past 100 KB
+in a large filer, and a tool that hands that over has spent the context the
+agent needed to think with. `list_sections` reports each length first, and
+which rule decided each boundary. `search_documents` returns locations and
+never bodies. `check_number` puts a number you read in prose next to the
+tagged numbers near it and **refuses to say which is right**, because a gap
+means either the prose was misread or the two are different measures of the
+same subject, and the tool can tell neither from the other.
+
+Which tables these read is a `corpus:` block, because the platform does not
+name layers.
+
+### Prices, from Yahoo, with the licence recorded
+
+A `yfinance` connector behind the `prices` extra. Both closes are kept and
+which is which is a column: the printed close is what was true that day, and
+the adjusted one is restated for every later split.
+
+**It is not a source anything may be sold from.** Yahoo's terms do not grant
+redistribution, so every row carries `source: yfinance` and that column is
+what a later cleanup acts on. A store that mixes these in with licensed rows
+and does not record which is which cannot be separated afterwards.
+
+### The MCP surface
+
+23 tools at `full`, 15 at `research`, 12 at `data`. Was 21 / 13 / 6.
+
+Nothing in `research` writes anything at all now. A screen is a query, and
+there is nowhere in Qanat a per-user result could correctly live, because the
+store cannot tell two callers apart.
+
+### Breaking
+
+`qanat backtest`, `qanat backtests` and `qanat report` are gone; use `qanat screen`.
+The `backtest`, `backtest_conditions`, `list_backtests`, `report` and `period` MCP tools go with them.
+`backtest:` in a project file is rejected, as are `rebalance:` and `decay:` on a step.
+`connector: synthetic` is gone; use `csv` with a file you wrote, or `sec`.
+`qanat.sort` and `qanat.backtest` are gone, and so is `qanat init --demo`'s basket wiring.
+`scaffold.add_demo_steps`, `DEMO_INDICATOR` and `DEMO_SORT` are gone.
+Every bundled example is gone, replaced by `examples/sec-10k`.
+
+### Not in this release
+
+The metric map. `pe` and `net_margin` in the example are a worked example of
+the problem, not a solution to it: filers do not agree on a tag, and NVIDIA
+uses `Revenues` where Apple uses
+`RevenueFromContractWithCustomerExcludingAssessedTax`. Taking one and not the
+other produced a 271% net margin before it was caught. Mapping 50 to 100 plain
+names onto the tags filers really use is the large piece of work left on the
+fundamental side.
+
+A price source anything may be sold from. `yfinance` unblocks the build and is
+not that.
+
 ## 0.4.1 — 2026-10-18
 
 ### The package description said the thing 0.4.0 removed

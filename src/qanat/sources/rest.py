@@ -200,7 +200,7 @@ def _envelope(source: Source, body: Any, symbol: str | None) -> pd.DataFrame:
     """The response as it arrived, with just enough around it to be a table.
 
     `fetched_at` is not decoration. Retention drops rows by time column, and a
-    replay hides rows newer than the as-of date the same way, so a table of bare
+    screen hides rows newer than the as-of date the same way, so a table of bare
     payloads would quietly opt out of both.
     """
     df = pd.DataFrame([{

@@ -81,11 +81,14 @@ jobs:
           import glob, zipfile
           names = zipfile.ZipFile(sorted(glob.glob("dist/*.whl"))[-1]).namelist()
           have = {n.rsplit("/", 1)[-1] for n in names if n.startswith("qanat/")}
-          want = {"cli.py", "mcp.py", "mcp_http.py", "backtest.py", "store.py", "scheduler.py"}
+          want = {"cli.py", "mcp.py", "mcp_http.py", "store.py", "scheduler.py",
+                  "xbrl.py", "sections.py", "screen.py", "reading.py", "dates.py"}
           missing = want - have
           assert not missing, f"the wheel is missing {missing}"
-          stray = {n for n in names if "console" in n or n.endswith("agent.py")}
-          assert not stray, f"the console left the package; the wheel still carries {stray}"
+          stray = {n for n in names
+                   if "console" in n
+                   or n.endswith(("agent.py", "synthetic.py", "sort.py", "backtest.py"))}
+          assert not stray, f"the wheel still carries what was taken out: {stray}"
           print(f"modules in the wheel: {len(have)}")
           PY
 

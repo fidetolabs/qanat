@@ -16,7 +16,7 @@ Six things this tries to be, because an agent needs them and a person does not:
   * **honest in failure** -- an error says what to do next, not only what broke
   * **scoped to the caller** -- `--scope` decides which tools are offered at all
 
-Three scopes, nested: `data` reads tables, `research` adds replays and their
+Three scopes, nested: `data` reads tables, `research` adds screens and their
 results, `full` adds authoring, ingest and scheduling. One server and one service
 layer; the scope only picks which tools are listed. Two reasons, and the second is
 the larger one. A server that reads and a server that runs jobs on request are
@@ -237,25 +237,21 @@ def _lineage(s: Session, args: dict) -> Any:
                 seen.add(b)
                 reach.append(b)
                 frontier.append(b)
-    wl = s.project.weights_stage
-    return {
-        "ref": ref, "upstream": upstream, "downstream": downstream,
-        "reaches": reach,
-        "breaks_portfolio": bool(wl) and any(r.startswith(f"{wl.id}.") for r in reach),
-    }
+    return {"ref": ref, "upstream": upstream, "downstream": downstream,
+            "reaches": reach}
 
 
 @tool("list_steps",
       "Every job in the graph -- sources and steps -- in dependency order. `stage` keeps only the "
       "steps writing into one stage, which is how you find what produces the weights tables: "
       "there is no separate name for those, the stage is what identifies them. `net` adds what "
-      "each one has earned across every replay it has had.",
+      "each one has earned across every screen it has had.",
       {"properties": {
           "stage": {"type": "string",
                     "description": "keep only steps writing into this stage, e.g. weights"},
           "net": {"type": "boolean",
                   "description": "add runs, last_run, last_net and best_net per step, from the "
-                                 "replay history, and say which step is wired now. A step "
+                                 "screen history, and say which step is wired now. A step "
                                  "removed from the file keeps its history, because what it "
                                  "earned still happened"},
       }, "required": []},
@@ -277,13 +273,10 @@ def _list_steps(s: Session, args: dict) -> Any:
     }
     if args.get("net"):
         by_step = {r["step"]: r for r in s.store.steps_net()}
-        wired = [sid for sid, _ in s.project.weights_steps]
         for r in rows:
             r["net"] = by_step.get(r["id"])
-            r["wired"] = r["id"] in wired
         gone = [r for sid, r in by_step.items() if sid not in {x["id"] for x in rows}]
         out["no_longer_in_the_file"] = gone or None
-        out["wired_now"] = wired
     return out
 
 
@@ -329,7 +322,7 @@ def _plan(s: Session, args: dict) -> Any:
 
 
 # ---- run ---------------------------------------------------------------------
-@tool("run", "Run the graph once, or one job. With as_of, replay that single pass.",
+@tool("run", "Run the graph once, or one job. With as_of, screen that single pass.",
       {"properties": {"job": {"type": "string", "description": "one job id; omit for the whole graph"},
                       "as_of": {"type": "string"}, "seed": {"type": "integer"}}},
       writes=True,
@@ -356,138 +349,124 @@ def _run(s: Session, args: dict) -> Any:
     }
 
 
-@tool("backtest_conditions",
-      "What has to be decided before a backtest means anything: the window, the universe, "
-      "the rebalance gap and the decay. Call this FIRST, show the person the choices, and "
-      "ask them -- these change the answer, so they are not yours to assume.",
-      {"properties": {}},
-      scope="research")
-def _backtest_conditions(s: Session, args: dict) -> Any:
-    bt = s.project.backtest
-    if bt is None:
-        raise ToolError(
-            "this project has no `backtest:` block, so there is nothing to price weights with. "
-            "Add one naming a prices table, or copy the block from `qanat init`."
-        )
-    span = {}
-    if s.store.exists(bt.prices):
-        col = s.store.time_column(bt.prices, s.project.time_columns.get(bt.prices))
-        if col:
-            df = s.store.read(bt.prices)
-            span = {"earliest": str(df[col].min()), "latest": str(df[col].max())}
+@tool("screen",
+      "Which companies passed a filter, on one date or on every date in a window. "
+      "Returns the list, each company's own forward return, and how many could be "
+      "evaluated at all. Writes nothing.",
+      {"type": "object",
+       "properties": {
+           "filters": {"type": "array",
+                       "description": "clauses, each {metric, op, value}; or a list of "
+                                      "named filters each holding clauses",
+                       "items": {"type": "object"}},
+           "as_of": {"type": "string", "description": "one date, YYYY-MM-DD"},
+           "from": {"type": "string", "description": "start of a window"},
+           "to": {"type": "string", "description": "end of a window"},
+           "every": {"type": "string", "default": "1y",
+                     "description": "gap between dates in a window"},
+       },
+       "required": ["filters"]},
+      "research")
+def _screen(s: Session, args: dict) -> Any:
+    from qanat.screen import ScreenError, parse_filters, screen
 
-    # Which numeric columns in a computed stage a filter could be written against.
-    candidates: list[str] = []
-    computed = {st.id for st in s.project.stages if st.kind == "features"}
-    for ref in s.project.tables():
-        if ref.split(".")[0] not in computed:
-            continue
-        info = s.store.table_info(ref)
-        if info is None:
-            continue
-        clock = s.store.time_column(ref, s.project.time_columns.get(ref))
-        for name, kind in info.columns:
-            if name in (clock, bt.symbol_column, bt.date_column):
-                continue
-            if any(k in str(kind).upper() for k in ("INT", "DOUBLE", "FLOAT", "DECIMAL", "NUMERIC")):
-                candidates.append(f"{ref}:{name}")
-
-    universes = [{"id": u.id, "index": u.index,
-                  "symbols_file": u.symbols} for u in s.project.universes]
-    on_steps = sorted({st.universe for st in s.project.steps if st.universe})
-    return {
-        "ask_the_person_for": ["step", "from", "to", "universe", "rebalance", "decay"],
-        "weights_in_this_project": [s.project.weights_name(a, ref)
-                                    for a, ref in s.project.weights_steps],
-        "step": {"note": "one name, or several to price them as one portfolio. Ask which. Two "
-                         "priced together is a different question from either alone, and it is "
-                         "usually the better one, so it is worth offering",
-                 "allocation": "share per step, equal unless the person says otherwise"},
-        "why": "each one changes the number. A backtest run on conditions nobody chose is a guess "
-               "with a decimal point on it.",
-        "window": {"data_available": span or "prices table not written yet",
-                   "note": "from and to are as-of dates, both ends included"},
-        "universe": {
-            "declared_on_steps": on_steps,
-            "available": universes,
-            "note": "omit to use what each step already declares; name one to hold the same "
-                    "step to a different set of symbols",
-        },
-        "rebalance": {"default": bt.rebalance,
-                      "note": "gap between as-of dates, e.g. 1d, 5d, 20d. Shorter means more "
-                              "decisions and more turnover"},
-        "decay": {"default": bt.decay,
-                  "note": "hold a blend of the last N portfolios, newest heaviest. 0 or 1 is off. "
-                          "Higher cuts turnover, and therefore cost, at the price of reacting later"},
-        "costs_are_fixed_in_the_file": {"fee_bps": bt.fee_bps, "slippage_bps": bt.slippage_bps,
-                                        "purge": bt.purge, "embargo": bt.embargo},
-        "seed": {"default": 0, "note": "same seed, same answer"},
-        "metric_columns": {
-            "candidates": candidates[:40],
-            "note": "numeric columns in a computed stage, written stage.table:column. These are "
-                    "what a filter is written against",
-        },
-    }
-
-
-@tool("backtest",
-      "Replay the pipeline across a window and price what it held. Returns net edge after fees "
-      "and slippage. Same seed and same project means the same numbers. Call backtest_conditions "
-      "first and ask the person for the window, universe, rebalance and decay -- do not pick "
-      "them silently, because each one changes the answer.",
-      {"properties": {"from": {"type": "string", "description": "first as-of date"},
-                      "to": {"type": "string", "description": "last as-of date"},
-                      "rebalance": {"type": "string", "description": "e.g. 1d, 5d, 20d"},
-                      "universe": {"type": "string",
-                                   "description": "hold the step to this universe instead of "
-                                                  "the one it declares"},
-                      "decay": {"type": "integer",
-                                "description": "blend the last N portfolios; 0 or 1 is off"},
-                      "step": {"type": ["string", "array"], "items": {"type": "string"},
-                               "description": "which weights table to price. Required once the "
-                                              "project has more than one. Give several to price "
-                                              "them as one portfolio: each keeps its own weights "
-                                              "table and the run holds the sum"},
-                      "allocation": {"type": "object",
-                                     "description": "share of the money per step, e.g. "
-                                                    "{\"momentum\": 3, \"low_vol\": 1}. "
-                                                    "Equal split if left out"},
-                      "fee_bps": {"type": "number",
-                                  "description": "commission on turnover, in basis points. "
-                                                 "Defaults to the project's. Re-run with a "
-                                                 "higher one to find where the edge dies"},
-                      "slippage_bps": {"type": "number",
-                                       "description": "slippage on turnover, in basis points"},
-                      "purge": {"type": "string",
-                                "description": "hold rows back this long before a step may read "
-                                               "them, e.g. 1d"},
-                      "embargo": {"type": "string",
-                                  "description": "wait this long after the as-of date before a "
-                                                 "return counts, e.g. 1d"},
-                      "seed": {"type": "integer", "default": 0}},
-       "required": ["from", "to"]},
-      writes=True,
-      scope="research")
-def _backtest(s: Session, args: dict) -> Any:
-    from qanat.backtest import BacktestError, run_backtest
-
-    decay = args.get("decay")
     try:
-        res = run_backtest(
-            s.store, s.project, s.root, _need(args, "from"), _need(args, "to"),
-            rebalance=args.get("rebalance") or None, seed=int(args.get("seed") or 0),
-            decay=None if decay is None else int(decay),
-            universe=args.get("universe") or None,
-            step=args.get("step") or None,
-            allocation=args.get("allocation") or None,
-            fee_bps=args.get("fee_bps"), slippage_bps=args.get("slippage_bps"),
-            purge=args.get("purge") or None, embargo=args.get("embargo") or None,
+        return screen(
+            s.store, s.project, parse_filters(args.get("filters")),
+            as_of=args.get("as_of"), frm=args.get("from"), to=args.get("to"),
+            every=args.get("every") or "1y",
         )
-    except BacktestError as exc:
+    except ScreenError as exc:
         raise ToolError(str(exc)) from exc
-    d = res.as_dict()
-    d["periods"] = d["periods"][:200]
-    return d
+
+
+@tool("list_metrics",
+      "Every metric this project defines: its name, version, unit and formula. "
+      "A metric is shared arithmetic; the threshold you compare it against is yours.",
+      {"type": "object", "properties": {}}, "data")
+def _list_metrics(s: Session, args: dict) -> Any:
+    return [{"id": m.id, "version": m.version, "unit": m.unit,
+             "description": m.description, "sql": m.sql}
+            for m in s.project.metrics]
+
+
+# ----------------------------------------------------------- the reading surface
+def _reading(fn, s, args, **kw):
+    from qanat.reading import ReadingError
+    try:
+        return fn(s.store, s.project, **kw)
+    except ReadingError as exc:
+        raise ToolError(str(exc)) from exc
+
+
+@tool("list_sections",
+      "The map of one document: which sections were found, how long each is, and "
+      "which rule decided the boundary. Read this before read_section, so you pick "
+      "a section knowing what it will cost.",
+      {"type": "object", "properties": {"document": {"type": "string"}},
+       "required": ["document"]}, "data")
+def _list_sections(s: Session, args: dict) -> Any:
+    from qanat.reading import list_sections
+    return _reading(list_sections, s, args, document=_need(args, "document"))
+
+
+@tool("read_section",
+      "One section of one document, a page at a time, with the character range the "
+      "page came from. Never returns a whole section at once.",
+      {"type": "object",
+       "properties": {"document": {"type": "string"}, "section": {"type": "string"},
+                      "page": {"type": "integer", "default": 1},
+                      "page_size": {"type": "integer", "default": 4000}},
+       "required": ["document", "section"]}, "data")
+def _read_section(s: Session, args: dict) -> Any:
+    from qanat.reading import read_section
+    return _reading(read_section, s, args,
+                    document=_need(args, "document"), section=_need(args, "section"),
+                    page=int(args.get("page") or 1),
+                    page_size=int(args.get("page_size") or 4000))
+
+
+@tool("search_documents",
+      "Where a phrase appears, scoped by section, entity or year. Returns locations "
+      "and never bodies: find here, then read with read_section.",
+      {"type": "object",
+       "properties": {"query": {"type": "string"}, "section": {"type": "string"},
+                      "entity": {"type": "string"}, "year": {"type": "integer"},
+                      "limit": {"type": "integer", "default": 20}},
+       "required": ["query"]}, "data")
+def _search_documents(s: Session, args: dict) -> Any:
+    from qanat.reading import search_documents
+    return _reading(search_documents, s, args, query=_need(args, "query"),
+                    section=args.get("section"), entity=args.get("entity"),
+                    year=args.get("year"), limit=int(args.get("limit") or 20))
+
+
+@tool("read_facts",
+      "The tagged numbers in one document: concept, dims, both period dates, value, "
+      "unit and when it became public.",
+      {"type": "object",
+       "properties": {"document": {"type": "string"}, "concept": {"type": "string"},
+                      "limit": {"type": "integer", "default": 200}},
+       "required": ["document"]}, "data")
+def _read_facts(s: Session, args: dict) -> Any:
+    from qanat.reading import read_facts
+    return _reading(read_facts, s, args, document=_need(args, "document"),
+                    concept=args.get("concept"), limit=int(args.get("limit") or 200))
+
+
+@tool("check_number",
+      "Given a number you read in prose, the tagged numbers nearest it and the "
+      "difference. It does not say which is right: a gap means either the prose was "
+      "read wrong, or the two are different measures of the same subject.",
+      {"type": "object",
+       "properties": {"document": {"type": "string"}, "value": {"type": "number"},
+                      "within": {"type": "number", "default": 0.25}},
+       "required": ["document", "value"]}, "data")
+def _check_number(s: Session, args: dict) -> Any:
+    from qanat.reading import check_number
+    return _reading(check_number, s, args, document=_need(args, "document"),
+                    value=float(_need(args, "value")),
+                    within=float(args.get("within") or 0.25))
 
 
 @tool("stale_tables",
@@ -504,43 +483,8 @@ def _stale_tables(s: Session, args: dict) -> Any:
     return {
         "stale": stale,
         "why": [{"job": c.target, "what_moved": c.details or [c.note]} for c in pl.updates],
-        "fix": "run. The tables are rebuilt from the raw rows, which a replay never touches",
+        "fix": "run. The tables are rebuilt from the raw rows, which a screen never touches",
     } if stale else {"stale": [], "fix": "nothing to do: every table matches the file"}
-
-
-@tool("list_backtests", "Every replay this project has run, newest first.",
-      {"properties": {"limit": {"type": "integer", "default": 25}}},
-      scope="research")
-def _list_backtests(s: Session, args: dict) -> Any:
-    return {"backtests": s.store.backtests(int(args.get("limit") or 25))}
-
-
-@tool("report", "One backtest in full: totals and every period.",
-      {"properties": {"run_id": {"type": "integer"}}, "required": ["run_id"]},
-      scope="research")
-def _report(s: Session, args: dict) -> Any:
-    row = s.store.backtest(int(_need(args, "run_id")))
-    if row is None:
-        ids = [b["run_id"] for b in s.store.backtests(10)]
-        raise ToolError(f"no backtest {args['run_id']}. Recent runs: {ids or '(none yet)'}")
-    if row.get("report"):
-        return json.loads(row["report"])
-    return row
-
-
-@tool("period",
-      "One point on the curve, opened up: what was held at that rebalance, what each name "
-      "returned over the period, what was traded to get there, and whether it was in-sample.",
-      {"properties": {"run_id": {"type": "integer"}, "as_of": {"type": "string"}},
-       "required": ["run_id", "as_of"]},
-      scope="research")
-def _period(s: Session, args: dict) -> Any:
-    from qanat.backtest import BacktestError, period_detail
-
-    try:
-        return period_detail(s.store, s.project, int(_need(args, "run_id")), _need(args, "as_of"))
-    except BacktestError as exc:
-        raise ToolError(str(exc)) from exc
 
 
 @tool("list_runs", "Recent job runs, with status and row counts.",
@@ -653,7 +597,7 @@ def _save_universe(s: Session, args: dict) -> Any:
 @tool("save_source", "Add or replace a source.",
       {"properties": {"id": {"type": "string"},
                       "to": {"type": "array", "items": {"type": "string"}},
-                      "connector": {"type": "string", "enum": ["rest", "sql", "csv", "synthetic"]},
+                      "connector": {"type": "string", "enum": ["rest", "sql", "csv", "sec", "yfinance"]},
                       "mode": {"type": "string", "enum": ["append", "replace"]},
                       "schedule": {"type": "string"}, "options": {"type": "object"}},
        "required": ["id", "to", "connector"]}, writes=True,

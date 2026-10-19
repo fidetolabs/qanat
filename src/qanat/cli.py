@@ -5,8 +5,7 @@
     qanat ls             stages, tables, jobs
     qanat graph          the pipeline as a picture, in the terminal
     qanat run [job]      one pass, or one job
-    qanat backtest       replay the graph over a window, and price what it held
-    qanat report <id>    one backtest, period by period
+    qanat screen         which companies passed, on a date or over a window
     qanat mcp            serve the same tools to an agent, over stdio or --http, at one of three scopes
     qanat serve          run the scheduler, and serve this project over MCP
 """
@@ -41,7 +40,7 @@ def _load(args):
 
 # ------------------------------------------------------------------------ init
 def cmd_init(args) -> int:
-    from qanat.scaffold import add_demo_steps, write_project
+    from qanat.scaffold import write_project
 
     target = Path(args.directory).resolve()
     name = args.name or target.name.replace("-", "_")
@@ -59,26 +58,22 @@ def cmd_init(args) -> int:
         print(f"\n{where}qanat run && qanat serve")
         return 0
 
-    added = add_demo_steps(target)
-    for step_id in added:
-        print(f"  {c('+', G)} {step_id}")
-    print(f"\n{c('running the pipeline', D)}")
+    print(f"\n{c('fetching and parsing', D)}")
     if (rc := _demo_fill(target)) != 0:
         return rc
     where = "" if target == Path.cwd() else f"cd {args.directory} && "
-    print(f"\n{where}qanat serve")
+    print(f"\n{where}qanat mcp --scope research")
     return 0
 
 
 def _demo_fill(target: Path) -> int:
-    """Run the pipeline, then price every weights table, so the first thing an agent
-    is asked about has real numbers in it rather than empty tables.
+    """Run the pipeline once, so the first thing an agent is asked about has real
+    rows in it rather than empty tables.
 
-    What gets priced comes from the stage rather than from a list of ids: a step is
-    priceable because it writes into the weights stage, which is the same rule
-    `list_steps(stage="weights")` reports and the only thing that identifies one.
+    This used to also price every weights table and print what each basket
+    earned. Nothing in the package simulates holding a position any more, so
+    what a new project has to show for itself is the facts it read.
     """
-    from qanat.backtest import BacktestError, dates, run_backtest
     from qanat.project import load
     from qanat.runner import run_all
     from qanat.store import Store
@@ -86,31 +81,15 @@ def _demo_fill(target: Path) -> int:
     project, root = load(target)
     store = Store(project.store_url(root))
     try:
-        failed = [r for r in run_all(store, project, root) if not r.ok]
-        if failed:
-            for r in failed:
-                print(f"  {c('error', R_)} {r.job_id}: {r.error}")
-            return 1
-        prices = store.read(project.backtest.prices)
-        col = project.backtest.date_column
-        frm, to = str(prices[col].min())[:10], str(prices[col].max())[:10]
-        # leave the last stretch unscored, so `qanat serve` has somewhere to go
-        stops = dates(frm, to, project.backtest.rebalance)
-        if len(stops) > 4:
-            to = stops[-3][:10]
-        def price(who, label):
-            try:
-                res = run_backtest(store, project, root, frm, to, step=who, seed=7)
-                net = (res.totals or {}).get("net", 0.0)
-                tone = G if net > 0 else R_
-                tail = ""
-                print(f"  {c('·', D)} {label:<26} net {c(f'{net * 100:+.2f}%', tone)}{tail}")
-            except BacktestError as exc:
-                print(f"  {c('warn', Y)} {label}: {exc}")
-
-        for step_id, _ in project.weights_steps:
-            price(step_id, step_id)
-        return 0
+        failed = []
+        for r in run_all(store, project, root):
+            if r.ok:
+                print(f"  {c('·', D)} {r.job_id:<26} {c(f'{r.rows:,} rows', G)}")
+            else:
+                failed.append(r)
+        for r in failed:
+            print(f"  {c('error', R_)} {r.job_id}: {r.error}")
+        return 1 if failed else 0
     finally:
         store.close()
 
@@ -340,170 +319,40 @@ def cmd_run(args) -> int:
     return 1 if failed else 0
 
 
-# -------------------------------------------------------------------- backtest
-def _money(x: float | None) -> str:
-    return "     —" if x is None else f"{x * 100:+7.3f}%"
+# ---------------------------------------------------------------------- screen
+def cmd_screen(args) -> int:
+    """Who passed, on a date or across a window."""
+    import json as _json
 
-
-def _allocation(text: str | None) -> dict[str, float] | None:
-    """`momentum=3,low_vol=1` -> {"momentum": 3.0, "low_vol": 1.0}. Shares are
-    ratios, so nobody has to do the division by hand."""
-    if not text:
-        return None
-    out: dict[str, float] = {}
-    for part in text.split(","):
-        name, _, share = part.partition("=")
-        if not name.strip() or not share.strip():
-            raise SystemExit(f"--allocation wants name=share pairs, got {part.strip()!r}")
-        try:
-            out[name.strip()] = float(share)
-        except ValueError:
-            raise SystemExit(f"--allocation share must be a number, got {share.strip()!r}") from None
-    return out
-
-
-def cmd_backtest(args) -> int:
-    import json
-
-    from qanat.backtest import run_backtest
-    from qanat.project import validate
+    from qanat.screen import ScreenError, parse_filters, screen
     from qanat.store import Store
 
     project, root = _load(args)
-    rep = validate(project, root)
-    for e in rep.errors:
-        print(f"  {c('error', R_)} {e}")
-    if not rep.ok and not args.force:
-        print(c("the contract does not hold. `qanat check` to see why, or --force.", R_))
-        return 1
-
     store = Store(project.store_url(root))
     try:
-        print(f"\n  {c('replay', B)}  {project.name}  {D}{args.frm} → {args.to}"
-              f" every {args.rebalance or (project.backtest.rebalance if project.backtest else '?')}"
-              f", seed {args.seed}{X}\n")
-        res = run_backtest(
-            store, project, root, args.frm, args.to,
-            rebalance=args.rebalance, seed=args.seed,
-            decay=args.decay, universe=args.universe, step=args.step,
-            allocation=_allocation(args.allocation),
-            fee_bps=args.fee_bps, slippage_bps=args.slippage_bps,
-            purge=args.purge, embargo=args.embargo,
-            on_step=None if args.quiet else
-            (lambda stop, n: print(f"  {c('·', D)} {stop[:19]}  {n:>3} holdings")),
-        )
+        raw = _json.loads(args.filter) if args.filter else []
+        filters = parse_filters(raw)
+        out = screen(store, project, filters, as_of=args.as_of,
+                     frm=getattr(args, "frm", None), to=args.to, every=args.every)
+    except ScreenError as exc:
+        print(c(f"ScreenError: {exc}", R_))
+        return 1
     finally:
         store.close()
 
     if args.json:
-        print(json.dumps(res.as_dict(), indent=2, default=str))
-        return 0 if res.periods and not res.failures else 1
-
-    for f in res.failures:
-        print(f"  {c('fail', R_)} {f}")
-    for n in res.notes[:8]:
-        print(f"  {c('note', Y)} {n}")
-
-    t = res.totals
-    if not t.get("periods"):
-        print(c("\n  no period could be priced, so there is nothing to report\n", R_))
-        return 1
-
-    print(f"\n  {c('net edge', B)}  {D}run {res.run_id} · digest {res.digest}{X}\n")
-    print(f"    gross            {_money(t['gross'])}")
-    print(f"    fees             {_money(-t['fees'])}")
-    print(f"    slippage         {_money(-t['slippage'])}")
-    print(f"    {'-' * 30}")
-    # The three lines above are per-period amounts and add up. The headline is what
-    # the money did, which compounds -- so the two differ, and saying so is cheaper
-    # than letting somebody discover it with a calculator.
-    net, added = t["net"], t.get("net_sum", t["net"])
-    print(f"    {'sum of periods':<16} {_money(added)}")
-    print(f"    {c('net', G if net > 0 else R_)}              "
-          f"{c(_money(net), G if net > 0 else R_)}  {D}compounded{X}")
-    print(f"    per period       {_money(t['net_per_period'])}  {D}over {t['periods']} periods{X}")
-    # A run that spent part of its length holding nothing has a hit rate counting
-    # those periods as losses, and a per-period figure diluted by them. Saying so
-    # here is cheaper than letting somebody quote the headline and be wrong twice.
-    flat = t.get("flat_periods", 0)
-    if flat and t.get("held_periods"):
-        print(f"    hit rate         {t['hit_rate'] * 100:6.1f}%  "
-              f"{D}· {t['hit_rate_held'] * 100:.1f}% over the {t['held_periods']} it held{X}")
-        print(f"    {c('flat', Y)}             {flat:>6}   {D}periods held nothing: in the money, "
-              f"not in the two lines above{X}")
-    else:
-        print(f"    hit rate         {t['hit_rate'] * 100:6.1f}%")
-    print(f"    turnover         {t['turnover']:7.2f}  {D}sum of |weight changes|{X}")
-    print(f"    best / worst     {_money(t['best_period'])} / {_money(t['worst_period'])}")
-    #  What it cost in risk to earn the above. Two rules that made the same amount
-    #  are not the same rule if one of them halved on the way there.
-    sh = t.get("sharpe")
-    if sh is not None:
-        print(f"    sharpe           {sh:7.2f}  {D}per unit of its own vol, "
-              f"annualised at {t['periods_per_year']:.0f}/yr{X}")
-    if t.get("max_drawdown") is not None:
-        print(f"    max drawdown     {_money(t['max_drawdown'])}  {D}worst fall from a high{X}")
-    print(f"\n  {D}qanat report {res.run_id}   the periods, one by one{X}\n")
-    return 0 if not res.failures else 1
-
-
-def cmd_backtests(args) -> int:
-    from qanat.store import Store
-
-    project, root = _load(args)
-    store = Store(project.store_url(root))
-    rows = store.backtests(args.limit)
-    store.close()
-    if not rows:
-        print(c("no backtests yet. Try `qanat backtest --from ... --to ...`", Y))
+        print(_json.dumps(out, indent=2, default=str))
         return 0
-    print(f"\n  {c('run', B):<22} {'window':<26} {'every':<7} {'seed':>5} "
-          f"{'periods':>8} {'net':>9}  status")
-    for r in rows:
-        net = _money(r["net"]) if r["net"] is not None else "     —"
-        window = f"{str(r['from_date'])[:10]} → {str(r['to_date'])[:10]}"
-        print(f"  {r['run_id']:<22} {window:<26} {r['rebalance']:<7} {r['seed']:>5} "
-              f"{r['periods'] or 0:>8} {net:>9}  {r['status']}")
-    print()
-    return 0
 
-
-def cmd_report(args) -> int:
-    import json
-
-    from qanat.store import Store
-
-    project, root = _load(args)
-    store = Store(project.store_url(root))
-    row = store.backtest(int(args.run_id))
-    store.close()
-    if row is None:
-        print(c(f"no backtest {args.run_id}", R_))
-        return 1
-    if args.json:
-        print(row["report"] or json.dumps(row, default=str))
-        return 0
-    if row.get("error"):
-        print(f"  {c('failed', R_)} {row['error']}")
-        return 1
-    report = json.loads(row["report"]) if row.get("report") else {}
-    t = report.get("totals", {})
-    print(f"\n  {c('run ' + str(row['run_id']), B)}  {D}{row['from_date']} → {row['to_date']}"
-          f" every {row['rebalance']} · seed {row['seed']} · digest {row['digest']}{X}\n")
-    print(f"  {'as of':<21} {'priced':<23} {'held':>5} {'gross':>9} {'cost':>9} {'net':>9}")
-    for p_ in report.get("periods", []):
-        cost = p_["fees"] + p_["slippage"]
-        print(f"  {p_['as_of'][:19]:<21} {p_['priced_from'][:10]} → {p_['priced_to'][:10]}   "
-              f"{p_['holdings']:>5} {_money(p_['gross']):>9} {_money(-cost):>9} "
-              f"{c(_money(p_['net']), G if p_['net'] > 0 else R_):>9}")
-    if t:
-        flat = t.get("flat_periods", 0)
-        held = f", {flat} of them flat" if flat else ""
-        print(f"\n  {c('net', B)} {_money(t['net'])}  {D}over {t['periods']} periods{held}, "
-              f"hit rate {t['hit_rate'] * 100:.0f}%{X}")
-    for n in report.get("notes", [])[:10]:
-        print(f"  {c('note', Y)} {n}")
-    print()
+    for count in out["counts"]:
+        hits = [r for r in out["rows"] if r["as_of"] == count["as_of"] and r["passed"]]
+        print(f"\n{c(str(count['as_of'])[:10], B)}  "
+              f"{count['passed']} of {count['evaluated']} passed"
+              + (f", {count['dropped']} could not be evaluated" if count["dropped"] else ""))
+        for r in hits:
+            fwd = r.get("forward_return")
+            tail = f"   {fwd * 100:+.1f}% to {r.get('next_priced_on')}" if fwd is not None else ""
+            print(f"  {c('·', D)} {r['subject']}{tail}")
     return 0
 
 
@@ -573,19 +422,19 @@ def cmd_serve(args) -> int:
 
 
 def _repair_after_crash(store, project, root) -> None:
-    """Rebuild what a replay that never finished left truncated.
+    """Rebuild what a screen that never finished left truncated.
 
-    A replay rewrites every derived table at each as-of date and puts them back when
+    A screen rewrites every derived table at each as-of date and puts them back when
     it ends. A SIGKILL, an OOM kill or a closed laptop skips that, and the store then
     opens on tables holding only the rows that existed at some date in the past --
     with nothing to say so. The raw tables are untouched, so one ordinary pass is the
     whole cure; it just has to be run.
     """
-    if not getattr(store, "interrupted_replay", None):
+    if not getattr(store, "interrupted_screen", None):
         return
     from qanat.runner import run_all
 
-    print(c(f"  a replay was interrupted at as-of {store.interrupted_replay}", Y))
+    print(c(f"  a screen was interrupted at as-of {store.interrupted_screen}", Y))
     print(f"  {D}the tables it rewrote hold only the rows from then. Rebuilding from raw…{X}")
     failed = [r for r in run_all(store, project, root, sources=False) if not r.ok]
     for r in failed:
@@ -599,7 +448,7 @@ def cmd_mcp(args) -> int:
     if getattr(args, "read_only", False):
         print("qanat mcp: --read-only is gone. It split 33 tools into 23 and 10, which is "
               "too blunt to be a promise. Use --scope data to read tables, or --scope "
-              "research to add replays. See docs/agents.md.", file=sys.stderr)
+              "research to add screens. See docs/agents.md.", file=sys.stderr)
         return 2
     if args.http:
         from qanat.mcp_http import serve_http
@@ -616,7 +465,7 @@ def cmd_mcp(args) -> int:
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
         prog="qanat",
-        description="An MCP server that turns filings and prices into valuation indicators, and tests each one inside its own industry.",
+        description="A data platform for investment research. It ingests financial data sources and computes point-in-time financial metrics for valuation and screening. Delivered as an MCP server.",
     )
     p.add_argument("--version", action="version", version=f"qanat {__version__}")
     p.add_argument("-p", "--project", help="path to qanat.yaml (default: found by walking up)")
@@ -625,7 +474,7 @@ def build_parser() -> argparse.ArgumentParser:
     i = sub.add_parser("init", help="scaffold a project")
     i.add_argument("--store", help="where the tables live: a path, or a postgres:// url")
     i.add_argument("--demo", action="store_true",
-                   help="wire one indicator and one sort over it, run the pipeline, price it")
+                   help="fetch the filings and parse them, so the project starts with rows in it")
     i.add_argument("directory", nargs="?", default=".")
     i.add_argument("--name")
     i.add_argument("--force", action="store_true")
@@ -663,48 +512,24 @@ def build_parser() -> argparse.ArgumentParser:
 
     r = sub.add_parser("run", help="one pass over the whole graph, or one job")
     r.add_argument("job", nargs="?")
-    r.add_argument("--as-of", dest="as_of", help="replay one pass as of this timestamp")
+    r.add_argument("--as-of", dest="as_of", help="screen one pass as of this timestamp")
     r.add_argument("--seed", type=int, help="pin every generator for this pass")
     r.add_argument("--force", action="store_true", help="run even if the contract fails")
     r.set_defaults(func=cmd_run)
 
-    bt = sub.add_parser("backtest", help="replay the pipeline and price what it held")
-    bt.add_argument("--from", dest="frm", required=True, help="first as-of date, e.g. 2024-01-01")
-    bt.add_argument("--to", required=True, help="last as-of date")
-    bt.add_argument("--rebalance", help="gap between as-of dates (default: from qanat.yaml)")
-    bt.add_argument("--seed", type=int, default=0, help="pins every generator, so a rerun repeats")
-    bt.add_argument("--decay", type=int,
-                    help="hold a blend of the last N portfolios, newest heaviest. Cuts turnover")
-    bt.add_argument("--universe", help="run the step against this universe instead of the file's")
-    bt.add_argument("--step", help="which weights table to price (needed once there is more "
-                                   "than one). "
-                                    "Name several, comma separated, to price them as one basket")
-    bt.add_argument("--allocation", help="share per step in a blend, e.g. momentum=3,low_vol=1. "
-                                         "Equal split if left out")
-    bt.add_argument("--fee-bps", type=float, dest="fee_bps",
-                    help="commission on turnover, in basis points (default: from qanat.yaml)")
-    bt.add_argument("--slippage-bps", type=float, dest="slippage_bps",
-                    help="slippage on turnover, in basis points")
-    bt.add_argument("--purge", help="hold rows back this long before a step may read them, e.g. 1d")
-    bt.add_argument("--embargo", help="wait this long after the as-of date before a return counts")
-    bt.add_argument("--json", action="store_true")
-    bt.add_argument("--quiet", action="store_true", help="do not print each as-of date")
-    bt.add_argument("--force", action="store_true", help="run even if the contract fails")
-    bt.set_defaults(func=cmd_backtest)
-
-    bl = sub.add_parser("backtests", help="every replay this project has run")
-    bl.add_argument("--limit", type=int, default=25)
-    bl.set_defaults(func=cmd_backtests)
-
-    rp = sub.add_parser("report", help="one backtest, period by period")
-    rp.add_argument("run_id")
-    rp.add_argument("--json", action="store_true")
-    rp.set_defaults(func=cmd_report)
+    sc = sub.add_parser("screen", help="which companies passed, on a date or over a window")
+    sc.add_argument("--filter", help='clauses as JSON: \'[{"metric":"pe","op":"<","value":20}]\'')
+    sc.add_argument("--as-of", dest="as_of", help="one date")
+    sc.add_argument("--from", dest="frm", help="start of a window")
+    sc.add_argument("--to", help="end of a window")
+    sc.add_argument("--every", default="1y", help="the gap between dates in a window")
+    sc.add_argument("--json", action="store_true", help="the whole result, as JSON")
+    sc.set_defaults(func=cmd_screen)
 
 
     mc = sub.add_parser("mcp", help="serve this project to an agent over MCP (stdio)")
     mc.add_argument("--scope", choices=list(SCOPES), default="full",
-                    help="which tools to offer: data reads tables, research adds replays, "
+                    help="which tools to offer: data reads tables, research adds screens, "
                          "full adds authoring and ingest (default: full)")
     mc.add_argument("--http", action="store_true",
                     help="serve MCP over HTTP instead of stdio, for a client that is not "

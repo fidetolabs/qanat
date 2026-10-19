@@ -3,12 +3,12 @@
 from pathlib import Path
 
 import pytest
+from conftest import write_demo_project as write_project
 from fastapi.testclient import TestClient
 
 from qanat import mcp
 from qanat.mcp_http import Sessions, create_app
 from qanat.runner import run_all
-from qanat.scaffold import write_project
 
 
 def _client(tmp_path: Path, scope: str = "research", token: str | None = None) -> TestClient:
@@ -88,7 +88,7 @@ def test_the_scope_is_the_servers_and_not_the_callers(tmp_path: Path):
 
     # Nothing a caller can put in a request widens it.
     res = _rpc(client, "tools/call",
-               {"name": "backtest_conditions", "arguments": {}, "scope": "full"}, sid=sid)
+               {"name": "screen", "arguments": {}, "scope": "research"}, sid=sid)
     body = res.json()["result"]["content"][0]["text"]
     assert res.json()["result"]["isError"] is True
     assert "'research' scope" in body

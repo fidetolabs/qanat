@@ -12,13 +12,14 @@ from pathlib import Path
 import pandas as pd
 
 from qanat.models import Source
-from qanat.sources import csv_source, rest, sql, synthetic
+from qanat.sources import csv_source, rest, sec, sql, yfinance_source
 
 ADAPTERS: dict[str, Callable[..., pd.DataFrame]] = {
     "rest": rest.fetch,
     "sql": sql.fetch,
     "csv": csv_source.fetch,
-    "synthetic": synthetic.fetch,
+    "sec": sec.fetch,
+    "yfinance": yfinance_source.fetch,
 }
 
 

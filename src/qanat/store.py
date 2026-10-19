@@ -41,7 +41,7 @@ BT_WEIGHTS = "_qanat_bt_weights"
 BT_PERIODS = "_qanat_bt_periods"
 META = (RUNS, EVENTS, STATE, BACKTESTS, BT_WEIGHTS, BT_PERIODS, SESSIONS, ASKS)
 
-#: Schema holding the as-of views a replay reads through. Named, not `asof`,
+#: Schema holding the as-of views a screen reads through. Named, not `asof`,
 #: because DuckDB reserves that word for ASOF JOIN.
 PIT = "qanat_pit"
 
@@ -246,7 +246,7 @@ class Store:
     def rcon(self):
         """A second connection, for readers that must not wait.
 
-        A replay holds the writing connection for as long as it takes to walk the
+        A screen holds the writing connection for as long as it takes to walk the
         window, and an agent asking what the project holds has to be answerable
         while that happens -- otherwise the one moment you most want to watch is the
         one moment every read blocks. Each thread gets its own cursor onto the same
@@ -398,12 +398,12 @@ class Store:
                     cost_usd    DOUBLE,
                     elapsed     DOUBLE
                 )""")
-            #  Which conversation a replay came out of. The run already records
+            #  Which conversation a screen came out of. The run already records
             #  what was asked of the engine; this records who asked and why, and
             #  it is the join that lets a session show what it produced and an
             #  weights table show the sessions it came from.
             #
-            #  Nullable on purpose: a replay from the CLI or the scheduler belongs
+            #  Nullable on purpose: a screen from the CLI or the scheduler belongs
             #  to no conversation, and pretending otherwise would invent a session
             #  nobody had.
             self.con.execute(
@@ -417,24 +417,30 @@ class Store:
                     applied_at TIMESTAMP
                 )""")
 
-    #: Written while a replay holds the store, cleared when it lets go. A replay
+    #: Written while a screen holds the store, cleared when it lets go. A screen
     #: rewrites the derived tables at each as-of date and puts them back in a
     #: `finally` -- which a SIGKILL, an OOM kill or a closed laptop never reaches.
     #: The store then reopened on tables truncated to a date in the past, with no
     #: sign that anything had happened.
-    _REPLAY_MARK = "_replay_in_progress"
+    _SCREEN_MARK = "_screen_in_progress"
+    #: What the same marker was called before the word changed. A store written
+    #: by an older version still holds this spelling, and a store that reopens
+    #: without noticing the marker leaves its derived tables truncated to a past
+    #: date with nothing saying so. Read both, write only the new one.
+    _SCREEN_MARK_WAS = "_replay_in_progress"
 
     def _recover(self) -> None:
-        """Notice a replay that never finished, and put the store back.
+        """Notice a screen that never finished, and put the store back.
 
-        Sets `interrupted_replay` to the as-of date it died at. The derived tables
-        are functions of raw, which a replay never touches, so one ordinary pass
+        Sets `interrupted_screen` to the as-of date it died at. The derived tables
+        are functions of raw, which a screen never touches, so one ordinary pass
         rebuilds them -- `qanat run` and `qanat serve` do that on sight.
         """
-        self.interrupted_replay: str | None = None
+        self.interrupted_screen: str | None = None
         with self._lock:
             row = self.con.execute(
-                f"SELECT spec FROM {STATE} WHERE job_id = ?", [self._REPLAY_MARK]
+                f"SELECT spec FROM {STATE} WHERE job_id IN (?, ?) ORDER BY job_id LIMIT 1",
+                [self._SCREEN_MARK, self._SCREEN_MARK_WAS],
             ).fetchone()
             stranded = self.con.execute(
                 f"SELECT count(*) FROM {RUNS} WHERE status = 'running'"
@@ -446,30 +452,31 @@ class Store:
                 )
             self.con.execute(
                 f"UPDATE {BACKTESTS} SET status = 'interrupted', "
-                "error = 'the process ended before this replay did' WHERE status = 'running'"
+                "error = 'the process ended before this screen did' WHERE status = 'running'"
             )
             if row is None:
                 return
             self.con.execute(f'DROP SCHEMA IF EXISTS "{PIT}" CASCADE')
-            self.con.execute(f"DELETE FROM {STATE} WHERE job_id = ?", [self._REPLAY_MARK])
-            self.interrupted_replay = str(row[0])
+            self.con.execute(f"DELETE FROM {STATE} WHERE job_id IN (?, ?)",
+                             [self._SCREEN_MARK, self._SCREEN_MARK_WAS])
+            self.interrupted_screen = str(row[0])
             self.event("warn", "store", (
-                f"a replay was interrupted at as-of {row[0]}. Every table a step writes was "
+                f"a screen was interrupted at as-of {row[0]}. Every table a step writes was "
                 "left holding only the rows that existed then -- run the pipeline once "
                 "(`qanat run`) to rebuild them from raw."
             ))
 
-    def replay_open(self, as_of: str) -> None:
+    def screen_open(self, as_of: str) -> None:
         with self._lock:
-            self.con.execute(f"DELETE FROM {STATE} WHERE job_id = ?", [self._REPLAY_MARK])
+            self.con.execute(f"DELETE FROM {STATE} WHERE job_id = ?", [self._SCREEN_MARK])
             self.con.execute(
-                f"INSERT INTO {STATE} VALUES (?, 'replay', ?, now()::TIMESTAMP)",
-                [self._REPLAY_MARK, str(as_of)],
+                f"INSERT INTO {STATE} VALUES (?, 'screen', ?, now()::TIMESTAMP)",
+                [self._SCREEN_MARK, str(as_of)],
             )
 
-    def replay_closed(self) -> None:
+    def screen_closed(self) -> None:
         with self._lock:
-            self.con.execute(f"DELETE FROM {STATE} WHERE job_id = ?", [self._REPLAY_MARK])
+            self.con.execute(f"DELETE FROM {STATE} WHERE job_id = ?", [self._SCREEN_MARK])
 
     # ---- writing -------------------------------------------------------------
     def write(self, ref: str, df: pd.DataFrame, mode: str = "replace",
@@ -486,11 +493,11 @@ class Store:
         name = phys(ref)
         if not len(df.columns) or len(df) == 0:
             # A step with nothing to say returns an empty frame. That is an answer,
-            # not a crash -- early in a replay there is often not enough history yet.
+            # not a crash -- early in a screen there is often not enough history yet.
             #
             # It has to *clear* the table, though. Leaving the last pass's rows in
             # place would mean "I computed nothing" reads downstream as "here is a
-            # fresh answer", and during a replay those rows are from the future.
+            # fresh answer", and during a screen those rows are from the future.
             #
             # Clear rather than replace, because an empty frame carries no types.
             # Rebuilding the table from one turns every column into whatever pandas
@@ -621,7 +628,7 @@ class Store:
     def _readable(self, ref: str) -> str:
         """Where a *read* comes from.
 
-        While a replay is open that is the as-of view, not the table under it. The
+        While a screen is open that is the as-of view, not the table under it. The
         pinning in `_q` exists so a write cannot be moved by `search_path`; applied
         to reads it also meant `store.read()` reached around the clock, which is
         the one thing the as-of views exist to prevent. Writes still use `_q`.
@@ -683,7 +690,7 @@ class Store:
         """Shadow every table with a view holding only the rows that existed at
         `as_of`, and put that schema first on the search path.
 
-        A step therefore reads the past without knowing it is being replayed, and
+        A step therefore reads the past without knowing it is being screened, and
         a step that forgot to filter cannot see the future by accident.
         """
         overrides = overrides or {}
@@ -731,7 +738,7 @@ class Store:
                 self.con.execute(f'DROP SCHEMA IF EXISTS "{PIT}" CASCADE')
             except Exception as exc:  # noqa: BLE001 -- a leftover view schema is harmless
                 self.con.execute(
-                    f"INSERT INTO {EVENTS} VALUES (now()::TIMESTAMP, 'warn', 'replay', ?)",
+                    f"INSERT INTO {EVENTS} VALUES (now()::TIMESTAMP, 'warn', 'screen', ?)",
                     [f"could not drop the as-of views: {exc}"],
                 )
         self.as_of = None
@@ -784,7 +791,8 @@ class Store:
     def load_state(self) -> dict[str, dict[str, str]]:
         with self._lock:
             rows = self.con.execute(f"SELECT job_id, digest, spec FROM {STATE}").fetchall()
-        return {j: {"digest": d, "spec": s} for j, d, s in rows if j != self._REPLAY_MARK}
+        skip = {self._SCREEN_MARK, self._SCREEN_MARK_WAS}
+        return {j: {"digest": d, "spec": s} for j, d, s in rows if j not in skip}
 
     def set_state(self, job_id: str, digest: str, spec: str) -> None:
         """Record one job as applied. Called when that job actually succeeds."""
@@ -941,7 +949,7 @@ class Store:
             )
 
     def save_bt_weights(self, run_id: int, as_of: str, df: pd.DataFrame) -> int:
-        """Keep the portfolio this replay held at one as-of date."""
+        """Keep the portfolio this screen held at one as-of date."""
         if df is None or df.empty:
             return 0
         keep = df.rename(columns={c: c.lower() for c in df.columns})
@@ -960,7 +968,7 @@ class Store:
 
     def save_bt_period(self, run_id: int, period: Any) -> None:
         """One closed holding period, written the moment it closes -- so the PnL is
-        queryable while the replay is still running, not only after it ends."""
+        queryable while the screen is still running, not only after it ends."""
         with self._lock:
             self.con.execute(
                 f"INSERT INTO {BT_PERIODS} VALUES (?, CAST(? AS TIMESTAMP), CAST(? AS TIMESTAMP), "
@@ -1060,7 +1068,7 @@ class Store:
     def sessions(self, limit: int = 50) -> list[dict[str, Any]]:
         """Every conversation, newest first, with what each one produced.
 
-        `runs` counts the replays that came out of it, and is legitimately zero:
+        `runs` counts the screens that came out of it, and is legitimately zero:
         plenty of sessions are a question and an answer. An empty count is the
         truth about that session, not a gap in the record.
         """
@@ -1077,7 +1085,7 @@ class Store:
         return _records(df)
 
     def session_backtests(self, session_id: str) -> list[dict[str, Any]]:
-        """What this conversation replayed, newest first."""
+        """What this conversation screened, newest first."""
         df = self.rcon.execute(f"""
             SELECT run_id, created_at, from_date, to_date, rebalance, digest, status,
                    periods, net, turnover, step, live
@@ -1086,7 +1094,7 @@ class Store:
         return _records(df)
 
     def step_sessions(self, step: str) -> list[dict[str, Any]]:
-        """Every conversation that replayed this weights table, and what it got.
+        """Every conversation that screened this weights table, and what it got.
 
         The other direction of the same join: from a weights table back to the
         rooms it was worked out in.

@@ -3,11 +3,11 @@
 from pathlib import Path
 
 import pytest
+from conftest import write_demo_project as write_project
 
 from qanat import mcp
 from qanat.project import load
 from qanat.runner import run_all
-from qanat.scaffold import write_project
 from qanat.store import Store
 
 
@@ -66,11 +66,12 @@ def test_data_offers_nothing_that_writes():
     assert not [t["name"] for t in mcp.tools_for("data") if t["writes"]]
 
 
-def test_research_writes_results_and_never_the_project_file():
-    writers = {t["name"] for t in mcp.tools_for("research") if t["writes"]}
-    assert writers == {"backtest"}
+def test_research_never_writes_the_project_file():
+    """A screen writes nothing at all, so `research` has no writers left. What
+    the scope line still has to hold is that nothing in it edits qanat.yaml."""
+    assert not {t["name"] for t in mcp.tools_for("research") if t["writes"]}
     # Anything that edits qanat.yaml is authoring, so a research caller cannot
-    # reach it: a hosted caller may run a replay and may not rewrite the project
+    # reach it: a hosted caller may screen and may not rewrite the project
     assert {"save_step", "save_source", "run"} <= {
         t["name"] for t in mcp.TOOLS if t["scope"] == "full"}
 
@@ -138,7 +139,7 @@ def test_an_error_says_what_to_do_next(tmp_path: Path):
     session = _session(tmp_path)
     for name, args in (("describe_table", {"ref": "nope.nope"}),
                        ("read_step", {"id": "nope"}),
-                       ("report", {"run_id": 1})):
+                       ("screen", {"filters": [{"metric": "nope", "op": "<", "value": 1}]})):
         try:
             _call(session, name, args)
         except mcp.ToolError as exc:
@@ -156,15 +157,6 @@ def test_sample_table_honours_as_of(tmp_path: Path):
                 {"ref": "normalized.prices", "limit": 10000, "as_of": "2020-01-01"})
     assert cut["rows"] == 0 < full["rows"]
     assert newest  # the unfiltered read did see something
-    session.close()
-
-
-def test_lineage_knows_what_breaks_the_portfolio(tmp_path: Path):
-    session = _session(tmp_path)
-    out = _call(session, "lineage", {"ref": "raw.daily_prices"})
-    assert "normalized.prices" in out["reaches"]
-    assert out["breaks_portfolio"] is True
-    assert _call(session, "lineage", {"ref": "weights.target"})["breaks_portfolio"] is False
     session.close()
 
 
@@ -199,30 +191,16 @@ def test_list_steps_filters_by_stage_and_adds_net(tmp_path: Path):
     everything = _call(session, "list_steps")
     assert everything["sources"], "unfiltered, the sources come too"
 
-    only = _call(session, "list_steps", {"stage": "weights"})
+    only = _call(session, "list_steps", {"stage": "features"})
     assert only["sources"] == [], "a stage filter is about steps, so sources drop out"
     ids = {s["id"] for s in only["steps"]}
-    assert ids == {a for a, _ in session.project.weights_steps}
-    assert ids, "the scaffold writes one step into the weights stage"
+    expected = {st.id for st in session.project.steps
+                if any(w.startswith("features.") for w in st.writes)}
+    assert ids == expected and ids
 
-    with_net = _call(session, "list_steps", {"stage": "weights", "net": True})
-    row = with_net["steps"][0]
-    assert "net" in row and "wired" in row
-    assert row["wired"] is True
-    assert row["net"] is None, "nothing has been replayed yet, so there is no net"
-    assert with_net["wired_now"] == sorted(ids) or set(with_net["wired_now"]) == ids
+    with_net = _call(session, "list_steps", {"stage": "features", "net": True})
+    assert "net" in with_net["steps"][0]
     session.close()
-
-def test_conditions_are_asked_for_not_assumed(tmp_path: Path):
-    session = _session(tmp_path)
-    c = _call(session, "backtest_conditions")
-    assert set(c["ask_the_person_for"]) == {
-        "step", "from", "to", "universe", "rebalance", "decay"}
-    assert c["weights_in_this_project"]
-    assert c["universe"]["declared_on_steps"] == ["demo8"]
-    assert c["window"]["data_available"]["latest"]
-    session.close()
-
 
 def test_the_picture_and_the_agent_agree_about_what_is_stale(tmp_path: Path):
     """Two readers of one engine. If they can disagree about which tables stopped

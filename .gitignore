@@ -11,14 +11,9 @@ build/
 data/
 *.duckdb
 *.duckdb.wal
-# `data/` above keeps generated stores out. The datasets qanat ships are not
-# generated on the fly, and a clone without them cannot run the examples at all.
-# The `.duckdb` rules above still apply inside these directories, so a store built
-# by `qanat run` stays untracked.
-!examples/fx-bundled/data/
-!examples/fx-bundled/data/*.csv.gz
-!examples/filings-sample/data/
-!examples/filings-sample/data/*.csv.gz
+# The sec-10k example downloads its own documents on the first run, so nothing
+# under its data/ belongs in the repo.
+examples/sec-10k/data/
 .env
 
 # Local IDE / agent config (machine-specific)

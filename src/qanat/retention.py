@@ -9,7 +9,8 @@ from qanat.models import Project
 from qanat.store import Store, phys
 
 _DURATION = re.compile(r"^(\d+)\s*(s|sec|secs|second|seconds|m|min|mins|minute|minutes|"
-                       r"h|hr|hrs|hour|hours|d|day|days|w|week|weeks)$", re.IGNORECASE)
+                       r"h|hr|hrs|hour|hours|d|day|days|w|week|weeks|y|yr|yrs|year|years)$",
+                       re.IGNORECASE)
 
 _TIME_COLS = ("ts", "timestamp", "time", "date", "as_of", "datetime", "fetched_at",
               "created_at", "updated_at")
@@ -20,11 +21,17 @@ _UNITS = {
     "h": 3600, "hr": 3600, "hrs": 3600, "hour": 3600, "hours": 3600,
     "d": 86400, "day": 86400, "days": 86400,
     "w": 604800, "week": 604800, "weeks": 604800,
+    # A year is 365 days here, not a calendar year. A screener that stops once
+    # a year needs the unit, and the drift against a real calendar is four
+    # days over five years, which is inside the gap between a fiscal year end
+    # and the filing that reports it.
+    "y": 31_536_000, "yr": 31_536_000, "yrs": 31_536_000,
+    "year": 31_536_000, "years": 31_536_000,
 }
 
 
 def parse_duration(text: str, field: str = "retention") -> timedelta:
-    """Parse '7d', '24h', '30 minutes' into a timedelta.
+    """Parse '7d', '24h', '1y', '30 minutes' into a timedelta.
 
     `field` is the name to put in the error. This helper is shared with the backtest
     for `rebalance`, `purge` and `embargo`, and it used to say "retention must look

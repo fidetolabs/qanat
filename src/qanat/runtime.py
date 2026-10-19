@@ -26,10 +26,10 @@ class AppState:
     root: Path
     sched: Scheduler | None
     _lock: threading.RLock = field(default_factory=threading.RLock)
-    #: Held for the whole of a replay, and by nothing else. The state lock guards
-    #: edits to the project, which a replay never makes, so a backtest must not
+    #: Held for the whole of a screen, and by nothing else. The state lock guards
+    #: edits to the project, which a screen never makes, so a backtest must not
     #: take it.
-    _replay: threading.Lock = field(default_factory=threading.Lock)
+    _screen: threading.Lock = field(default_factory=threading.Lock)
 
     def reload(self) -> None:
         with self._lock:

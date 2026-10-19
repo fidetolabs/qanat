@@ -1,19 +1,19 @@
-"""What a replay is doing right now, while it is doing it.
+"""What a screen is doing right now, while it is doing it.
 
 A backtest can run for a while, and until it finishes there is nothing to show --
 the report only exists at the end. This is the in-between: which as-of date the
-replay is on, and which job just finished writing which table.
+screen is on, and which job just finished writing which table.
 
 It records the jobs in the order they actually ran, which is the dependency order
 observed rather than inferred from the shape of the graph.
 
-Nothing reads it yet. `run_backtest` fills it on every replay and `qanat backtest`
+Nothing reads it yet. `run_backtest` fills it on every screen and `qanat backtest`
 prints its own line as it goes, so the reader this was built for -- a tool that
-answers "what is the replay doing right now" -- is the obvious next use and is not
+answers "what is the screen doing right now" -- is the obvious next use and is not
 written. It is kept because the recording is the hard half and it already works.
 
 Kept in memory on purpose. Only the process holding the store open can run a
-replay, so there is nothing here a second process should be able to see.
+screen, so there is nothing here a second process should be able to see.
 """
 
 from __future__ import annotations
@@ -35,7 +35,7 @@ _STATE: dict[str, Any] = {
     # saw roughly every fourth and missed the rest. Keeping the list means each
     # pass that actually ran can be accounted for.
     "passes": [],
-    "jobs_in_run": [],   # the jobs this replay touches at all
+    "jobs_in_run": [],   # the jobs this screen touches at all
     "periods": [],   # every period closed so far -- the curve, while it is drawn
     "totals": {},    # the run so far, recomputed each time a period closes
     "segments": {},  # the same, cut into in-sample and out-of-sample
@@ -54,7 +54,7 @@ def start(run_id: int, stops_total: int, conditions: dict[str, Any] | None = Non
         _STATE["seq"] += 1
 
 
-# How many passes are kept. A replay of a few hundred rebalances is normal;
+# How many passes are kept. A screen of a few hundred rebalances is normal;
 # keeping them all costs nothing worth counting, but the cap stops a very long run
 # from growing without limit.
 _KEEP = 600

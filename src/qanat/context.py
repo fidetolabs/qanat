@@ -14,7 +14,7 @@ from qanat.store import Store, tables_named
 
 #: A schema-qualified reference in a step's SQL. `main.` and `qanat.` are the two
 #: names the store itself uses, and `qanat_pit.` names the as-of views directly.
-#: Any of them steps around the clock a replay puts in front of a step.
+#: Any of them steps around the clock a screen puts in front of a step.
 _SCHEMA_QUALIFIED = re.compile(
     r"\b(?:main|qanat|qanat_pit|information_schema|pg_catalog)\s*\.\s*\w+", re.IGNORECASE
 )
@@ -76,9 +76,9 @@ class Context:
         self.root = root
         self.step = step
         self.options: dict[str, Any] = dict(step.options)
-        #: Set when this step is being replayed. `ctx.read` will not return a row
+        #: Set when this step is being screened. `ctx.read` will not return a row
         #: newer than this, and `ctx.now` is this instant rather than the wall clock,
-        #: so the same replay twice gives the same numbers.
+        #: so the same screen twice gives the same numbers.
         self.as_of: str | None = as_of
         #: A backtest may hold the same step to a different universe than the file
         #: names, so "does this work on large caps too" costs one argument, not an edit.
@@ -88,7 +88,7 @@ class Context:
         )
 
     def read(self, ref: str, limit: int | None = None) -> pd.DataFrame:
-        """Read a table this step declared in `reads`, as of the replay date if there is one."""
+        """Read a table this step declared in `reads`, as of the screen date if there is one."""
         if ref not in self.step.reads:
             raise KeyError(
                 f"step '{self.step.id}' did not declare '{ref}' in reads -- "
@@ -99,9 +99,9 @@ class Context:
     def sql(self, query: str) -> pd.DataFrame:
         """Run SQL over the store. Tables are named `stage__table`.
 
-        A bare name resolves through the as-of views while a replay is open, so this
+        A bare name resolves through the as-of views while a screen is open, so this
         reads the past like everything else. Naming a schema stepped around them --
-        `main.raw__bars` reached the whole history, and since a replay never
+        `main.raw__bars` reached the whole history, and since a screen never
         re-polls a source, the raw tables are the one place that history survives.
         The step that did it earned 1292% against an honest 3.40%, and reported no
         failure, warning or note.
@@ -113,7 +113,7 @@ class Context:
                     f"step '{self.step.id}': this query names the schema "
                     f"('{bad.group(0).strip()}'), which reads around the as-of views and "
                     f"would see data from after {self.as_of}. Write the table name on its "
-                    "own -- during a replay it resolves to the rows that existed then."
+                    "own -- during a screen it resolves to the rows that existed then."
                 )
         undeclared = sorted(
             ref for ref in tables_named(query)
@@ -132,7 +132,7 @@ class Context:
         """Which symbols this step is allowed to hold, **on the day it is deciding**.
 
         A universe file may carry `from` and `to` columns. When it does, this returns
-        only the members of that date, so a replay never holds a name before it
+        only the members of that date, so a screen never holds a name before it
         listed and never quietly drops one that was delisted. Without those columns
         the list is static, and every number built on it carries survivorship bias --
         `qanat check` says so.

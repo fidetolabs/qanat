@@ -1,0 +1,178 @@
+# Forty real 10-K filings: eight companies, five years each, straight from EDGAR.
+#
+#   qanat check                # the contract
+#   qanat run                  # fetch, parse, split. First run is ~10 minutes
+#   qanat mcp --scope research # hand it to an agent
+#
+# Nothing here is invented and nothing is bundled. The documents are downloaded
+# from the SEC on the first run and cached under data/documents, so a second run
+# touches the network only to look for filings it has not seen.
+project: sec_10k
+store: ./data/qanat.duckdb
+
+# ------------------------------------------------------------------ the stages --
+# Two. The landed layer holds documents exactly as they arrived; the layer above
+# holds the facts and the text pulled out of them. There is no metrics layer and
+# no results layer: a metric is a query over facts, and a screen is a call that
+# returns a list.
+stages:
+  - id: raw
+    kind: raw
+    description: one row per filing, and the document itself gzipped on disk
+  - id: normalized
+    kind: normalized
+    description: the tagged numbers, and the document split into its Items
+
+# ------------------------------------------------------------------- the clock --
+# Without this line the as-of views would not filter `documents` at all, and
+# every replay would read every filing ever made -- including ones published
+# after the day it is pretending to be.
+#
+# `published_at` is the right column because it is the day the numbers became
+# knowable. `period_end` is what they are *about*, which is a different question
+# and never a permission to see them. The gap is not small: Costco's 2025 fiscal
+# year ends 31 August and the filing lands 8 October, five weeks later.
+time_columns:
+  raw.documents: published_at
+  raw.prices: as_of
+  normalized.facts: as_of
+  normalized.filing_prices: as_of
+  normalized.spans: as_of
+
+# ------------------------------------------------------------------ the source --
+sources:
+  - id: filings
+    to: [raw.documents]
+    connector: sec
+    mode: replace
+    key: [id]
+    options:
+      # Two groups that are each internally comparable, which is what a relative
+      # screen needs, and not comparable with each other, which is the honest
+      # part. The SIC code rides along in source_keys so a query can group on it.
+      companies: [AAPL, MSFT, GOOGL, META, NVDA, WMT, TGT, COST]
+      form: 10-K
+      years: 5
+      # The SEC refuses requests with no contact in them. Change this to yours.
+      user_agent: ${SEC_USER_AGENT}
+      cache: ./data/documents
+
+  - id: prices
+    to: [raw.prices]
+    connector: yfinance
+    mode: replace
+    key: [subject, date]
+    options:
+      companies: [AAPL, MSFT, GOOGL, META, NVDA, WMT, TGT, COST]
+      from: "2021-01-01"
+      to: "2026-12-31"
+
+# ----------------------------------------------------------------- the corpus --
+# Which tables the reading tools look in. The platform does not name layers, so
+# the project says. Leave it out and the reading tools are simply not offered.
+corpus:
+  documents: raw.documents
+  spans: normalized.spans
+  facts: normalized.facts
+
+# ----------------------------------------------------------------- the return --
+# Where a screen finds what a company did after it passed. The dates are each
+# company's own filing dates, because Costco files in October and Walmart in
+# March, and pricing them on a shared calendar would measure twelve months for
+# one against sixteen for another.
+returns:
+  table: normalized.filing_prices
+  subject_column: subject
+  date_column: as_of
+  price_column: close
+
+# ----------------------------------------------------------------- the metrics --
+# A formula with a name and a version. Arithmetic, no judgement: the judgement
+# is the threshold a caller puts next to it, and that never lives here.
+#
+# `:as_of` is replaced with the date being screened. Each one selects `subject`
+# and `value`, one row per company.
+#
+# Two things both of these have to get right, and both were wrong first time.
+#
+# **A 10-K reports three years, all stamped with the same filing date.** So
+# `order by as_of desc` alone picks an arbitrary one of the three. The tiebreak
+# on `period_end` is what makes it the year actually being reported.
+#
+# **Filers do not agree on a revenue tag.** NVIDIA uses `Revenues`; Apple and
+# most others use `RevenueFromContractWithCustomerExcludingAssessedTax`. Taking
+# one and not the other silently dropped NVIDIA's revenue and produced a 271%
+# net margin. Mapping plain names onto the tags filers really use is the large
+# piece of work here, and these two metrics are a worked example of it, not a
+# finished map.
+metrics:
+  - id: pe
+    version: 2
+    unit: ratio
+    description: price on the filing date, over diluted EPS for the year reported
+    sql: |
+      SELECT subject, close / NULLIF(eps, 0) AS value FROM (
+        SELECT f.subject, f.value AS eps, p.close,
+               row_number() OVER (PARTITION BY f.subject
+                                  ORDER BY f.as_of DESC, f.period_end DESC) AS rn
+        FROM normalized__facts f
+        JOIN normalized__filing_prices p ON p.document = f.document
+        WHERE f.concept = 'us-gaap:EarningsPerShareDiluted'
+          AND f.dims = '{}' AND NOT f.is_instant
+          AND date_diff('day', f.period_start, f.period_end) BETWEEN 350 AND 380
+          AND f.as_of <= :as_of
+      ) WHERE rn = 1
+
+  - id: net_margin
+    version: 2
+    unit: ratio
+    description: net income over revenue, for the year reported
+    sql: |
+      WITH annual AS (
+        SELECT subject, concept, value, as_of, period_end
+        FROM normalized__facts
+        WHERE dims = '{}' AND NOT is_instant
+          AND date_diff('day', period_start, period_end) BETWEEN 350 AND 380
+          AND as_of <= :as_of
+      ), ni AS (
+        SELECT subject, value, row_number() OVER (PARTITION BY subject
+                 ORDER BY as_of DESC, period_end DESC) AS rn
+        FROM annual WHERE concept = 'us-gaap:NetIncomeLoss'
+      ), rev AS (
+        -- Whichever revenue tag this filer uses. Preferring the contract tag
+        -- when both are present keeps one company on one definition.
+        SELECT subject, value, row_number() OVER (PARTITION BY subject
+                 ORDER BY as_of DESC, period_end DESC,
+                 CASE concept
+                   WHEN 'us-gaap:RevenueFromContractWithCustomerExcludingAssessedTax' THEN 0
+                   ELSE 1 END) AS rn
+        FROM annual
+        WHERE concept IN ('us-gaap:RevenueFromContractWithCustomerExcludingAssessedTax',
+                          'us-gaap:Revenues')
+      )
+      SELECT ni.subject, ni.value / NULLIF(rev.value, 0) AS value
+      FROM ni JOIN rev ON rev.subject = ni.subject AND rev.rn = 1
+      WHERE ni.rn = 1
+
+# ------------------------------------------------------------------- the steps --
+steps:
+  - id: parse_facts
+    from: [raw.documents]
+    to:   [normalized.facts]
+    script: steps/parse_facts.py
+    options:
+      reads: raw.documents
+
+  - id: filing_prices
+    from: [raw.documents, raw.prices]
+    to:   [normalized.filing_prices]
+    script: steps/filing_prices.py
+    options:
+      reads: raw.documents
+
+  - id: split_sections
+    from: [raw.documents]
+    to:   [normalized.spans]
+    script: steps/split_sections.py
+    options:
+      reads: raw.documents

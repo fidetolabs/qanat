@@ -97,7 +97,7 @@ def _load_module(path: Path):
 
 
 def _seed(seed: int | None) -> None:
-    """Pin every generator a step might reach for, so a replay repeats exactly."""
+    """Pin every generator a step might reach for, so a screen repeats exactly."""
     if seed is None:
         return
     random.seed(seed)
@@ -167,35 +167,8 @@ def _run_python(store: Store, ctx: Context, step: Step, script: Path) -> int:
     return total
 
 
-def _check_weights(store: Store, project: Project, ctx: Context, step: Step) -> None:
-    """The one table in the weights stage is a portfolio, so say so if it is not."""
-    wl = project.weights_stage
-    if wl is None:
-        return
-    for ref in step.writes:
-        if not ref.startswith(f"{wl.id}."):
-            continue
-        df = store.read(ref)
-        cols = {c.lower() for c in df.columns}
-        if not {"symbol", "weight"} <= cols:
-            store.event("warn", step.id, f"{ref} has no symbol/weight columns -- is it a portfolio?")
-            continue
-        total = float(df["weight"].abs().sum())
-        if abs(total - 1.0) > 0.01:
-            store.event("warn", step.id, f"{ref}: |weights| sum to {total:.4f}, not 1.0")
-        if step.universe:
-            allowed = set(ctx.universe()["symbol"])
-            stray = sorted(set(df["symbol"]) - allowed)
-            if stray:
-                store.event(
-                    "warn", step.id,
-                    f"{ref}: {len(stray)} symbol(s) outside universe '{step.universe}': "
-                    + ", ".join(stray[:5]),
-                )
-
-
 def _check_lookahead(store: Store, project: Project, step: Step, as_of: str) -> None:
-    """A replayed step may not write a row stamped after the moment it ran.
+    """A screened step may not write a row stamped after the moment it ran.
 
     The as-of views already keep the future out of what a step reads. This catches
     the other way in -- a step that built a timestamp itself, or read around the
@@ -251,7 +224,6 @@ def run_step(
         )
         if as_of:
             _check_lookahead(store, project, step, as_of)
-        _check_weights(store, project, ctx, step)
         _record_applied(store, root, step)
         store.event("ok", step.id, f"wrote {rows:,} rows to {', '.join(step.writes)}")
         store.end_run(run_id, "ok", rows)
@@ -304,7 +276,7 @@ def run_job(
     if isinstance(job, Source):
         if as_of:
             raise ValueError(
-                f"'{job_id}' is a source. A replay reads what already landed; "
+                f"'{job_id}' is a source. A screen reads what already landed; "
                 "it never polls the outside world again"
             )
         return run_source(store, project, root, job)
@@ -324,7 +296,7 @@ def run_all(
 ) -> list[RunResult]:
     """Poll every source, then run every step in dependency order. One pass.
 
-    A replay passes `sources=False`: the raw tables are the record of what arrived,
+    A screen passes `sources=False`: the raw tables are the record of what arrived,
     and re-polling a live feed during a backtest would overwrite the very history
     being measured.
     """

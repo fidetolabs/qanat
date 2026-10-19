@@ -19,10 +19,10 @@ import os
 from pathlib import Path
 
 import pytest
+from conftest import write_demo_project as write_project
 
 from qanat.project import load
 from qanat.runner import run_all
-from qanat.scaffold import write_project
 from qanat.store import Store
 
 DSN = os.environ.get("QANAT_TEST_PG", "postgresql://qanat:qanat@127.0.0.1:5433/qanat")

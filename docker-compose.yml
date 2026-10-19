@@ -33,6 +33,11 @@ services:
       QANAT_MCP_TOKEN: ${QANAT_MCP_TOKEN:?set QANAT_MCP_TOKEN to serve MCP off loopback}
       QANAT_STORE: postgresql://qanat:qanat@postgres:5432/qanat
       QANAT_RESET: ${QANAT_RESET:-0}
+      # The demo project pulls real 10-K filings from SEC EDGAR, which refuses
+      # requests that do not say who is making them. No account, no API key --
+      # a name and an email address. Without it the container starts and the
+      # fetch fails.
+      SEC_USER_AGENT: ${SEC_USER_AGENT:-}
     volumes:
       - qanat_project:/project
     working_dir: /project

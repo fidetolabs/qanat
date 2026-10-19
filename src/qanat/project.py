@@ -10,7 +10,7 @@ becoming a pile of tables nobody can explain:
      written by exactly one step. No step may read another's weights, so no edge is
      ever counted twice.
   4. A `pnl` stage may follow it, and if it exists it is last. Nothing writes it by
-     hand: a replay does, one table per weights table, holding what it earned per
+     hand: a screen does, one table per weights table, holding what it earned per
      rebalance. It is the end of the pipeline.
   4. Every table read has a producer.
 """
@@ -22,10 +22,8 @@ import re
 from dataclasses import dataclass, field
 from pathlib import Path
 
-import pandas as pd
 import yaml
 
-from qanat.context import is_point_in_time
 from qanat.models import Project
 
 #: `${name}` in a .sql step body -- the same pattern the runner substitutes with.
@@ -76,10 +74,17 @@ def validate(p: Project, root: Path) -> Report:
         r.errors.append("a project needs at least one stage")
 
     # ---- rules 3 and 4: weights, then optionally pnl --------------------------
+    # A weights stage used to be required, from when the only thing a project
+    # could produce was a basket. A project that stops at clean dated facts is a
+    # complete project: a metric is a query over those facts and a screen is a
+    # call that returns a list, so neither needs a stage to land in. What is
+    # still enforced is at most one, and that a pnl stage has one to price.
     weights = [x for x in p.stages if x.kind == "weights"]
     pnls = [x for x in p.stages if x.kind == "pnl"]
-    if len(weights) != 1:
-        r.errors.append(f"exactly one stage must have kind 'weights', found {len(weights)}")
+    if len(weights) > 1:
+        r.errors.append(f"at most one stage may have kind 'weights', found {len(weights)}")
+    if pnls and not weights:
+        r.errors.append("a pnl stage has nothing to price without a weights stage before it")
     if len(pnls) > 1:
         r.errors.append(f"at most one stage may have kind 'pnl', found {len(pnls)}")
     last = p.stages[-1].kind if p.stages else None
@@ -96,7 +101,7 @@ def validate(p: Project, root: Path) -> Report:
             if any(w.startswith(f"{pnls[0].id}.") for w in st.writes):
                 r.errors.append(
                     f"step '{st.id}' writes into the pnl stage. Nothing writes it by hand: "
-                    "a replay does, once it knows what the portfolio earned"
+                    "a screen does, once it knows what the portfolio earned"
                 )
     elif weights and last != "weights":
         r.errors.append(f"the weights stage must be last, but '{p.stages[-1].id}' is")
@@ -314,56 +319,11 @@ def validate(p: Project, root: Path) -> Report:
                 elif (lay := p.stage(lid)) and lay.kind == "raw":
                     r.warnings.append(
                         f"retention '{ref}' deletes rows from a raw stage. raw is the record of "
-                        f"what arrived, and it is the one thing a replay cannot rebuild -- every "
+                        f"what arrived, and it is the one thing a screen cannot rebuild -- every "
                         f"other table is a function of it"
                     )
             except ValueError as exc:
                 r.errors.append(f"retention '{ref}': {exc}")
-
-    # ---- backtest -------------------------------------------------------------
-    if p.backtest is not None:
-        bt = p.backtest
-        if bt.prices not in producers:
-            r.errors.append(
-                f"backtest prices '{bt.prices}' is not produced by anything in this project"
-            )
-        for field_name in ("rebalance", "purge", "embargo"):
-            try:
-                parse_duration(getattr(bt, field_name))
-            except ValueError as exc:
-                r.errors.append(f"backtest {field_name}: {exc}")
-        if bt.fee_bps < 0 or bt.slippage_bps < 0:
-            r.errors.append("backtest fee_bps and slippage_bps cannot be negative")
-        if weights and not [t for t in producers if t.startswith(f"{weights[0].id}.")]:
-            r.warnings.append("backtest is configured but nothing writes a portfolio to price")
-
-    for ref in p.time_columns:
-        if ref.count(".") != 1:
-            r.errors.append(f"time_columns key must be stage.table, got {ref!r}")
-        elif ref not in producers:
-            r.warnings.append(f"time_columns names '{ref}', which nothing produces")
-
-    # A universe with no join and leave dates is today's list applied to the past.
-    # Every number built on it is flattered by the names that survived, so the file
-    # should say so out loud rather than let a good-looking figure go unqualified.
-    for u in p.universes:
-        path = root / u.symbols
-        if not path.is_file():
-            r.errors.append(f"universe '{u.id}': symbols file not found at {u.symbols}")
-            continue
-        try:
-            head = pd.read_csv(path, nrows=1)
-        except Exception as exc:  # noqa: BLE001 - a bad csv is the user's to see
-            r.errors.append(f"universe '{u.id}': {type(exc).__name__} reading {u.symbols}")
-            continue
-        if "symbol" not in {c.lower() for c in head.columns}:
-            r.errors.append(f"universe '{u.id}': {u.symbols} needs a 'symbol' column")
-        elif not is_point_in_time(head):
-            r.warnings.append(
-                f"universe '{u.id}' has no membership dates, so every backtest holds "
-                f"today's list across the whole window -- survivorship bias. Add `from` "
-                f"and `to` columns to {u.symbols} to price what was really investable"
-            )
 
     # ---- the graph has to be a graph ------------------------------------------
     # `runner.order()` gives up on a cycle and appends what is left in file order,
@@ -423,8 +383,8 @@ def validate(p: Project, root: Path) -> Report:
                 )
         if "as_of" in st.options:
             r.warnings.append(
-                f"step '{st.id}' sets an option called 'as_of'. A replay overwrites it with "
-                "the date being replayed, so this step means something different under "
+                f"step '{st.id}' sets an option called 'as_of'. A screen overwrites it with "
+                "the date being screened, so this step means something different under "
                 "`qanat backtest` than under `qanat run`"
             )
 
