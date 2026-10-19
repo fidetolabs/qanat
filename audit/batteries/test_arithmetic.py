@@ -1,117 +1,101 @@
-"""The money arithmetic, against answers worked out before the run.
+"""The screen arithmetic, against answers worked out before the run.
 
 None of this data is realistic. Every symbol compounds at a fixed rate, so the
-right answer is `(1 + rate) ** periods - 1` and there is nothing to interpret. An
+right answer is known in closed form and there is nothing to interpret. An
 engine that disagrees is wrong; that is the whole design.
 
-This is the half of the audit that protects what is already correct. It found
-nothing the first time -- net matched to 1.6e-13 -- and that result is exactly why
-it is worth re-running before every release.
+This is the half of the audit that protects what is already correct.
+
+**What it used to check is gone.** It checked money: net compounding, fees and
+slippage charged on turnover, two baskets blended as a weighted sum. Nothing
+in the package prices a basket any more, so the arithmetic that survives is
+the forward return — one company, its own two dates — and the threshold
+comparison a clause makes.
 """
 
 import pytest
 from lab import data, harness
 
+from qanat.screen import forward_returns, parse_filters, screen
+
 G = 0.001                       # +0.1% a day, every day, for everyone
 CAL = data.calendar(200)
 
 
-def _run(tmp_path, name, bars, step, **kw):
-    root = harness.build(tmp_path, name, bars, step, **kw)
+def _run(tmp_path, name, bars, **kw):
+    root = harness.build(tmp_path, name, bars, harness.HOLD_ONE.format(symbol="A"), **kw)
     project, r, store, _rep, results = harness.run(root)
     assert all(x.ok for x in results), [x.error for x in results if not x.ok]
     return project, r, store
 
 
-def test_net_is_the_compounded_answer_and_nothing_else(tmp_path):
-    project, r, store = _run(tmp_path, "arith", data.drift(CAL, {"A": G, "B": G}),
-                             harness.HOLD_ONE.format(symbol="A"), rebalance="1d")
-    bt = harness.backtest(store, project, r, "2024-01-10", "2024-06-01")
-    n = len(bt.periods)
-    assert n > 100, "not enough periods for this to mean anything"
-    assert bt.totals["net"] == pytest.approx((1 + G) ** n - 1, abs=1e-9)
-    assert bt.periods[0].gross == pytest.approx(G)
-    assert bt.periods[0].turnover == pytest.approx(1.0), "bought from flat"
-    assert bt.periods[1].turnover == pytest.approx(0.0), "held, so nothing traded"
-    store.close()
+@pytest.mark.audit
+def test_a_forward_return_is_the_two_prices_and_nothing_else(tmp_path):
+    """`next_price / price - 1`, between one company's own consecutive dates.
+    At a fixed daily rate every one of them is exactly that rate."""
+    project, _r, store = _run(tmp_path, "fwd", data.drift(CAL, {"A": G, "B": G}))
+    try:
+        fwd = forward_returns(store, project)
+        a = fwd[fwd["subject"] == "A"].dropna(subset=["forward_return"])
+        assert len(a) > 100
+        for got in a["forward_return"]:
+            assert got == pytest.approx(G, abs=1e-12)
+    finally:
+        store.close()
 
 
-def test_fees_and_slippage_are_charged_on_turnover(tmp_path):
-    """Alternate between two names, so every period turns the book over twice."""
-    alternate = ('import pandas as pd\n'
-                 'def run(ctx):\n'
-                 '    df = ctx.read("normalized.prices")\n'
-                 '    if df.empty:\n'
-                 '        return pd.DataFrame(columns=["symbol", "weight", "as_of"])\n'
-                 '    d = pd.Timestamp(df["date"].max())\n'
-                 '    pick = "A" if d.toordinal() % 2 == 0 else "B"\n'
-                 '    return pd.DataFrame([{"symbol": pick, "weight": 1.0,\n'
-                 '                          "as_of": df["date"].max()}])\n')
-    project, r, store = _run(tmp_path, "costs", data.drift(CAL, {"A": G, "B": G}),
-                             alternate, rebalance="1d", fee=10.0, slip=5.0)
-    bt = harness.backtest(store, project, r, "2024-01-10", "2024-06-01")
-    mid = bt.periods[3]
-    assert mid.turnover == pytest.approx(2.0), "sold one, bought the other"
-    assert mid.fees == pytest.approx(2.0 * 10 / 10_000)
-    assert mid.slippage == pytest.approx(2.0 * 5 / 10_000)
-    assert mid.net == pytest.approx(G - 2.0 * 15 / 10_000)
-    t = bt.totals
-    assert t["net_sum"] == pytest.approx(t["gross"] - t["fees"] - t["slippage"])
-    store.close()
+@pytest.mark.audit
+def test_the_last_date_has_no_forward_return_rather_than_a_zero(tmp_path):
+    """Nothing comes after it. Zero would be a claim; absent is the truth."""
+    project, _r, store = _run(tmp_path, "tail", data.drift(CAL, {"A": G}))
+    try:
+        fwd = forward_returns(store, project).sort_values("as_of")
+        assert fwd["forward_return"].iloc[-1] != fwd["forward_return"].iloc[-1]  # NaN
+    finally:
+        store.close()
 
 
-def test_a_name_that_stops_being_priced_is_not_counted_as_held(tmp_path):
-    """The bias a point-in-time engine exists to prevent, arriving by a side door:
-    a delisted name used to earn zero while still being reported as a holding."""
-    bars = data.delisting(CAL, at=100, rate=G)
-    project, r, store = _run(tmp_path, "delist", bars, harness.EQUAL_WEIGHT, rebalance="5d")
-    bt = harness.backtest(store, project, r, "2024-01-10", "2024-07-15")
-    after = [p for p in bt.periods if p.as_of > str(CAL[102])]
-    assert after, "the window has to reach past the delisting"
-    assert {p.holdings for p in after} == {3}, "D has no price, so three names were held"
-    assert any("no price" in n for n in bt.notes)
-    store.close()
+@pytest.mark.audit
+def test_each_company_is_priced_on_its_own_dates(tmp_path):
+    """Two symbols on different calendars must not be forced onto a shared one."""
+    bars = data.drift(CAL, {"A": G, "B": G})
+    bars = bars[~((bars["symbol"] == "B") & (bars["date"].isin(sorted(bars["date"])[:40])))]
+    project, _r, store = _run(tmp_path, "own", bars)
+    try:
+        fwd = forward_returns(store, project)
+        first = fwd.groupby("subject")["as_of"].min()
+        assert first["B"] > first["A"], "B starts later and its returns should too"
+        for got in fwd.dropna(subset=["forward_return"])["forward_return"]:
+            assert got == pytest.approx(G, abs=1e-12)
+    finally:
+        store.close()
 
 
-@pytest.mark.parametrize(("knob", "value"), [("purge", "5d"), ("embargo", "3d")])
-def test_the_knobs_shift_by_exactly_what_they_say(tmp_path, knob, value):
-    import pandas as pd
-
-    p0, r0, s0 = _run(tmp_path, f"{knob}_off", data.drift(CAL, {"A": G, "B": G}),
-                      harness.HOLD_ONE.format(symbol="A"), rebalance="10d")
-    p1, r1, s1 = _run(tmp_path, f"{knob}_on", data.drift(CAL, {"A": G, "B": G}),
-                      harness.HOLD_ONE.format(symbol="A"), rebalance="10d", **{knob: value})
-    a = harness.backtest(s0, p0, r0, "2024-03-01", "2024-04-01")
-    b = harness.backtest(s1, p1, r1, "2024-03-01", "2024-04-01")
-    days = int(value.rstrip("d"))
-    if knob == "embargo":
-        # the period fills `days` later at both ends
-        assert (pd.Timestamp(b.periods[0].priced_from)
-                - pd.Timestamp(a.periods[0].priced_from)).days == days
-    else:
-        # purge holds rows back from the step, not from the scorer, so the same
-        # window still closes the same number of periods
-        assert len(a.periods) == len(b.periods)
-    s0.close()
-    s1.close()
+@pytest.mark.audit
+def test_a_threshold_is_applied_exactly_where_it_is_set(tmp_path):
+    """A clause is a comparison. Off by one row is off by one row."""
+    project, _r, store = _run(tmp_path, "thresh", data.drift(CAL, {"A": G, "B": G}))
+    try:
+        values = {r["subject"]: r for r in screen(
+            store, project, parse_filters([{"metric": "px", "op": "<", "value": 1e9}]),
+            as_of="2024-03-01")["rows"]}
+        assert all(r["passed"] for r in values.values())
+        none_pass = screen(store, project, parse_filters(
+            [{"metric": "px", "op": "<", "value": 0}]), as_of="2024-03-01")
+        assert not any(r["passed"] for r in none_pass["rows"])
+    finally:
+        store.close()
 
 
-def test_blending_two_steps_is_a_weighted_sum(tmp_path):
-    """A blend's gross is the allocation times each step's gross. Nothing else."""
-    ga, gb = 0.002, 0.0005
-    bars = data.drift(CAL, {"A": ga, "B": gb})
-    extra = ("  - id: sorter_g\n"
-             "    from: [normalized.prices]\n"
-             "    to: [weights.g]\n"
-             "    script: steps/beta.py\n"
-             "    universe: u\n")
-    root = harness.build(tmp_path, "blend", bars, harness.HOLD_ONE.format(symbol="A"),
-                         files={"beta.py": harness.HOLD_ONE.format(symbol="B")},
-                         rebalance="1d", extra_steps=extra)
-    project, r, store, _rep, results = harness.run(root)
-    assert all(x.ok for x in results), [x.error for x in results if not x.ok]
-    for alloc, wa, wb in [(None, 0.5, 0.5), ({"h": 3, "g": 1}, 0.75, 0.25)]:
-        bt = harness.backtest(store, project, r, "2024-02-01", "2024-05-01",
-                              step=["sorter_h", "sorter_g"], allocation=alloc)
-        assert bt.periods[5].gross == pytest.approx(wa * ga + wb * gb, abs=1e-12)
-    store.close()
+@pytest.mark.audit
+def test_nothing_is_averaged_across_dates(tmp_path):
+    """A number that cannot be read off one date's list is not in the answer."""
+    project, _r, store = _run(tmp_path, "noavg", data.drift(CAL, {"A": G, "B": G}))
+    try:
+        out = screen(store, project, parse_filters(
+            [{"metric": "px", "op": ">", "value": 0}]),
+            frm="2024-02-01", to="2024-06-01", every="30d")
+        assert set(out) == {"rows", "counts", "applied"}
+        assert len(out["counts"]) > 1, "this is a window, so there is more than one date"
+    finally:
+        store.close()

@@ -1,118 +1,120 @@
 """Can a step reach data that had not happened yet?
 
-The one question this tool has to answer correctly. Everything else is arithmetic
-that can be checked by reading; leakage cannot, because a leaking step looks like
-a brilliant one.
+The one question this tool has to answer correctly. Everything else is
+arithmetic that can be checked by reading; leakage cannot, because a leaking
+step looks like a brilliant one.
 
-The data does the discriminating. Each day one of two symbols jumps 2% and the
-other falls 2%, in a pattern with nothing to learn from the past -- so a blind
-step earns roughly nothing, and one that can see two days ahead earns 2% per
-period, which compounds to something absurd. Every vector below runs the *same*
-cheating logic and differs only in how it tries to reach the prices. The net is
-the verdict.
+**The question is asked directly now.** It used to be asked through money: the
+step held a basket, and one that could see two days ahead earned 1292% against
+an honest 3%. That worked while the package priced a basket, and it only ever
+caught a leak that happened to be profitable. Nothing prices a basket any
+more, so each vector below reports the newest row it could reach and the test
+compares that against the day the pass is pretending to be. A leak is a date
+in the future whether or not it would have paid.
 
-    blind  ~3%      the honest baseline
-    leak   ~1292%   what seeing the future was worth when this was written
+Every vector runs the same reaching logic and differs only in how it tries to
+get at the prices.
 """
 
+import pandas as pd
 import pytest
 from lab import data, harness
 
-WINDOW = ("2024-01-20", "2024-06-01")
-HONEST = 0.10          # a blind step lands far below this
-LEAKING = 1.0          # a leaking one lands far above it
+#: The day every pass pretends to be. The data runs well past it, so anything
+#: reaching beyond is reaching into rows that had not happened yet.
+AS_OF = "2024-03-01"
 
-PICK_FROM_THE_FUTURE = '''
-    piv = full.pivot_table(index="date", columns="symbol", values="close", aggfunc="last")
-    piv = piv.sort_index()
-    piv.index = pd.to_datetime(piv.index)
-    later = piv.index[piv.index > pd.Timestamp(visible_max)]
-    if len(later) < 2:
-        pick = "A"
-    else:
-        d1, d2 = later[0], later[1]
-        pick = "A" if piv.loc[d2, "A"] / piv.loc[d1, "A"] > piv.loc[d2, "B"] / piv.loc[d1, "B"] else "B"
-    return pd.DataFrame([{"symbol": pick, "weight": 1.0, "as_of": visible_max}])
+PROBE = '''import pandas as pd
+
+
+def run(ctx):
+    legit = ctx.read("normalized.prices")
+    visible_max = legit["date"].max() if len(legit) else None
+    {getter}
+    reached = None
+    if full is not None and len(full):
+        reached = pd.to_datetime(full["date"]).max()
+    return pd.DataFrame([{{
+        "visible_max": visible_max,
+        "reached": reached,
+        "date": visible_max,
+    }}])
 '''
 
-
-def cheat(getter: str) -> str:
-    """A step that tries to see two days ahead, however `getter` reaches the data.
-
-    It writes an honest `as_of`, which is what makes this the realistic shape: the
-    lookahead guard checks the timestamp a step *writes*, so a leak that stamps the
-    right date sails past it.
-    """
-    return ("import pandas as pd\n"
-            "def run(ctx):\n"
-            '    legit = ctx.read("normalized.prices")\n'
-            "    if legit.empty:\n"
-            '        return pd.DataFrame(columns=["symbol", "weight", "as_of"])\n'
-            '    visible_max = legit["date"].max()\n'
-            f"    {getter}\n"
-            "    if full is None or len(full) == 0:\n"
-            '        return pd.DataFrame([{"symbol": "A", "weight": 1.0, "as_of": visible_max}])\n'
-            + PICK_FROM_THE_FUTURE)
-
-
 VECTORS = {
-    "blind":                'full = None',
-    "ctx.read":             'full = legit',
-    "ctx.sql bare":         'full = ctx.sql("SELECT date, symbol, close FROM normalized__prices")',
-    "ctx.sql raw":          'full = ctx.sql("SELECT date, symbol, close FROM raw__bars")',
-    "ctx.sql main.":        'full = ctx.sql("SELECT date, symbol, close FROM main.raw__bars")',
-    "ctx.store.read":       'full = ctx.store.read("raw.bars")',
+    "blind":          "full = None",
+    "ctx.read":       "full = legit",
+    "ctx.sql bare":   'full = ctx.sql("SELECT date, symbol, close FROM normalized__prices")',
+    "ctx.sql raw":    'full = ctx.sql("SELECT date, symbol, close FROM raw__bars")',
+    "ctx.sql main.":  'full = ctx.sql("SELECT date, symbol, close FROM main.raw__bars")',
+    "ctx.store.read": 'full = ctx.store.read("raw.bars")',
 }
 
 
-def _net(tmp_path, name, getter):
+def reach(tmp_path, name, getter):
+    """The newest row this vector could get to, running as of AS_OF.
+
+    Returns ("refused", why) when the engine stopped it, which is a pass, or
+    ("ran", the newest date it reached).
+    """
     bars = data.alternating_winner(data.calendar(200))
-    root = harness.build(tmp_path, name, bars, cheat(getter), rebalance="1d")
+    root = harness.build(tmp_path, name, bars, PROBE.format(getter=getter))
     project, r, store, _rep, results = harness.run(root)
     try:
         if any(not x.ok for x in results):
             return "refused", next(x.error for x in results if not x.ok)
-        bt = harness.backtest(store, project, r, *WINDOW)
-        return "ran", bt.totals.get("net")
+        passes = harness.at(store, project, r, AS_OF)
+        if any(not x.ok for x in passes):
+            return "refused", next(x.error for x in passes if not x.ok)
+        probe = store.read("normalized.probe")
+        if probe.empty or pd.isna(probe["reached"].iloc[0]):
+            return "ran", None
+        return "ran", pd.Timestamp(probe["reached"].iloc[0])
     except Exception as exc:                      # noqa: BLE001 -- refusing is a pass
         return "refused", f"{type(exc).__name__}: {exc}"
     finally:
         store.close()
 
 
-def test_the_blind_baseline_is_the_number_everything_is_measured_against(tmp_path):
-    how, net = _net(tmp_path, "blind", VECTORS["blind"])
-    assert how == "ran", net
-    assert abs(net) < HONEST, f"a blind step should earn nothing much, got {net:.2%}"
+@pytest.mark.audit
+def test_the_blind_baseline_reaches_nothing(tmp_path):
+    """The control. A step that does not try sees no rows at all through `full`."""
+    how, reached = reach(tmp_path, "blind", VECTORS["blind"])
+    assert how == "ran", reached
+    assert reached is None
 
 
+@pytest.mark.audit
 @pytest.mark.parametrize("vector", [v for v in VECTORS if v != "blind"])
 def test_no_route_to_the_future(tmp_path, vector):
-    """Either the route is refused, or it earns what a blind step earns.
+    """Either the route is refused, or everything it reached is in the past.
 
-    Both are passes. What must never happen is a run that succeeds *and* earns what
-    only a time machine can earn.
+    Both are passes. What must never happen is a pass that succeeds and comes
+    back holding a row dated after the day it was pretending to be.
     """
-    how, result = _net(tmp_path, vector.replace(".", "_").replace(" ", "_"), VECTORS[vector])
-    if how == "refused":
+    name = vector.replace(".", "_").replace(" ", "_")
+    how, reached = reach(tmp_path, name, VECTORS[vector])
+    if how == "refused" or reached is None:
         return
-    assert abs(result) < LEAKING, (
-        f"'{vector}' earned {result:.2%} against a blind ~3%. That is not an edge, "
-        f"it is a step reading rows that had not happened yet"
+    assert reached <= pd.Timestamp(AS_OF), (
+        f"'{vector}' reached {reached.date()} while the pass was pretending to be "
+        f"{AS_OF}. That is a step reading rows that had not happened yet."
     )
 
 
+@pytest.mark.audit
 def test_reading_the_source_file_off_disk_is_the_known_boundary(tmp_path):
     """This one leaks, and is expected to.
 
-    A step is arbitrary Python: it can open the file a source reads and take the
-    whole history. Nothing in this process can prevent that, so it is recorded as
-    the edge of what the as-of views can promise rather than left to be discovered
-    again by somebody who thought they had found an edge.
+    A step is arbitrary Python: it can open the file a source reads and take
+    the whole history. Nothing in this process can prevent that, so it is
+    recorded as the edge of what the as-of views can promise rather than left
+    to be discovered again by somebody who thought they had found an edge.
     """
-    how, net = _net(tmp_path, "off_disk", 'full = pd.read_csv(ctx.root / "seed/bars.csv")')
-    assert how == "ran"
-    assert net > LEAKING, (
-        "if this ever stops leaking, something now sandboxes a step -- delete this "
-        "test and celebrate"
+    how, reached = reach(tmp_path, "off_disk",
+                         'full = pd.read_csv(ctx.root / "seed/bars.csv")')
+    assert how == "ran", reached
+    assert reached is not None and reached > pd.Timestamp(AS_OF), (
+        "if this ever stops leaking, something now sandboxes a step -- delete "
+        "this test and celebrate"
     )

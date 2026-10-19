@@ -1,4 +1,4 @@
-"""Build a whole qanat project from nothing, run it, and price it.
+"""Build a whole qanat project from nothing, run it, and read what it saw.
 
 Everything here goes through the ordinary user path -- write a `qanat.yaml`, point
 a source at a file, run the graph, replay it. No internal shortcuts, because a
@@ -8,8 +8,8 @@ shortcut is exactly where a real user's problem would hide.
 
     root = harness.build(tmp, "h1", data.drift(data.calendar(), {"A": 0.001}),
                          harness.HOLD_ONE.format(symbol="A"))
-    p, r, store = harness.run(root)
-    bt = harness.backtest(store, p, r, "2024-01-10", "2024-06-01")
+    p, r, store, rep, results = harness.run(root)
+    harness.at(store, p, r, "2024-03-01")
 """
 
 from __future__ import annotations
@@ -50,9 +50,8 @@ def run(ctx):
 '''
 
 
-def project_yaml(name: str, *, rebalance: str = "1d", fee: float = 0.0, slip: float = 0.0,
-                 purge: str = "0d", embargo: str = "0d", extra_steps: str = "",
-                 step_script: str = "steps/sorter.py") -> str:
+def project_yaml(name: str, *, extra_steps: str = "",
+                 step_script: str = "steps/sorter.py", **_ignored) -> str:
     lines = [
         f"project: {name}",
         "store: ./data/q.duckdb",
@@ -60,9 +59,7 @@ def project_yaml(name: str, *, rebalance: str = "1d", fee: float = 0.0, slip: fl
         "  - {id: u, index: TEST, symbols: ./universes/u.csv}",
         "stages:",
         "  - {id: raw, kind: raw}",
-        "  - {id: normalized, kind: features}",
-        "  - {id: weights, kind: weights}",
-        "  - {id: pnl, kind: pnl}",
+        "  - {id: normalized, kind: normalized}",
         "sources:",
         "  - {id: bars, to: [raw.bars], connector: csv, mode: replace,",
         "     options: {path: ./seed/bars.csv}}",
@@ -71,23 +68,29 @@ def project_yaml(name: str, *, rebalance: str = "1d", fee: float = 0.0, slip: fl
         "     script: steps/normalize.sql}",
         "  - id: sorter_h",
         "    from: [normalized.prices]",
-        "    to: [weights.h]",
+        "    to: [normalized.probe]",
         f"    script: {step_script}",
         "    universe: u",
+        "    options: {reads: normalized.prices}",
     ]
     if extra_steps:
         lines += extra_steps.rstrip("\n").split("\n")
     lines += [
-        "backtest:",
-        "  prices: normalized.prices",
-        "  price_column: close",
-        "  symbol_column: symbol",
+        "time_columns:",
+        "  raw.bars: date",
+        "  normalized.prices: date",
+        "returns:",
+        "  table: normalized.prices",
+        "  subject_column: symbol",
         "  date_column: date",
-        f'  rebalance: "{rebalance}"',
-        f"  fee_bps: {fee}",
-        f"  slippage_bps: {slip}",
-        f'  purge: "{purge}"',
-        f'  embargo: "{embargo}"',
+        "  price_column: close",
+        "metrics:",
+        "  - id: px",
+        "    version: 1",
+        "    sql: |",
+        "      SELECT symbol AS subject, close AS value FROM normalized__prices",
+        "      WHERE date <= :as_of",
+        "      QUALIFY row_number() OVER (PARTITION BY symbol ORDER BY date DESC) = 1",
     ]
     return "\n".join(lines) + "\n"
 
@@ -126,7 +129,19 @@ def run(root: Path):
     return project, r, store, report, run_all(store, project, r)
 
 
-def backtest(store, project, root, frm: str, to: str, **kw):
-    from qanat.backtest import run_backtest
+def at(store, project, root, as_of: str):
+    """One pass with the clock set to `as_of`. Returns the run results.
 
-    return run_backtest(store, project, root, frm, to, **kw)
+    This is how a leak is caught now. The old way was to price a basket and
+    look at the money: a step that could see tomorrow earned 1292% against an
+    honest 3%. That worked, and it only worked when the leak happened to be
+    profitable. Reading the newest row a step could reach is the same question
+    asked directly.
+    """
+    from qanat.runner import run_all
+
+    store.open_pit(as_of, project.time_columns)
+    try:
+        return run_all(store, project, root, as_of=as_of, sources=False)
+    finally:
+        store.close_pit()
