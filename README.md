@@ -11,149 +11,191 @@
 <p align="center">
   <a href="https://github.com/fidetolabs/qanat/blob/main/LICENSE"><img alt="License" src="https://img.shields.io/badge/license-MIT-a2e65d?style=flat-square"></a>
   <a href="https://github.com/fidetolabs/qanat/blob/main/pyproject.toml"><img alt="Python" src="https://img.shields.io/badge/python-3.10%2B-a2e65d?style=flat-square"></a>
-  <a href="#status"><img alt="Status" src="https://img.shields.io/badge/status-beta-e8c069?style=flat-square"></a>
+  <a href="#cautions"><img alt="Status" src="https://img.shields.io/badge/status-beta-e8c069?style=flat-square"></a>
   <a href="https://discord.gg/JUmwATScS8"><img alt="Discord members" src="https://img.shields.io/badge/dynamic/json?logo=discord&logoColor=white&label=Discord&query=%24.approximate_member_count&url=https%3A%2F%2Fdiscord.com%2Fapi%2Fv10%2Finvites%2FJUmwATScS8%3Fwith_counts%3Dtrue&color=5865F2&style=flat-square"></a>
 </p>
 
-## What it is
+## What Qanat is
 
-Qanat is a **data platform for investment research**.
+Qanat is a data platform for investment research. You load company data into it,
+write the formulas you care about, and ask for the numbers as they stood on any
+past date.
 
 It does four things:
 
 | | |
 | --- | --- |
 | **ingest** | pull data in from wherever it lives |
-| **save** | keep it, dated, exactly as it arrived. The same data arriving twice is stored once, so a re-run is always safe |
-| **transform** | clean it, type it, and compute what you define from it |
-| **serve** | hand it back, including as it stood on a past date |
+| **save** | keep it with its dates, the way it arrived |
+| **transform** | clean it, and work out what you define from it |
+| **serve** | hand it back to your agent over MCP |
 
-And it has its **own orchestrator** that runs those four and checks each one did what it should.
+A scheduler keeps the ingesting and transforming going. A source pulls on its
+own clock, and a step starts when the table it reads is ready.
 
-That part is not an extra. A source pulls on its own clock and a step waits for the table it reads,
-so something has to hold the order. And a job that failed quietly looks exactly like a job that had
-nothing to do. Only the thing that knew the job was due can tell those apart. Without it, a data set
-loses a day and nobody notices.
+## Why the dates matter
 
-What it is **for** is investment research: company accounts, prices, anything with a date on it.
-Qanat computes the metrics you define over that data, for every company, for any date. Valuation
-metrics and screening metrics are just metrics you defined.
+A company publishes its results weeks or months after the period they cover. So
+if you ask what a company looked like in March 2022, you should only see what
+was public in March 2022.
 
-What it is **not**: it does not define metrics for you, does not hold your thresholds, does not pick
-companies, and does not trade. Those belong to you and to whatever you point at it.
+Qanat keeps two dates on every number: the period it covers, and the day it
+became public. Ask about a past date and you get what was public by then.
 
-## The dates are the point
+## How it is put together
 
-Company results come out a while after the period they cover. Before that day, nobody could read
-them.
+**One store.** A DuckDB file, or Postgres on localhost.
 
-So Qanat puts **two dates** on every number: the period it covers, and the day it became public.
+**Layers.** Data moves forward through them. The first layer holds what arrived
+and nobody edits it. The ones after hold what you worked out.
 
-Ask for a metric as of 2022 and you get it computed from what was public in 2022. Not from numbers
-that arrived in 2023. Without that, every answer about the past is quietly better than anything you
-could have acted on.
+**Steps.** A `.sql` file, or a `.py` file with a `run(ctx)`. A step says which
+tables it reads and writes, and it can only read what it declared.
 
-This is the one thing in Qanat that is hard to add later, and it is why the platform exists rather
-than a folder of spreadsheets.
+**Sources.** Four connectors: HTTP, SQL, CSV, and a fake market you can use
+before you have any API key.
 
-## Try it
+**The MCP server.** How you talk to it. There is no website. Your agent is the
+screen.
 
-Needs Python 3.10 or newer.
+## How to use it
+
+You need Python 3.10 or newer.
 
 ```bash
 uv tool install qanat-fdtl                 # or: pip install qanat-fdtl
 qanat init my-research --demo && cd my-research
 ```
 
-That builds a small working project and runs it, in about ten seconds. The data is made up, so you
-need no API key and no network.
+The demo builds a small project and runs it in about ten seconds. The data is
+made up, so you need no API key and no network.
 
-## Use it from your agent
+Then point an agent at it:
 
 ```bash
 claude mcp add qanat -- qanat mcp --scope research
 ```
 
-Any MCP client works. Then just ask:
+Any MCP client works:
+
+```json
+{ "mcpServers": { "qanat": { "command": "qanat", "args": ["mcp"], "cwd": "/path/to/my-research" } } }
+```
+
+Now you can ask for things:
 
 > *"What data is in here, and where did it come from?"*
->
-> *"Add a metric for price over earnings."*
 >
 > *"Which companies passed my rule in 2022?"*
 >
 > *"What did those companies do over the next year?"*
 
-There is no website and no dashboard. Your agent is the screen.
+### Pick how much the agent can do
 
-## What Qanat keeps, and what it does not
+`--scope` sets which tools your agent gets. Each level includes the one before it.
 
-**Qanat keeps what everyone shares.**
+| | Tools | What it can do |
+| --- | --- | --- |
+| `--scope data` | 6 | read the tables, including as they stood on a past date |
+| `--scope research` | 13 | and read a step, run a replay, read the result |
+| *(default)* | 21 | and write steps, sources and universes |
 
-- Your data, in layers. A source lands it as it arrived; steps you write clean and type it.
-- Your metric definitions. A metric is the same number for everybody who asks, so it is worked out
-  once rather than per request.
+Every tool description is sent to the model on every request. A smaller scope
+costs fewer tokens and gives the agent a shorter list to choose from, so pick
+the smallest one that does your job.
 
-Two of those are not finished in 0.4.0: versioned definitions and kept values are the direction, and
-today a metric is a step you run. See [Status](#status).
+### The project file
 
-**Your client keeps what is yours alone.** Thresholds. Target rates. Which companies you watch. Your
-saved work.
+Everything is in one `qanat.yaml`.
 
-That split is not a preference. Qanat cannot tell two callers apart, so anything belonging to one
-person cannot be stored in it correctly. Your agent, or a hosted service, is where that lives.
+```yaml
+project: equity
+store: ./data/qanat.duckdb
 
-**So screening happens on your side.** Qanat serves the values. Your client compares them to your
-numbers and gets the list.
+stages:
+  - { id: raw,        kind: raw }         # what arrived, never edited
+  - { id: normalized, kind: normalized }  # typed and de-duplicated
+  - { id: features,   kind: features }    # what you measure
+  - { id: weights,    kind: weights }
+  - { id: pnl,        kind: pnl }
 
-The yaml, the step contract and the four rules Qanat enforces are in
-**[docs/contract.md](https://github.com/fidetolabs/qanat/blob/main/docs/contract.md)**.
-Tool-by-tool reference is in
-**[docs/agents.md](https://github.com/fidetolabs/qanat/blob/main/docs/agents.md)**.
+sources:
+  - id: prices
+    to: [raw.daily_prices]
+    connector: rest
+    options: { url: https://api.example.com/v1/bars }
 
-## What comes in the box
+steps:
+  - id: normalize
+    from: [raw.daily_prices]
+    to:   [normalized.prices]
+    script: steps/normalize.sql
 
-| | |
-| --- | --- |
-| **Connectors** | HTTP, SQL, CSV, and a fake market so you can play before you have any API key |
-| **Store** | a DuckDB file, or Postgres on localhost |
-| **Examples** | five of them. `examples/filings-sample` is the shape this is built for |
+  - id: momentum
+    from: [normalized.prices]
+    to:   [features.momentum]
+    script: steps/momentum.py
+    options: { reads: normalized.prices, lookback: 20 }
+```
 
-Qanat makes no network calls of its own. The only ones are what your own sources make.
+A step in Python:
 
-## Status
+```python
+def run(ctx):
+    bars = ctx.read("normalized.prices")   # only tables listed in `from`
+    return df
+```
 
-**Beta.** It does what this page says on my own work, and few other people have run it. If something
-breaks, open an [issue](https://github.com/fidetolabs/qanat/issues) or say so on
-[Discord](https://discord.gg/JUmwATScS8).
+`ctx.read()` refuses any table the step did not declare, so a missing dependency
+is an error you see instead of a wrong number you don't.
 
-**You bring the data.** Nothing in here reads a company filing yet. There are generic connectors and
-no SEC parser, so loading real accounts is your job, or point it at a feed you already have.
+Run `qanat check` before anything else. It reads the file and tells you what is
+wrong with it.
 
-**It does not trade.** Qanat produces a list. It does not place an order, and no agent it serves
-ever will.
+### Running over history
 
-**What it does not do yet.** No industry grouping, so a ranking is against whatever list of companies
-you give it. No backfills. No incremental updates.
+```bash
+qanat backtest --from 2026-01-01 --to 2026-09-30 --step sort_on_trailing_return
+```
 
-**One honest limit.** The two dates stop a *step* from seeing the future. They do not stop *you*, or
-your agent, from reading ahead while deciding what to try. The data cannot cheat. A person still can.
+This walks the window one date at a time. On each date every step sees only the
+rows that were public then. You get one row per date, with the number of dates
+next to the result, because a figure from four dates and a figure from four
+hundred are different claims.
 
-**0.4.0 took a lot out.** This was built as a backtesting engine and it is a data platform now, so
-everything that judged a result is gone: the significance bar, the trial ledger, the indicator IC
-block, portfolio weights, the benchmark, the in-sample split, and live scoring. About 1,300 lines.
-The reasoning is in [CHANGELOG.md](https://github.com/fidetolabs/qanat/blob/main/CHANGELOG.md).
+More in [docs/backtest.md](https://github.com/fidetolabs/qanat/blob/main/docs/backtest.md),
+[docs/contract.md](https://github.com/fidetolabs/qanat/blob/main/docs/contract.md)
+and [docs/agents.md](https://github.com/fidetolabs/qanat/blob/main/docs/agents.md).
 
-**Three things on this page are the direction and not 0.4.0.** The package still ships five fixed
-layer names rather than letting you name your own. Metric definitions are not versioned yet, and
-their values are not kept. And screening is still a step you write rather than one call. Each is a
-decision already made, not an open question.
+## Cautions
 
-**What this is not.** Airflow, Dagster and Prefect run general pipelines and run them across many
-machines. Use those for that.
+**It is beta.** It works for my own use and few other people have run it. If
+something breaks, open an [issue](https://github.com/fidetolabs/qanat/issues) or
+say so on [Discord](https://discord.gg/JUmwATScS8).
 
-Issues and pull requests welcome. See
-**[CONTRIBUTING.md](https://github.com/fidetolabs/qanat/blob/main/CONTRIBUTING.md)**.
+**You bring the data.** There is no SEC filing parser in here. You write the
+connector, or point it at a feed you already have.
+
+**You write the formulas and pick the numbers.** Qanat works out what you asked
+for and reports what came out. Choosing a threshold is your job.
+
+**The dates protect a step, not you.** A step cannot see past its date. You and
+your agent still can, while you are deciding what to try.
+
+**It cannot place an order,** and no agent it serves ever will.
+
+**Still missing:** industry grouping, so a ranking is against whatever list of
+companies you hand it. Also backfills and incremental updates.
+
+**Two layer names are out of date.** The last two stages are still called
+`weights` and `pnl`, from when this was built as a backtesting engine. The code
+is a screening platform now and the names have not caught up.
+
+**For general pipelines, use something else.** Airflow, Dagster and Prefect run
+any DAG and run it across many machines. Qanat runs one shape.
+
+Pull requests welcome. See
+[CONTRIBUTING.md](https://github.com/fidetolabs/qanat/blob/main/CONTRIBUTING.md).
 
 ## License
 
