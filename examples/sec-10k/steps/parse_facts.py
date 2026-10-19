@@ -12,11 +12,10 @@ clock for exactly this reason.
 """
 
 import gzip
-import json
 
 import pandas as pd
 
-from qanat.xbrl import parse, read_facts, taxonomy
+from qanat.xbrl import read_facts, taxonomy
 
 #: What makes two facts the same fact. `fact_id` is deliberately not in it:
 #: it identifies the tag, not the number.

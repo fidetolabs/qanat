@@ -95,29 +95,31 @@ def test_reads_through_a_second_cursor_find_the_meta_tables(pg: Store):
     assert pg.backtests() == []
 
 
-def test_a_pipeline_pass_lands_a_portfolio(project):
+def test_a_pipeline_pass_lands_every_table(project):
     store, proj, root = project
     results = run_all(store, proj, root)
     assert all(r.ok for r in results), [(r.job_id, r.error) for r in results if not r.ok]
-    assert not store.read("weights.target").empty
+    assert not store.read("features.target").empty
 
 
-def test_a_replay_can_rewrite_the_tables_it_shadows(project):
+def test_a_pass_as_of_a_date_can_rewrite_the_tables_it_shadows(project):
     """Bug: open_pit puts a view over every table, and a step then replaces the
     table underneath it. Postgres will not drop a table a view depends on, so
-    every pass failed and every backtest priced at zero."""
-    from qanat.backtest import run_backtest
-
+    every pass failed and every screen over a window came back empty."""
     store, proj, root = project
     assert all(r.ok for r in run_all(store, proj, root))
 
-    prices = store.read(proj.backtest.prices)
-    col = proj.backtest.date_column
-    frm, to = str(prices[col].min())[:10], str(prices[col].max())[:10]
+    prices = store.read("normalized.prices")
+    as_of = str(prices["date"].max())[:10]
 
-    res = run_backtest(store, proj, root, frm, to, rebalance="60d", step="portfolio")
-    assert res.periods, f"no period priced: {res.notes[:3]}"
-    assert res.totals["periods"] > 0
+    store.open_pit(as_of, proj.time_columns)
+    try:
+        passes = run_all(store, proj, root, as_of=as_of, sources=False)
+    finally:
+        store.close_pit()
+    assert passes and all(r.ok for r in passes), \
+        [(r.job_id, r.error) for r in passes if not r.ok]
+    assert not store.read("features.target").empty
 
 
 def test_a_source_key_upserts_on_the_server(project):
