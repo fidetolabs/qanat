@@ -33,10 +33,9 @@ _UNITS = {
 def parse_duration(text: str, field: str = "retention") -> timedelta:
     """Parse '7d', '24h', '1y', '30 minutes' into a timedelta.
 
-    `field` is the name to put in the error. This helper is shared with the backtest
-    for `rebalance`, `purge` and `embargo`, and it used to say "retention must look
-    like '7d'" whichever one you had actually mistyped -- sending the reader to the
-    wrong setting.
+    `field` is the name to put in the error. It is shared with the screen's
+    `every`, and it used to say "retention must look like '7d'" whichever one you
+    had actually mistyped -- sending the reader to the wrong setting.
     """
     raw = str(text).strip()
     m = _DURATION.match(raw)
