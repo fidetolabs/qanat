@@ -5,7 +5,7 @@
 <h1 align="center">Qanat</h1>
 
 <p align="center">
-  <i>A data platform for investment research.</i>
+  <i>A data platform for processing metrics from filings.</i>
 </p>
 
 <p align="center">
@@ -17,14 +17,18 @@
 
 ## What Qanat is
 
-Qanat is a data platform for investment research. You load company data into it,
-write the formulas you care about, and ask for the numbers as they stood on any
-past date.
+Qanat is a data platform for processing metrics from filings. It reads company
+filings, computes the metrics you define, and answers as of any past date.
 
 What you came for is a **screen**: define a metric, set a threshold, get the
 companies that pass. Every stock screener on the internet screens *today*. This
 one screens **as of any past filing date, with no look-ahead** -- which is the
 whole difference, and the reason for everything below.
+
+**Filings are the subject, not a limitation of the plumbing.** The tables are
+called `documents`, `facts` and `spans`, and the SEC is one connector among
+five. What narrows is the promise: this reads filings and makes metrics, and
+that is the thing it intends to be good at.
 
 It does four things:
 

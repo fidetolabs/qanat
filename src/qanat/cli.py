@@ -465,7 +465,7 @@ def cmd_mcp(args) -> int:
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
         prog="qanat",
-        description="A data platform for investment research. It ingests financial data sources and computes point-in-time financial metrics for valuation and screening. Delivered as an MCP server.",
+        description="A data platform for processing metrics from filings. It reads company filings, computes the metrics you define, and answers as of any past date. Delivered as an MCP server.",
     )
     p.add_argument("--version", action="version", version=f"qanat {__version__}")
     p.add_argument("-p", "--project", help="path to qanat.yaml (default: found by walking up)")

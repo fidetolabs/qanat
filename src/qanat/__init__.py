@@ -1,7 +1,7 @@
-"""Qanat: a data platform for investment research.
+"""Qanat: a data platform for processing metrics from filings.
 
-It ingests financial data sources and computes point-in-time financial metrics
-for valuation and screening. Delivered as an MCP server.
+It reads company filings, computes the metrics you define, and answers as of
+any past date. Delivered as an MCP server.
 
 A qanat is the underground channel that carried water across the desert for two
 thousand years: it moved the water, it never owned it.
