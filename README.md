@@ -63,6 +63,9 @@ opening the same project is refused -- not slowed, refused. With parquet the
 writer adds a file nobody is reading, so a reader is never blocked. The forty
 filings below also take 7 MB as parquet against 18 MB in a DuckDB file.
 
+A table is a directory of files, so landing a day of filings writes a day of
+filings rather than the whole corpus again.
+
 **Layers.** Data moves forward through them. The first layer holds what arrived
 and nobody edits it. The ones after hold what you worked out. You name them.
 

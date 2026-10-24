@@ -6,6 +6,7 @@ anything asking what happened is reading history rather than being told a story.
 
 from __future__ import annotations
 
+import contextlib
 import importlib.util
 import json
 import random
@@ -52,8 +53,16 @@ class RunResult:
 def run_source(store: Store, project: Project, root: Path, src: Source) -> RunResult:
     run_id = store.start_run(src.id, "source", [src.ref])
     try:
+        # What is the newest row this table already holds? An adapter that can
+        # fetch incrementally uses it to ask only for what came after. Only
+        # meaningful on an append: a replace is going to overwrite the table
+        # anyway, so a partial answer would throw away the history.
+        since = None
+        if src.mode == "append" and store.exists(src.ref):
+            with contextlib.suppress(Exception):
+                since = store.max_time(src.ref, project.time_columns.get(src.ref))
         df = source_adapters.fetch(
-            src, root, on_warn=lambda m: store.event("warn", src.id, m)
+            src, root, on_warn=lambda m: store.event("warn", src.id, m), since=since
         )
         if df is None or df.empty:
             # In replace mode an empty answer has to clear the table. Returning here

@@ -328,47 +328,143 @@ class Store:
 
     # ---- parquet: files on disk, views over them -----------------------------
     def _pq(self, name: str) -> Path:
-        return self.dir / TABLES_DIR / f"{name}.parquet"
+        """A table is a directory of parquet files, not one file.
+
+        One file meant every write rewrote the whole table: adding one day of
+        filings to a 100-million-row table wrote 892 MB to land 2 MB. A
+        directory lets an append add a file and leave the rest alone, which is
+        the thing parquet was chosen for.
+        """
+        return self.dir / TABLES_DIR / name
+
+    def _parts(self, name: str) -> list[Path]:
+        d = self._pq(name)
+        return sorted(d.glob("*.parquet")) if d.is_dir() else []
 
     def _publish_views(self) -> None:
-        """Point a view at every parquet file in the directory.
+        """Point a view at every table directory.
 
         After this the rest of the class does not know it is reading files:
         `_q()` returns the same quoted name it always did, and a view answers it.
         """
-        for file in sorted((self.dir / TABLES_DIR).glob("*.parquet")):
-            self._view(file.stem)
+        root = self.dir / TABLES_DIR
+        self._migrate_single_files(root)
+        for d in sorted(root.iterdir() if root.is_dir() else []):
+            if d.is_dir():
+                self._view(d.name)
+
+    def _migrate_single_files(self, root: Path) -> None:
+        """Move a table written as one file into its own directory.
+
+        0.6 wrote `facts.parquet`. 0.7 writes `facts/0000.parquet`. Doing it on
+        open means an existing project keeps working without being told to run
+        anything.
+        """
+        for f in sorted(root.glob("*.parquet")) if root.is_dir() else []:
+            d = root / f.stem
+            d.mkdir(exist_ok=True)
+            f.replace(d / "0000.parquet")
 
     def _view(self, name: str) -> None:
-        file = self._pq(name)
-        if not file.exists():
+        parts = self._parts(name)
+        if not parts:
             self.con.execute(f'DROP VIEW IF EXISTS {self._q(name)}')
             return
+        glob = str(self._pq(name) / "*.parquet").replace(chr(39), chr(39) * 2)
+        # union_by_name, because a later file may order its columns differently
+        # and lining them up by position would write dates into a symbol column.
         self.con.execute(
             f"CREATE OR REPLACE VIEW {self._q(name)} AS "
-            f"SELECT * FROM read_parquet('{str(file).replace(chr(39), chr(39) * 2)}')"
+            f"SELECT * FROM read_parquet('{glob}', union_by_name=true)"
         )
 
-    def _publish(self, name: str, select_sql: str) -> int:
-        """Write a query's result over a table's parquet file, atomically.
+    def _write_part(self, name: str, select_sql: str, stem: str) -> Path:
+        """Write one parquet file into a table's directory, atomically.
 
         The write goes to a sibling `.tmp` and is then renamed. A rename within
-        one directory is atomic, so a reader globbing for `*.parquet` sees the
-        old file or the new one and never a half-written one. A reader already
+        one directory is atomic, so a reader globbing for `*.parquet` sees a
+        finished file or no file, never a half-written one. A reader already
         part-way through a scan keeps the file it opened, because the old inode
         survives until it lets go.
 
         This is the whole of what parquet costs over a database, and it is two
         lines. What it buys is that the reader was never asked to wait.
         """
-        file = self._pq(name)
-        tmp = file.with_suffix(".parquet.tmp")
-        file.parent.mkdir(parents=True, exist_ok=True)
-        quoted = str(tmp).replace(chr(39), chr(39) * 2)
-        self.con.execute(f"COPY ({select_sql}) TO '{quoted}' (FORMAT parquet)")
-        tmp.replace(file)
-        self._view(name)
+        d = self._pq(name)
+        d.mkdir(parents=True, exist_ok=True)
+        final = d / f"{stem}.parquet"
+        tmp = d / f"{stem}.parquet.tmp"
+        self.con.execute(
+            f"COPY ({select_sql}) TO '{str(tmp).replace(chr(39), chr(39) * 2)}' (FORMAT parquet)")
+        tmp.replace(final)
+        return final
+
+    def _next_stem(self, name: str) -> str:
+        parts = self._parts(name)
+        nums = [int(p.stem) for p in parts if p.stem.isdigit()]
+        return f"{(max(nums) + 1 if nums else 0):04d}"
+
+    def _rows(self, name: str) -> int:
         return int(self.con.execute(f"SELECT count(*) FROM {self._q(name)}").fetchone()[0])
+
+    def _publish(self, name: str, select_sql: str) -> int:
+        """Replace a table: one new file, and the old ones go.
+
+        The new file is written first and the old ones are removed after, so a
+        reader is never looking at an empty directory.
+        """
+        before = self._parts(name)
+        self._write_part(name, select_sql, "0000" if not before else self._next_stem(name))
+        for old_part in before:
+            old_part.unlink(missing_ok=True)
+        self._view(name)
+        return self._rows(name)
+
+    def _add_part(self, name: str, select_sql: str) -> int:
+        """Append: one new file, and nothing existing is touched.
+
+        This is the cheap path and the reason a table is a directory. Landing
+        a day of filings writes a day of filings, not the whole corpus again.
+        """
+        self._write_part(name, select_sql, self._next_stem(name))
+        self._view(name)
+        return self._rows(name)
+
+    def _overlaps(self, name: str, key: Sequence[str], frame: str) -> bool:
+        """Could any incoming key already be in a file that is here?
+
+        Every parquet file records the smallest and largest value it holds for
+        each column, so this is answered from the footers without reading a
+        row. When the answer is no -- which is every ordinary time-series
+        append, because the new dates are after all the old ones -- the write
+        is a new file and nothing is rewritten.
+        """
+        parts = self._parts(name)
+        if not parts:
+            return False
+        bounds = {k: self.con.execute(
+            f'SELECT min("{_ident(k)}"), max("{_ident(k)}") FROM {frame}').fetchone()
+            for k in key}
+        if any(lo is None for lo, _ in bounds.values()):
+            return True          # a null key could match anything
+        for part in parts:
+            quoted = str(part).replace(chr(39), chr(39) * 2)
+            stats = {
+                row[0]: (row[1], row[2])
+                for row in self.con.execute(
+                    f"SELECT path_in_schema, stats_min_value, stats_max_value "
+                    f"FROM parquet_metadata('{quoted}')").fetchall()
+            }
+            # The file overlaps when every key column's range overlaps. A single
+            # column that cannot match rules the whole file out.
+            if all(
+                k not in stats or stats[k][0] is None
+                or not (str(stats[k][1]) < str(bounds[k][0])
+                        or str(stats[k][0]) > str(bounds[k][1]))
+                for k in key
+            ):
+                return True
+        return False
 
     def _search_path(self) -> str:
         """Where a bare name is looked up, in order.
@@ -813,9 +909,15 @@ class Store:
         with self._lock:
             self.con.register("_incoming", df)
             try:
-                if mode != "append" or not self._exists(name):
+                appending = mode == "append" and self._exists(name)
+                if not appending:
                     rows = self._publish(name, "SELECT * FROM _incoming")
                 else:
+                    # Checked before the path is chosen, not inside one of them.
+                    # The cheap path skipped this once, and a frame with the
+                    # wrong columns then landed as a file that `union_by_name`
+                    # padded with nulls -- a wrong answer and no error, which is
+                    # the failure this check exists to stop.
                     have = [c for (c,) in self.con.execute(
                         "SELECT column_name FROM duckdb_columns() WHERE database_name = "
                         "current_catalog() AND schema_name = ? AND table_name = ? "
@@ -831,6 +933,18 @@ class Store:
                             + f"The table holds: {', '.join(have)}"
                         )
                     cols = ", ".join(f'"{_ident(c)}"' for c in have)
+
+                # `appending` is read once, above. Asking `_exists` again here
+                # would be true even when the branch above has just created the
+                # table, and this block would run with no columns worked out.
+                if appending and (not key or not self._overlaps(name, key, "_incoming")):
+                    # The cheap path, and the common one. With no key there is
+                    # nothing to replace; with a key whose values are all new --
+                    # a day of prices after the last day stored -- there is
+                    # nothing to replace either. One file goes down and the rest
+                    # of the table is not read, let alone rewritten.
+                    rows = self._add_part(name, f"SELECT {cols} FROM _incoming")
+                elif appending:
                     kept = f"SELECT {cols} FROM {self._q(name)}"
                     if key:
                         # A null never equals a null in SQL, so a key holding a
@@ -842,6 +956,11 @@ class Store:
                         )
                         kept = (f"SELECT {cols} FROM {self._q(name)} old WHERE NOT EXISTS "
                                 f"(SELECT 1 FROM _incoming WHERE {match})")
+                    # The overlapping path: a key that already exists has to be
+                    # replaced, and a parquet file cannot be edited, so the table
+                    # is rewritten. Reached only when the footers say an incoming
+                    # key really could be in a file already here.
+                    #
                     # By name, not by position: a feed that reordered its columns
                     # would otherwise write dates into the symbol column.
                     rows = self._publish(
@@ -850,7 +969,11 @@ class Store:
                 self.con.unregister("_incoming")
                 if self.as_of is not None:
                     self._shadow(ref)
-        return rows if mode == "append" else len(df)
+        # What this job did, which is the rows it handed over. Returning the
+        # table total instead made an incremental append of 16 rows report
+        # 11,672 and look like it had re-fetched everything.
+        del rows
+        return len(df)
 
     def prune_rows(self, ref: str, col: str, cutoff: Any) -> int:
         """Drop rows whose `col` is older than `cutoff`. Returns how many went.
@@ -1057,9 +1180,9 @@ class Store:
 
     def _exists(self, name: str) -> bool:
         if self.kind == "parquet":
-            # The file is the table. The view over it is a detail that can be
-            # rebuilt, so the file is what gets asked.
-            return self._pq(name).exists()
+            # The files are the table. The view over them is a detail that can
+            # be rebuilt, so the files are what get asked.
+            return bool(self._parts(name))
         return bool(
             self.con.execute(
                 "SELECT count(*) FROM duckdb_tables() WHERE database_name = current_catalog() "
@@ -1075,7 +1198,9 @@ class Store:
     def all_tables(self) -> list[str]:
         """Every table actually in the file, as `stage.table`. Meta tables excluded."""
         if self.kind == "parquet":
-            names = sorted(f.stem for f in (self.dir / TABLES_DIR).glob("*.parquet"))
+            root = self.dir / TABLES_DIR
+            names = sorted(d.name for d in (root.iterdir() if root.is_dir() else [])
+                           if d.is_dir() and any(d.glob("*.parquet")))
             return [unphys(n) for n in names if n not in META and "__" in n]
         rows = self.rcon.execute(
             "SELECT table_name FROM duckdb_tables() WHERE database_name = current_catalog() "
@@ -1090,7 +1215,10 @@ class Store:
         with self._lock:
             if self.kind == "parquet":
                 self.con.execute(f'DROP VIEW IF EXISTS {self._q(phys(ref))}')
-                self._pq(phys(ref)).unlink(missing_ok=True)
+                for part in self._parts(phys(ref)):
+                    part.unlink(missing_ok=True)
+                with contextlib.suppress(OSError):
+                    self._pq(phys(ref)).rmdir()
             else:
                 self.con.execute(f'DROP TABLE IF EXISTS {self._q(phys(ref))}')
         return info.rows if info else 0

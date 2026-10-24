@@ -62,7 +62,11 @@ sources:
   - id: prices
     to: [raw.prices]
     connector: yfinance
-    mode: replace
+    # append, not replace: with a key and an append the connector is told the
+    # newest day already stored and asks Yahoo only for what came after it.
+    # On replace it would re-download every year on every run, which is fine
+    # for eight companies and impossible for a market.
+    mode: append
     key: [subject, date]
     options:
       companies: [AAPL, MSFT, GOOGL, META, NVDA, WMT, TGT, COST]

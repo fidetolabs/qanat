@@ -1,5 +1,77 @@
 # Changelog
 
+## 0.8.0 — 2026-10-25
+
+### An append writes what arrived, not the whole table again
+
+A parquet table was one file, so every write rewrote all of it. Landing one
+day of filings into a 100-million-row table wrote **892 MB to add 2 MB**. It
+worked, and it threw away the thing parquet was chosen for.
+
+A table is now a directory of files. An append writes one file and touches
+nothing else:
+
+```
+tables/normalized__facts/
+    0000.parquet
+    0001.parquet      today, written once
+```
+
+Measured, appending to a table of each size:
+
+| table | append | rewrite |
+| --- | --- | --- |
+| 1 M rows | 7 ms | 17 ms |
+| 5 M rows | 8 ms | 53 ms |
+| 20 M rows | **11 ms** | 199 ms |
+
+The append stays flat while the rewrite grows with the table, which is the
+whole point: the cost of landing a day should depend on the day, not on how
+much history is behind it.
+
+**A keyed append asks the footers before it decides.** Every parquet file
+records the range it holds for each column, so a key that cannot already be
+there needs no rewrite — which is every ordinary time-series append, because
+the new dates come after the old ones. When a key really could be there, the
+table is rewritten and the old row is replaced rather than duplicated.
+
+**An existing project migrates itself.** A table written by 0.6 or 0.7 as one
+file is moved into its own directory when the store opens.
+
+### Prices ask only for the day they are missing
+
+The connector had a fixed `from:` date, so every poll re-downloaded the whole
+history for every company. At eight companies that is 11,672 rows a run. At a
+few thousand it is tens of millions, and Yahoo would stop answering.
+
+The runner now reads the newest day already stored and hands it to the
+connector, which resumes from there. In `examples/sec-10k` a second run
+fetches **16 rows instead of 11,672**.
+
+It resumes one day earlier than the newest stored row, not from the row
+itself: the last poll may have run before the close and stored a partial bar.
+Re-fetching one day costs one row and the key replaces it.
+
+Only adapters that can use it are given it. `csv` has no upstream to ask.
+
+### Fixed
+
+**An append reported the size of the table rather than what it wrote.** An
+incremental fetch of 16 rows logged `11,672 rows`, which looked exactly like
+the full re-download it had just stopped doing.
+
+**Appending to a table that did not exist yet crashed.** The branch that
+creates the table also makes it exist, so a second check of that ran the
+append path before any columns had been worked out. It failed on the first
+cold build of the example and passed on every run after, which is the worst
+way for a bug to behave.
+
+**The column check now runs before the write path is chosen.** It had moved
+inside one of the two paths, so a frame with the wrong columns took the cheap
+path and landed as a file that `union_by_name` padded with nulls — a wrong
+answer and no error, which is the failure the check exists to stop.
+
+
 ## 0.7.0 — 2026-10-24
 
 ### A split made every old price wrong, and the PE with it

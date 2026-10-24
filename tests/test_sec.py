@@ -292,3 +292,45 @@ def test_the_split_day_itself_is_already_in_the_new_money():
     ratio = px["split_ratio"].replace(0.0, 1.0)
     rev = ratio[::-1].groupby(px["subject"][::-1]).cumprod()[::-1]
     assert (rev / ratio).iloc[0] == 1.0, "the split day is not multiplied by its own split"
+
+
+# ------------------------------------------------------ fetching only the gap
+def test_the_connector_asks_only_for_what_came_after(monkeypatch):
+    """A fixed `from:` means every poll re-downloads the whole history. At a
+    few names that is wasteful; at a few thousand it is what gets refused."""
+    import pandas as pd
+
+    from qanat.models import Source
+    from qanat.sources import yfinance_source as yfs
+
+    asked = {}
+
+    class FakeTicker:
+        def __init__(self, sym):
+            self.sym = sym
+            self.fast_info = {}
+        def history(self, start=None, end=None, auto_adjust=None):
+            asked["start"] = start
+            idx = pd.DatetimeIndex([pd.Timestamp("2026-10-23")])
+            return pd.DataFrame({"Close": [1.0], "Adj Close": [1.0],
+                                 "Stock Splits": [0.0], "Dividends": [0.0]}, index=idx)
+
+    monkeypatch.setattr(yfs, "_require", lambda: type("M", (), {"Ticker": FakeTicker}))
+    src = Source(id="p", to=["raw.prices"], connector="yfinance",
+                 options={"companies": ["A"], "from": "2021-01-01"})
+
+    yfs.fetch(src, Path("."), since=None)
+    assert asked["start"] == "2021-01-01", "a cold table starts at options.from"
+
+    yfs.fetch(src, Path("."), since="2026-10-23")
+    assert asked["start"] == "2026-10-22", "a warm table resumes, one day back"
+
+
+def test_the_dispatcher_only_passes_since_to_adapters_that_take_it():
+    """`csv` and `rest` have no upstream to ask, so handing them a `since`
+    would be a TypeError on every poll."""
+    from qanat.sources import ADAPTERS
+
+    assert getattr(ADAPTERS["yfinance"], "wants_since", False)
+    assert not getattr(ADAPTERS["csv"], "wants_since", False)
+    assert not getattr(ADAPTERS["sec"], "wants_since", False)

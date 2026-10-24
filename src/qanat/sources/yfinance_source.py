@@ -99,7 +99,7 @@ def _require():
     return yfinance
 
 
-def fetch(source: Source, root: Path, on_warn=None) -> pd.DataFrame:
+def fetch(source: Source, root: Path, on_warn=None, since: str | None = None) -> pd.DataFrame:
     yf = _require()
     opts: dict[str, Any] = source.options or {}
     companies = opts.get("companies") or []
@@ -108,6 +108,23 @@ def fetch(source: Source, root: Path, on_warn=None) -> pd.DataFrame:
     start, end = opts.get("from"), opts.get("to")
     if not start:
         raise ValueError(f"source '{source.id}': yfinance needs options.from")
+
+    # Close the gap the last poll left, rather than downloading the whole
+    # history again. `options.from` is where a cold table starts; `since` is
+    # the newest day already stored, and after that it is the one that counts.
+    #
+    # This is the difference between asking Yahoo for one day and asking for
+    # twenty years of every company on every run. At a few names the second is
+    # merely wasteful; at a few thousand it is the thing that gets refused.
+    full = start
+    if since:
+        resume = pd.Timestamp(since).normalize()
+        # One day back, not the day itself: the last stored day may have been
+        # a partial bar if the poll ran before the close, and re-fetching it
+        # costs one row and replaces it through the key.
+        start = str((resume - pd.Timedelta(days=1)).date())
+        if on_warn and pd.Timestamp(start) > pd.Timestamp(full):
+            on_warn(f"resuming from {start} rather than {full}")
 
     fetched_at = pd.Timestamp.utcnow().tz_localize(None)
     rows: list[pd.DataFrame] = []
@@ -161,3 +178,8 @@ def fetch(source: Source, root: Path, on_warn=None) -> pd.DataFrame:
         ])
     out = pd.concat(rows, ignore_index=True)
     return out.sort_values(["subject", "date"]).reset_index(drop=True)
+
+
+#: Tells `sources.fetch` this adapter takes a `since`. Without it the
+#: dispatcher calls the old two-argument shape and the fetch stays full.
+fetch.wants_since = True

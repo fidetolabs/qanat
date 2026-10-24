@@ -45,11 +45,15 @@ def test_a_file_path_is_not(tmp_path: Path):
     assert not is_parquet_dir(str(tmp_path / "q.duckdb"))
 
 
-def test_one_file_per_table(store: Store, tmp_path: Path):
+def test_one_directory_per_table(store: Store, tmp_path: Path):
+    """A table is a directory of files, so an append can add one and leave the
+    rest alone."""
     store.write("raw.prices", rows(3))
     store.write("normalized.prices", rows(2))
-    on_disk = sorted(p.name for p in (tmp_path / "corpus" / "tables").glob("*.parquet"))
-    assert on_disk == ["normalized__prices.parquet", "raw__prices.parquet"]
+    tables = tmp_path / "corpus" / "tables"
+    assert sorted(d.name for d in tables.iterdir()) == [
+        "normalized__prices", "raw__prices"]
+    assert [f.name for f in (tables / "raw__prices").glob("*.parquet")] == ["0000.parquet"]
 
 
 # --------------------------------------------------- the reason this exists
@@ -141,6 +145,73 @@ def test_replace_rewrites_the_whole_file(store: Store):
     store.write("raw.p", rows(10))
     store.write("raw.p", rows(4))
     assert len(store.read("raw.p")) == 4
+
+
+def test_an_append_writes_one_new_file_and_leaves_the_rest(store: Store, tmp_path: Path):
+    """The reason a table is a directory. Landing a day of filings should write
+    a day of filings, not the whole corpus again."""
+    store.write("raw.p", rows(1000))
+    parts = tmp_path / "corpus" / "tables" / "raw__p"
+    first = sorted(parts.glob("*.parquet"))
+    before = first[0].stat().st_size, first[0].stat().st_mtime
+
+    store.write("raw.p", rows(5, start=9000), mode="append")
+    now = sorted(parts.glob("*.parquet"))
+    assert len(now) == 2, "the append should have added a file"
+    assert (now[0].stat().st_size, now[0].stat().st_mtime) == before, \
+        "the existing file was touched"
+    # the new file holds the new rows and only those
+    in_new = store.con.execute(
+        f"select count(*) from read_parquet('{now[1]}')").fetchone()[0]
+    assert in_new == 5
+    assert len(store.read("raw.p")) == 1005
+
+
+def test_a_key_that_cannot_match_takes_the_cheap_path(store: Store, tmp_path: Path):
+    """Asked from the parquet footers, which record the range each file holds,
+    so a day of prices after the last day stored needs no rewrite."""
+    store.write("raw.p", pd.DataFrame({
+        "sym": ["A", "B"], "date": pd.to_datetime(["2024-01-01"] * 2), "px": [1.0, 2.0]}))
+    parts = tmp_path / "corpus" / "tables" / "raw__p"
+    untouched = min(parts.glob("*.parquet")).stat().st_mtime
+
+    store.write("raw.p", pd.DataFrame({
+        "sym": ["A"], "date": pd.to_datetime(["2030-01-01"]), "px": [3.0]}),
+        mode="append", key=["sym", "date"])
+    assert min(parts.glob("*.parquet")).stat().st_mtime == untouched
+    assert len(store.read("raw.p")) == 3
+
+
+def test_a_key_that_could_match_rewrites(store: Store, tmp_path: Path):
+    """And when it really could already be there, correctness wins: the table
+    is rewritten so the old row is replaced rather than duplicated."""
+    store.write("raw.p", pd.DataFrame({
+        "sym": ["A", "B"], "date": pd.to_datetime(["2024-01-01"] * 2), "px": [1.0, 2.0]}))
+    store.write("raw.p", pd.DataFrame({
+        "sym": ["A"], "date": pd.to_datetime(["2024-01-01"]), "px": [99.0]}),
+        mode="append", key=["sym", "date"])
+    got = store.read("raw.p").set_index("sym")["px"].to_dict()
+    assert got == {"A": 99.0, "B": 2.0}
+    parts = tmp_path / "corpus" / "tables" / "raw__p"
+    assert len(list(parts.glob("*.parquet"))) == 1, "a rewrite leaves one file"
+
+
+def test_a_table_written_as_one_file_still_opens(tmp_path: Path):
+    """0.6 wrote `facts.parquet`; 0.7 writes `facts/0000.parquet`. An existing
+    project should not have to be told to run anything."""
+    import duckdb
+
+    tables = tmp_path / "corpus" / "tables"
+    tables.mkdir(parents=True)
+    duckdb.connect().execute(
+        f"copy (select 1 a, 'x' b) to '{tables / 'raw__old.parquet'}' (format parquet)")
+    s = Store(str(tmp_path / "corpus"))
+    try:
+        assert s.all_tables() == ["raw.old"]
+        assert len(s.read("raw.old")) == 1
+        assert (tables / "raw__old" / "0000.parquet").exists()
+    finally:
+        s.close()
 
 
 def test_append_adds_to_what_is_there(store: Store):
@@ -268,3 +339,13 @@ def test_the_same_moment_refuses_a_duckdb_file(tmp_path: Path):
     finally:
         proc.kill()
         proc.wait(timeout=10)
+
+
+def test_appending_to_a_table_that_is_not_there_yet_creates_it(store: Store):
+    """The branch that creates the table also makes `exists` true, so a second
+    check of it ran the append path with no columns worked out and the first
+    cold build of the example failed."""
+    store.write("raw.fresh", rows(3), mode="append", key=["sym"])
+    assert len(store.read("raw.fresh")) == 3
+    store.write("raw.fresh", rows(2, start=500), mode="append", key=["sym"])
+    assert len(store.read("raw.fresh")) == 5
