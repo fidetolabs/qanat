@@ -1,9 +1,21 @@
 """Where the tables live: the run history, the event log, and the data itself.
 
 DuckDB is always the engine -- it is what executes a `.sql` step -- but it does
-not have to be the storage. Point `store:` at a path and the tables live in one
-local file; point it at a Postgres DSN and DuckDB attaches that server and the
-tables are created there instead. The SQL a step writes is identical either way.
+not have to be the storage. Three kinds, and the SQL a step writes is identical
+across all of them:
+
+| `store:` | kind | who can open it at once |
+| --- | --- | --- |
+| a directory | **parquet** | one writer **and** any number of readers |
+| a `.duckdb` path | duckdb | one process, full stop |
+| a `postgresql://` DSN | postgres | many, through the server |
+
+**Parquet is the one to reach for, and the reason is the third column.** A
+DuckDB file takes an exclusive lock, so a second process is refused outright --
+not slowed, refused. That was read for a long time as a hosting limit. It is
+not: it is a limit on the second person, and a team sharing a corpus meets it on
+the first day. With parquet the writer adds a file nobody is reading, so a
+reader is never blocked and never waits.
 
 A table lives under `<stage>__<name>`, so the stage a table belongs to is
 readable from its name alone -- over MCP, in the DuckDB CLI, and in anything else
@@ -26,6 +38,49 @@ import duckdb
 import pandas as pd
 
 PG_SCHEMES = ("postgresql://", "postgres://")
+
+#: Where a parquet store keeps its two halves. Data is one file per table and is
+#: rewritten whole; metadata is row-at-a-time and stays in DuckDB, opened only
+#: when something actually asks for it.
+TABLES_DIR = "tables"
+META_FILE = "meta.duckdb"
+
+#: One DuckDB instance per parquet directory, per process, shared by every
+#: `Store` opened on it.
+#:
+#: Not an optimisation. DuckDB allows a file to be attached once per process,
+#: whatever the mode, so two `Store` objects on one directory each attaching
+#: `meta.duckdb` is a hard error -- and two is ordinary: building the graph
+#: opens one beside the session's. Each `Store` takes a cursor instead. Cursors
+#: share the catalogue, which is right because they are reading the same files,
+#: and keep their own `search_path`, which is what lets one hold a screen open
+#: while another does not.
+_SHARED: dict[str, list] = {}
+_SHARED_LOCK = threading.Lock()
+
+
+def _shared_duckdb(key: str):
+    """The process's connection for one parquet directory, and a cursor on it."""
+    with _SHARED_LOCK:
+        entry = _SHARED.get(key)
+        if entry is None:
+            entry = [duckdb.connect(), 0]
+            _SHARED[key] = entry
+        entry[1] += 1
+        return entry[0].cursor()
+
+
+def _release_duckdb(key: str) -> None:
+    """Let go of one cursor's share. The last one out closes the instance."""
+    with _SHARED_LOCK:
+        entry = _SHARED.get(key)
+        if entry is None:
+            return
+        entry[1] -= 1
+        if entry[1] <= 0:
+            with contextlib.suppress(Exception):
+                entry[0].close()
+            _SHARED.pop(key, None)
 
 
 class StoreBusy(RuntimeError):
@@ -185,6 +240,21 @@ class TableInfo:
     updated_at: str | None
 
 
+def is_parquet_dir(target: str) -> bool:
+    """Is this `store:` a parquet directory rather than a single file?
+
+    A directory, or a path with no file extension. `./data/qanat.duckdb` is a
+    file and stays one; `./data` is a parquet store. Anything that already
+    exists settles it by what it is.
+    """
+    path = Path(target)
+    if path.is_dir():
+        return True
+    if path.exists():
+        return False
+    return path.suffix == ""
+
+
 def is_postgres(url: str) -> bool:
     return str(url).startswith(PG_SCHEMES)
 
@@ -208,6 +278,17 @@ class Store:
             # ATTACH takes no bind parameters, so the dsn is inlined and quoted
             self.con.execute(f"ATTACH '{dsn.replace(chr(39), chr(39) * 2)}' AS qanat (TYPE postgres)")
             self.con.execute("USE qanat")
+        elif is_parquet_dir(self.target):
+            self.kind = "parquet"
+            self.path = Path(self.target)
+            self.dir = self.path
+            (self.dir / TABLES_DIR).mkdir(parents=True, exist_ok=True)
+            self.label = str(self.dir)
+            # In memory, and that is the point: nothing on disk is held open, so
+            # another process may read the same parquet files at the same time.
+            self._shared_key = str(self.dir.resolve())
+            self.con = _shared_duckdb(self._shared_key)
+            self._meta_open = False
         else:
             self.kind = "duckdb"
             self.path = Path(self.target)
@@ -235,11 +316,123 @@ class Store:
         self.as_of: str | None = None
         self._pit_overrides: dict[str, str] = {}
         self._readers = threading.local()
-        self._ensure_meta()
-        self._recover()
+        if self.kind == "parquet":
+            # Needs `home`, so it waits until the connection is settled.
+            self._publish_views()
+        else:
+            self._ensure_meta()
+            self._recover()
 
     def __str__(self) -> str:
         return f"{self.kind}: {self.label}"
+
+    # ---- parquet: files on disk, views over them -----------------------------
+    def _pq(self, name: str) -> Path:
+        return self.dir / TABLES_DIR / f"{name}.parquet"
+
+    def _publish_views(self) -> None:
+        """Point a view at every parquet file in the directory.
+
+        After this the rest of the class does not know it is reading files:
+        `_q()` returns the same quoted name it always did, and a view answers it.
+        """
+        for file in sorted((self.dir / TABLES_DIR).glob("*.parquet")):
+            self._view(file.stem)
+
+    def _view(self, name: str) -> None:
+        file = self._pq(name)
+        if not file.exists():
+            self.con.execute(f'DROP VIEW IF EXISTS {self._q(name)}')
+            return
+        self.con.execute(
+            f"CREATE OR REPLACE VIEW {self._q(name)} AS "
+            f"SELECT * FROM read_parquet('{str(file).replace(chr(39), chr(39) * 2)}')"
+        )
+
+    def _publish(self, name: str, select_sql: str) -> int:
+        """Write a query's result over a table's parquet file, atomically.
+
+        The write goes to a sibling `.tmp` and is then renamed. A rename within
+        one directory is atomic, so a reader globbing for `*.parquet` sees the
+        old file or the new one and never a half-written one. A reader already
+        part-way through a scan keeps the file it opened, because the old inode
+        survives until it lets go.
+
+        This is the whole of what parquet costs over a database, and it is two
+        lines. What it buys is that the reader was never asked to wait.
+        """
+        file = self._pq(name)
+        tmp = file.with_suffix(".parquet.tmp")
+        file.parent.mkdir(parents=True, exist_ok=True)
+        quoted = str(tmp).replace(chr(39), chr(39) * 2)
+        self.con.execute(f"COPY ({select_sql}) TO '{quoted}' (FORMAT parquet)")
+        tmp.replace(file)
+        self._view(name)
+        return int(self.con.execute(f"SELECT count(*) FROM {self._q(name)}").fetchone()[0])
+
+    def _search_path(self) -> str:
+        """Where a bare name is looked up, in order.
+
+        One place builds this string, because three things change it and they
+        used to each set it themselves. The as-of views go first when a screen
+        is open -- that is what makes a step read the past without knowing it.
+        Then the data. Then the metadata catalogue, when a parquet store has
+        opened one.
+
+        The bug this exists to stop: attaching the metadata file reset the
+        search path, which silently took the as-of views off the front. Every
+        step then read the live table and the lookahead guard caught it as a
+        leak, which is the right failure for the wrong reason.
+        """
+        parts = []
+        if self.as_of is not None:
+            parts.append(PIT)
+        if self.kind == "parquet":
+            parts.append("memory.main")
+            if self._meta_open:
+                parts.append("meta.main")
+        else:
+            parts.append(self.home)
+        return ",".join(parts)
+
+    def _meta(self) -> None:
+        """Attach the metadata file, the first time something actually needs it.
+
+        Runs, events, applied state and sessions are row-at-a-time and belong in
+        a database. That database is a DuckDB file, which takes one writer -- so
+        it is opened late and only by a caller that asked for it. A reader that
+        only queries data never touches it, which is what lets a teammate read
+        the corpus while an ingest is running.
+        """
+        if self.kind != "parquet" or self._meta_open:
+            return
+        path = self.dir / META_FILE
+        already = self.con.execute(
+            "SELECT count(*) FROM duckdb_databases() WHERE database_name = 'meta'"
+        ).fetchone()[0]
+        if already:
+            # Another Store on this directory got here first. Same instance, so
+            # the attachment is already ours to use.
+            self._meta_open = True
+            self.con.execute(f"SET search_path='{self._search_path()}'")
+            return
+        try:
+            self.con.execute(f"ATTACH '{str(path).replace(chr(39), chr(39) * 2)}' AS meta")
+        except duckdb.Error as exc:
+            if "lock" not in str(exc).lower():
+                raise
+            raise StoreBusy(
+                f"{path} is held by another process.\n"
+                "  The run log and the event log take one writer at a time. The data itself\n"
+                "  does not -- reading the tables works while somebody else is ingesting.\n"
+                "  What needs the log: running a job, and asking what has run."
+            ) from exc
+        # Bare `_qanat_runs` has to find the metadata catalogue, and a bare table
+        # name has to keep finding the views. Search path, in that order.
+        self._meta_open = True
+        self.con.execute(f"SET search_path='{self._search_path()}'")
+        self._ensure_meta()
+        self._recover()
 
     # ---- reading while something else is writing ------------------------------
     @property
@@ -467,6 +660,7 @@ class Store:
             ))
 
     def screen_open(self, as_of: str) -> None:
+        self._meta()
         with self._lock:
             self.con.execute(f"DELETE FROM {STATE} WHERE job_id = ?", [self._SCREEN_MARK])
             self.con.execute(
@@ -475,6 +669,7 @@ class Store:
             )
 
     def screen_closed(self) -> None:
+        self._meta()
         with self._lock:
             self.con.execute(f"DELETE FROM {STATE} WHERE job_id = ?", [self._SCREEN_MARK])
 
@@ -504,6 +699,19 @@ class Store:
             # defaults to, and the as-of view over it then cannot cast a timestamp
             # that has quietly become an integer.
             with self._lock:
+                if self.kind == "parquet":
+                    if self._exists(name):
+                        # Empty the file, keeping its columns and their types.
+                        self._publish(name, f"SELECT * FROM {self._q(name)} WHERE false")
+                        return 0
+                    if not len(df.columns):
+                        return 0
+                    self.con.register("_incoming", df)
+                    try:
+                        self._publish(name, "SELECT * FROM _incoming")
+                    finally:
+                        self.con.unregister("_incoming")
+                    return 0
                 if self._exists(name):
                     self.con.execute(f"DELETE FROM {self._q(name)}")
                     return 0
@@ -520,6 +728,8 @@ class Store:
                     self.con.unregister("_incoming")
             return 0
         df = _typed(df)
+        if self.kind == "parquet":
+            return self._write_parquet(ref, df, mode, key)
         if key:
             missing = [k for k in key if k not in df.columns]
             if missing:
@@ -579,6 +789,89 @@ class Store:
                     self._shadow(ref)
         return len(df)
 
+    def _write_parquet(self, ref: str, df: pd.DataFrame, mode: str,
+                       key: Sequence[str] | None) -> int:
+        """Land a frame as one parquet file, written whole and renamed into place.
+
+        A parquet file is not edited, so an append is read-concat-write rather
+        than an INSERT. At the size a filings corpus reaches that is the right
+        trade: the corpus is written once a day by one recorder and read all
+        day by everybody, and a rewrite nobody waits for beats an in-place
+        write that blocks every reader.
+        """
+        name = phys(ref)
+        if key:
+            missing = [k for k in key if k not in df.columns]
+            if missing:
+                raise ValueError(
+                    f"{ref}: key names {', '.join(missing)}, which the rows do not have. "
+                    f"They have {', '.join(map(str, df.columns))}"
+                )
+            # Two rows with one key in a single batch would both land, and the
+            # key would stop meaning one row.
+            df = df.drop_duplicates(subset=list(key), keep="last")
+        with self._lock:
+            self.con.register("_incoming", df)
+            try:
+                if mode != "append" or not self._exists(name):
+                    rows = self._publish(name, "SELECT * FROM _incoming")
+                else:
+                    have = [c for (c,) in self.con.execute(
+                        "SELECT column_name FROM duckdb_columns() WHERE database_name = "
+                        "current_catalog() AND schema_name = ? AND table_name = ? "
+                        "ORDER BY column_index", [self.home, name]).fetchall()]
+                    incoming = list(df.columns)
+                    if set(have) != set(incoming):
+                        added = sorted(set(incoming) - set(have))
+                        gone = sorted(set(have) - set(incoming))
+                        raise ValueError(
+                            f"{ref}: the incoming rows do not match the table. "
+                            + (f"New column(s): {', '.join(added)}. " if added else "")
+                            + (f"Missing: {', '.join(gone)}. " if gone else "")
+                            + f"The table holds: {', '.join(have)}"
+                        )
+                    cols = ", ".join(f'"{_ident(c)}"' for c in have)
+                    kept = f"SELECT {cols} FROM {self._q(name)}"
+                    if key:
+                        # A null never equals a null in SQL, so a key holding a
+                        # blank would match nothing and the row would be appended
+                        # again on every poll, for ever.
+                        match = " AND ".join(
+                            f'old."{_ident(k)}" IS NOT DISTINCT FROM _incoming."{_ident(k)}"'
+                            for k in key
+                        )
+                        kept = (f"SELECT {cols} FROM {self._q(name)} old WHERE NOT EXISTS "
+                                f"(SELECT 1 FROM _incoming WHERE {match})")
+                    # By name, not by position: a feed that reordered its columns
+                    # would otherwise write dates into the symbol column.
+                    rows = self._publish(
+                        name, f"{kept} UNION ALL BY NAME SELECT {cols} FROM _incoming")
+            finally:
+                self.con.unregister("_incoming")
+                if self.as_of is not None:
+                    self._shadow(ref)
+        return rows if mode == "append" else len(df)
+
+    def prune_rows(self, ref: str, col: str, cutoff: Any) -> int:
+        """Drop rows whose `col` is older than `cutoff`. Returns how many went.
+
+        A parquet file is not edited, so this is a rewrite of the rows that
+        stay. A table is a DELETE. The caller does not have to know which.
+        """
+        name = phys(ref)
+        where = f'CAST("{_ident(col)}" AS TIMESTAMP) < ?'
+        with self._lock:
+            before = self.con.execute(f'SELECT count(*) FROM {self._q(name)}').fetchone()[0]
+            if self.kind == "parquet":
+                keep = (f'SELECT * FROM {self._q(name)} WHERE NOT ('
+                        f'CAST("{_ident(col)}" AS TIMESTAMP) < TIMESTAMP \'{cutoff}\')')
+                after = self._publish(name, keep)
+            else:
+                self.con.execute(f'DELETE FROM {self._q(name)} WHERE {where}', [cutoff])
+                after = self.con.execute(
+                    f'SELECT count(*) FROM {self._q(name)}').fetchone()[0]
+        return int(before - after)
+
     def _widen(self, name: str, ref: str, have: list[str]) -> None:
         """Make room for what is arriving, instead of rounding it away.
 
@@ -615,6 +908,8 @@ class Store:
         with self._lock:
             self._unshadow(name)
             try:
+                if self.kind == "parquet":
+                    return self._publish(name, select_sql)
                 self.con.execute(f'CREATE OR REPLACE TABLE {self._q(name)} AS ({select_sql})')
                 return self.con.execute(f'SELECT count(*) FROM {self._q(name)}').fetchone()[0]
             finally:
@@ -702,7 +997,7 @@ class Store:
             for ref in self.all_tables():
                 if self._shadow(ref):
                     shadowed.append(ref)
-            self.con.execute(f"SET search_path='{PIT},{self.home}'")
+            self.con.execute(f"SET search_path='{self._search_path()}'")
         return shadowed
 
     def _shadow(self, ref: str) -> bool:
@@ -733,7 +1028,9 @@ class Store:
 
     def close_pit(self) -> None:
         with self._lock:
-            self.con.execute(f"SET search_path='{self.home}'")
+            # Cleared first, so the path this builds no longer has PIT on it.
+            self.as_of = None
+            self.con.execute(f"SET search_path='{self._search_path()}'")
             try:
                 self.con.execute(f'DROP SCHEMA IF EXISTS "{PIT}" CASCADE')
             except Exception as exc:  # noqa: BLE001 -- a leftover view schema is harmless
@@ -759,6 +1056,10 @@ class Store:
             return self.con.execute(sql).df()
 
     def _exists(self, name: str) -> bool:
+        if self.kind == "parquet":
+            # The file is the table. The view over it is a detail that can be
+            # rebuilt, so the file is what gets asked.
+            return self._pq(name).exists()
         return bool(
             self.con.execute(
                 "SELECT count(*) FROM duckdb_tables() WHERE database_name = current_catalog() "
@@ -773,6 +1074,9 @@ class Store:
 
     def all_tables(self) -> list[str]:
         """Every table actually in the file, as `stage.table`. Meta tables excluded."""
+        if self.kind == "parquet":
+            names = sorted(f.stem for f in (self.dir / TABLES_DIR).glob("*.parquet"))
+            return [unphys(n) for n in names if n not in META and "__" in n]
         rows = self.rcon.execute(
             "SELECT table_name FROM duckdb_tables() WHERE database_name = current_catalog() "
             "AND schema_name = ? ORDER BY table_name",
@@ -784,11 +1088,16 @@ class Store:
         """Remove a table. Returns the row count it had."""
         info = self.table_info(ref)
         with self._lock:
-            self.con.execute(f'DROP TABLE IF EXISTS {self._q(phys(ref))}')
+            if self.kind == "parquet":
+                self.con.execute(f'DROP VIEW IF EXISTS {self._q(phys(ref))}')
+                self._pq(phys(ref)).unlink(missing_ok=True)
+            else:
+                self.con.execute(f'DROP TABLE IF EXISTS {self._q(phys(ref))}')
         return info.rows if info else 0
 
     # ---- applied state: what the file looked like the last time it ran --------
     def load_state(self) -> dict[str, dict[str, str]]:
+        self._meta()
         with self._lock:
             rows = self.con.execute(f"SELECT job_id, digest, spec FROM {STATE}").fetchall()
         skip = {self._SCREEN_MARK, self._SCREEN_MARK_WAS}
@@ -796,17 +1105,20 @@ class Store:
 
     def set_state(self, job_id: str, digest: str, spec: str) -> None:
         """Record one job as applied. Called when that job actually succeeds."""
+        self._meta()
         with self._lock:
             self.con.execute(f"DELETE FROM {STATE} WHERE job_id = ?", [job_id])
             self.con.execute(f"INSERT INTO {STATE} VALUES (?, ?, ?, now()::TIMESTAMP)", [job_id, digest, spec])
 
     def forget_state(self, job_ids: list[str]) -> None:
+        self._meta()
         with self._lock:
             for job_id in job_ids:
                 self.con.execute(f"DELETE FROM {STATE} WHERE job_id = ?", [job_id])
 
     def save_state(self, entries: dict[str, tuple[str, str]]) -> None:
         """entries: job_id -> (digest, spec json). Replaces the whole snapshot."""
+        self._meta()
         with self._lock:
             self.con.execute(f"DELETE FROM {STATE}")
             for job_id, (digest, spec) in entries.items():
@@ -826,10 +1138,17 @@ class Store:
         if not cols:
             return None
         rows = r.execute(f'SELECT count(*) FROM {self._q(name)}').fetchone()[0]
-        last = r.execute(
-            f"SELECT max(ended_at) FROM {RUNS} WHERE targets LIKE ? AND status = 'ok'",
-            [f"%{ref}%"],
-        ).fetchone()[0]
+        # When this table was last written is in the run log, and `table_info` is
+        # on the read path -- `read()` reaches it through `time_column`. Opening
+        # the metadata file here would mean every reader took the one writer lock
+        # on it, which is the thing a parquet store exists to avoid. A reader
+        # gets no timestamp instead.
+        last = None
+        if self.kind != "parquet" or self._meta_open:
+            last = r.execute(
+                f"SELECT max(ended_at) FROM {RUNS} WHERE targets LIKE ? AND status = 'ok'",
+                [f"%{ref}%"],
+            ).fetchone()[0]
         stage, _, tname = ref.partition(".")
         return TableInfo(ref, stage, tname, rows, [(c, t) for c, t in cols],
                          str(last) if last else None)
@@ -896,6 +1215,7 @@ class Store:
 
     # ---- runs and events -----------------------------------------------------
     def start_run(self, job_id: str, kind: str, targets: list[str]) -> int:
+        self._meta()
         run_id = time.time_ns() // 1000
         with self._lock:
             self.con.execute(
@@ -905,6 +1225,7 @@ class Store:
         return run_id
 
     def end_run(self, run_id: int, status: str, rows: int = 0, error: str | None = None) -> None:
+        self._meta()
         with self._lock:
             self.con.execute(
                 f"UPDATE {RUNS} SET ended_at = now()::TIMESTAMP, status = ?, rows_out = ?, error = ? "
@@ -915,6 +1236,7 @@ class Store:
     # ---- backtests -----------------------------------------------------------
     def last_live_backtest(self) -> str | None:
         """The `to` date of the newest live run that finished, or None."""
+        self._meta()
         row = self.rcon.execute(
             f"SELECT to_date FROM {BACKTESTS} WHERE live AND status = 'ok' "
             "ORDER BY created_at DESC LIMIT 1"
@@ -925,6 +1247,7 @@ class Store:
         self, frm: str, to: str, rebalance: str, seed: int, digest: str, step: str = "",
         live: bool = False, session_id: str = "",
     ) -> int:
+        self._meta()
         run_id = time.time_ns() // 1000
         with self._lock:
             self.con.execute(
@@ -939,6 +1262,7 @@ class Store:
         self, run_id: int, status: str, totals: dict[str, Any] | None = None,
         report: str | None = None, error: str | None = None,
     ) -> None:
+        self._meta()
         t = totals or {}
         with self._lock:
             self.con.execute(
@@ -950,6 +1274,7 @@ class Store:
 
     def save_bt_weights(self, run_id: int, as_of: str, df: pd.DataFrame) -> int:
         """Keep the portfolio this screen held at one as-of date."""
+        self._meta()
         if df is None or df.empty:
             return 0
         keep = df.rename(columns={c: c.lower() for c in df.columns})
@@ -969,6 +1294,7 @@ class Store:
     def save_bt_period(self, run_id: int, period: Any) -> None:
         """One closed holding period, written the moment it closes -- so the PnL is
         queryable while the screen is still running, not only after it ends."""
+        self._meta()
         with self._lock:
             self.con.execute(
                 f"INSERT INTO {BT_PERIODS} VALUES (?, CAST(? AS TIMESTAMP), CAST(? AS TIMESTAMP), "
@@ -978,6 +1304,7 @@ class Store:
             )
 
     def bt_periods(self, run_id: int) -> list[dict[str, Any]]:
+        self._meta()
         df = self.rcon.execute(
             f"SELECT * FROM {BT_PERIODS} WHERE run_id = ? ORDER BY as_of", [run_id]
         ).df()
@@ -985,6 +1312,7 @@ class Store:
 
     def open_session(self, session_id: str, cli: str = "", title: str = "") -> None:
         """Record a conversation starting. Safe to call again for one already open."""
+        self._meta()
         with self._lock:
             row = self.con.execute(
                 f"SELECT 1 FROM {SESSIONS} WHERE session_id = ?", [session_id]
@@ -1004,6 +1332,7 @@ class Store:
         The title is the first question asked, kept as a stand-in until a summary
         exists -- a list of timestamps is not a history anybody reads.
         """
+        self._meta()
         with self._lock:
             self.con.execute(
                 f"UPDATE {SESSIONS} SET asks = coalesce(asks, 0) + 1, "
@@ -1014,6 +1343,7 @@ class Store:
             )
 
     def end_session(self, session_id: str, summary: str = "") -> None:
+        self._meta()
         with self._lock:
             self.con.execute(
                 f"UPDATE {SESSIONS} SET ended_at = now()::TIMESTAMP, "
@@ -1028,6 +1358,7 @@ class Store:
         reading live -- so what is re-read later is what actually happened, not a
         reconstruction of it.
         """
+        self._meta()
         import json as _json
 
         ask_id = time.time_ns() // 1000
@@ -1045,6 +1376,7 @@ class Store:
 
     def session_asks(self, session_id: str) -> list[dict[str, Any]]:
         """Everything said in one conversation, oldest first -- reading order."""
+        self._meta()
         import json as _json
 
         df = self.rcon.execute(
@@ -1059,6 +1391,7 @@ class Store:
         return rows
 
     def session(self, session_id: str) -> dict[str, Any] | None:
+        self._meta()
         df = self.rcon.execute(
             f"SELECT * FROM {SESSIONS} WHERE session_id = ?", [session_id]
         ).df()
@@ -1072,6 +1405,7 @@ class Store:
         plenty of sessions are a question and an answer. An empty count is the
         truth about that session, not a gap in the record.
         """
+        self._meta()
         df = self.rcon.execute(f"""
             SELECT s.*,
                    count(b.run_id)               AS runs,
@@ -1086,6 +1420,7 @@ class Store:
 
     def session_backtests(self, session_id: str) -> list[dict[str, Any]]:
         """What this conversation screened, newest first."""
+        self._meta()
         df = self.rcon.execute(f"""
             SELECT run_id, created_at, from_date, to_date, rebalance, digest, status,
                    periods, net, turnover, step, live
@@ -1099,6 +1434,7 @@ class Store:
         The other direction of the same join: from a weights table back to the
         rooms it was worked out in.
         """
+        self._meta()
         df = self.rcon.execute(f"""
             SELECT s.session_id, s.started_at, s.title, s.summary,
                    count(b.run_id)   AS runs,
@@ -1114,6 +1450,7 @@ class Store:
         return _records(df)
 
     def backtests(self, limit: int = 50) -> list[dict[str, Any]]:
+        self._meta()
         df = self.rcon.execute(
                 f"SELECT run_id, created_at, from_date, to_date, rebalance, seed, digest, "
                 f"status, periods, gross, fees, slippage, net, turnover, error, step, live, "
@@ -1128,6 +1465,7 @@ class Store:
         `actor` already lives -- so a change made by an agent mid-answer is
         attributable without the agent having to remember to say so.
         """
+        self._meta()
         df = self.rcon.execute(f"""
             SELECT ts, level, message, actor FROM {EVENTS}
             WHERE job_id = 'bar' ORDER BY ts DESC LIMIT {int(limit)}
@@ -1142,6 +1480,7 @@ class Store:
         it produced a net, which is the only claim worth keeping. A step removed
         from the file keeps its row, because what it earned still happened.
         """
+        self._meta()
         with self._lock:
             df = self.con.execute(f"""
                 SELECT step,
@@ -1158,11 +1497,13 @@ class Store:
         return _records(df)
 
     def backtest(self, run_id: int) -> dict[str, Any] | None:
+        self._meta()
         df = self.rcon.execute(f"SELECT * FROM {BACKTESTS} WHERE run_id = ?", [run_id]).df()
         rows = _records(df)
         return rows[0] if rows else None
 
     def bt_weights(self, run_id: int, as_of: str | None = None) -> list[dict[str, Any]]:
+        self._meta()
         q = f"SELECT as_of, symbol, weight FROM {BT_WEIGHTS} WHERE run_id = ?"
         params: list[Any] = [run_id]
         if as_of:
@@ -1172,6 +1513,7 @@ class Store:
         return _records(df)
 
     def event(self, level: str, job_id: str, message: str) -> None:
+        self._meta()
         with self._lock:
             # Named columns, not positional: `actor` was added to this table after
             # the fact, and a bare VALUES list would put the message in it.
@@ -1182,12 +1524,14 @@ class Store:
             )
 
     def recent_runs(self, limit: int = 50) -> list[dict[str, Any]]:
+        self._meta()
         df = self.rcon.execute(
             f"SELECT * FROM {RUNS} ORDER BY started_at DESC LIMIT {int(limit)}"
         ).df()
         return _records(df)
 
     def last_run_by_job(self) -> dict[str, dict[str, Any]]:
+        self._meta()
         df = self.rcon.execute(f"""
                 SELECT r.* FROM {RUNS} r
                 JOIN (SELECT job_id, max(started_at) AS s FROM {RUNS} GROUP BY job_id) m
@@ -1196,6 +1540,7 @@ class Store:
         return {r["job_id"]: r for r in _records(df)}
 
     def recent_events(self, limit: int = 200) -> list[dict[str, Any]]:
+        self._meta()
         df = self.rcon.execute(
             f"SELECT * FROM {EVENTS} ORDER BY ts DESC LIMIT {int(limit)}"
         ).df()
@@ -1204,6 +1549,8 @@ class Store:
     def close(self) -> None:
         with self._lock:
             self.con.close()
+            if self.kind == "parquet":
+                _release_duckdb(self._shared_key)
 
 
 def _records(df: pd.DataFrame) -> list[dict[str, Any]]:

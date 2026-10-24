@@ -8,7 +8,9 @@
 # from the SEC on the first run and cached under data/documents, so a second run
 # touches the network only to look for filings it has not seen.
 project: sec_10k
-store: ./data/qanat.duckdb
+# A directory: the tables are parquet files read by DuckDB, so an ingest
+# running does not stop anybody querying.
+store: ./data
 
 # ------------------------------------------------------------------ the stages --
 # Two. The landed layer holds documents exactly as they arrived; the layer above

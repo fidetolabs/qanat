@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "qanat-fdtl"
-version = "0.5.0"
+version = "0.6.0"
 description = "A data platform for processing metrics from filings. It reads company filings, computes the metrics you define, and answers as of any past date. Delivered as an MCP server."
 readme = "README.md"
 license = { file = "LICENSE" }

@@ -53,7 +53,15 @@ became public. Ask about a past date and you get what was public by then.
 
 ## How it is put together
 
-**One store.** A DuckDB file, or Postgres on localhost.
+**One store.** Parquet files read by DuckDB. Point `store:` at a directory and
+the tables are files in it; point it at a `.duckdb` path for a single file, or a
+`postgresql://` DSN for a server.
+
+**A directory is the default, and the reason is the second person.** A DuckDB
+file takes an exclusive lock, so while one person is ingesting, a teammate
+opening the same project is refused -- not slowed, refused. With parquet the
+writer adds a file nobody is reading, so a reader is never blocked. The forty
+filings below also take 6.7 MB as parquet against 37 MB in a DuckDB file.
 
 **Layers.** Data moves forward through them. The first layer holds what arrived
 and nobody edits it. The ones after hold what you worked out. You name them.
@@ -124,7 +132,7 @@ Everything is in one `qanat.yaml`.
 
 ```yaml
 project: research
-store: ./data/qanat.duckdb
+store: ./data            # a directory: parquet files, read by DuckDB
 
 stages:
   - { id: raw,        kind: raw }         # what arrived, never edited

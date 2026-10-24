@@ -14,6 +14,7 @@ seeded, so the same test sees the same history on every machine.
 from __future__ import annotations
 
 import hashlib
+import os
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -302,9 +303,17 @@ FILES = {
 SYMBOL_LIST = ["AAPL", "MSFT", "NVDA", "AMZN", "META", "JPM", "XOM", "SPY"]
 
 
+#: Run the whole suite against a parquet store with
+#: `QANAT_TEST_STORE=parquet uv run pytest`. The point is equivalence: the same
+#: tests, the same assertions, a different storage kind underneath.
+STORE_KIND = os.environ.get("QANAT_TEST_STORE", "duckdb")
+
+
 def write_demo_project(target: Path, name: str = "demo", store: str | None = None) -> Path:
     """Write the fixture project and its two seed files. Nothing runs yet."""
-    store_line = f"store: {store}" if store else "store: ./data/qanat.duckdb"
+    if store is None:
+        store = "./data" if STORE_KIND == "parquet" else "./data/qanat.duckdb"
+    store_line = f"store: {store}"
     for rel, text in FILES.items():
         path = target / rel
         path.parent.mkdir(parents=True, exist_ok=True)

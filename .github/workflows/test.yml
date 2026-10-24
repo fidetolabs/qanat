@@ -43,6 +43,16 @@ jobs:
         env:
           QANAT_TEST_PG: postgresql://qanat:qanat@127.0.0.1:5433/qanat
 
+      # The same suite, same assertions, parquet underneath. Equivalence is the
+      # claim -- a storage kind that passes its own tests and quietly fails the
+      # real ones is worse than not having it. Costs one more run of a suite
+      # that takes ten seconds.
+      - name: the whole suite again, on parquet
+        run: uv run pytest -q -n auto --dist loadgroup
+        env:
+          QANAT_TEST_STORE: parquet
+          QANAT_TEST_PG: postgresql://qanat:qanat@127.0.0.1:5433/qanat
+
       # tests/test_postgres.py skips itself when it cannot reach a server, which
       # would make a broken service look like a pass
       - name: the Postgres tests must have actually run

@@ -16,7 +16,9 @@ from pathlib import Path
 QANAT_YAML = """\
 # What this pipeline is. `qanat check` enforces the rules; see docs/contract.md
 project: {name}
-store: ./data/qanat.duckdb
+# A directory, so the tables are parquet files read by DuckDB. A writer
+# never blocks a reader, which is what lets two people share one project.
+store: ./data
 
 # ------------------------------------------------------------------ the stages --
 # Order here is order in the pipeline. The first one holds what arrived and
@@ -161,8 +163,8 @@ def write_project(target: Path, name: str, force: bool = False, postgres: bool =
     elif postgres:
         store_line = "store: postgresql://qanat:qanat@localhost:5432/qanat"
     else:
-        store_line = "store: ./data/qanat.duckdb"
-    yaml_body = QANAT_YAML.replace("store: ./data/qanat.duckdb", store_line)
+        store_line = "store: ./data"
+    yaml_body = QANAT_YAML.replace("store: ./data", store_line)
     files = {**FILES, "qanat.yaml": yaml_body}
     for rel, body in files.items():
         path = target / rel

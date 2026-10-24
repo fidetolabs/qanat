@@ -311,10 +311,13 @@ def test_init_can_be_told_where_the_store_goes(tmp_path: Path):
     write_project(tmp_path, "demo", store=dsn)
     assert yaml.safe_load((tmp_path / "qanat.yaml").read_text())["store"] == dsn
 
+    from conftest import STORE_KIND
+
     plain = tmp_path / "plain"
     plain.mkdir()
     write_project(plain, "demo")
-    assert yaml.safe_load((plain / "qanat.yaml").read_text())["store"] == "./data/qanat.duckdb"
+    default = "./data" if STORE_KIND == "parquet" else "./data/qanat.duckdb"
+    assert yaml.safe_load((plain / "qanat.yaml").read_text())["store"] == default
 
 
 def test_the_docker_entrypoint_only_calls_flags_that_exist(tmp_path: Path):

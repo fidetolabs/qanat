@@ -6,7 +6,7 @@ import re
 from datetime import datetime, timedelta, timezone
 
 from qanat.models import Project
-from qanat.store import Store, phys
+from qanat.store import Store
 
 _DURATION = re.compile(r"^(\d+)\s*(s|sec|secs|second|seconds|m|min|mins|minute|minutes|"
                        r"h|hr|hrs|hour|hours|d|day|days|w|week|weeks|y|yr|yrs|year|years)$",
@@ -71,15 +71,7 @@ def apply_retention(store: Store, ref: str, policy: str) -> int:
         return 0
     delta = parse_duration(policy)
     cutoff = datetime.now(timezone.utc) - delta
-    name = phys(ref)
-    with store._lock:
-        before = store.con.execute(f'SELECT count(*) FROM "{name}"').fetchone()[0]
-        store.con.execute(
-            f'DELETE FROM "{name}" WHERE CAST("{col}" AS TIMESTAMP) < ?',
-            [cutoff.replace(tzinfo=None)],
-        )
-        after = store.con.execute(f'SELECT count(*) FROM "{name}"').fetchone()[0]
-    removed = int(before - after)
+    removed = store.prune_rows(ref, col, cutoff.replace(tzinfo=None))
     if removed:
         store.event("info", "retention", f"{ref}: removed {removed:,} row(s) older than {policy}")
     return removed

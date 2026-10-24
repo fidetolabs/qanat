@@ -72,7 +72,7 @@ in [contract.md](contract.md). `normalized` in the starter project is a name, no
 | `metrics:` | project | the formulas this project defines, each with a version |
 | `returns:` | project | which table says what a company did next, so a screen can report it |
 | `corpus:` | project | which tables hold documents, their text and their facts, for the reading tools |
-| `store:` | project | path to the one DuckDB file |
+| `store:` | project | where the tables live: a directory for parquet, a `.duckdb` path for one file, or a `postgresql://` DSN |
 
 A source and a step both say `to:`, because writing a table is the same act whichever one does it.
 

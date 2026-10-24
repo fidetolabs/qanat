@@ -1,5 +1,77 @@
 # Changelog
 
+## 0.6.0 — 2026-10-24
+
+### The store is parquet files read by DuckDB
+
+`store: ./data` — a directory — is the default for a new project. A `.duckdb`
+path and a `postgresql://` DSN both still work and are unchanged.
+
+**The reason is the second person.** A DuckDB file takes an exclusive lock, so
+while one person is ingesting, a teammate opening the same project is refused
+outright. Not slowed — refused. That limit is written down in three places in
+this repo as a *hosting* limit, and it is not: it is a limit on the second
+person, and a team sharing a corpus meets it on the first day. Open source is
+ordinarily used by teams.
+
+With parquet the writer builds a new file and renames it into place. A rename
+within one directory is atomic, so a reader globbing for `*.parquet` sees the
+old file or the new one and never a half-written one, and a reader already
+part-way through a scan keeps the file it opened. Nobody waits.
+
+Measured on `examples/sec-10k`, while a writer was landing 600,000 rows: the
+reader answered in 1–3 ms. On a DuckDB file the same reader gets `StoreBusy`.
+Both cases are tests.
+
+### It is also smaller
+
+The forty filings in `examples/sec-10k` are **6.7 MB as parquet against 37 MB
+in a DuckDB file**, same rows.
+
+### What the tables look like
+
+One file per table, under `<store>/tables/`:
+
+```
+data/
+  tables/
+    raw__documents.parquet
+    normalized__facts.parquet
+  meta.duckdb          the run log, opened only when something asks for it
+```
+
+**The metadata is the half that still wants a database**, because runs, events
+and applied state are updated row at a time. It stays DuckDB, in its own file,
+and is attached lazily — a caller that only reads data never opens it. That is
+what keeps a teammate's query working while an ingest holds the log.
+
+The cost is named: a pure reader gets no last-written timestamp on
+`table_info`, because fetching it would mean taking the one lock the design
+exists to avoid.
+
+### Equivalence is the claim, so CI runs the suite twice
+
+`QANAT_TEST_STORE=parquet uv run pytest` runs the whole suite against the new
+backend. Same tests, same assertions. CI runs both on every push, because a
+storage kind that passes its own tests and quietly fails the real ones is worse
+than not having one.
+
+### Fixed on the way
+
+**Opening the run log lifted the as-of views.** Attaching the metadata file
+reset `search_path`, which took the point-in-time schema off the front of it.
+Every step then read the live table and the lookahead guard caught it as a
+leak — the right failure for the wrong reason. One method now builds that
+string and three callers use it.
+
+**Retention reached into `store.con` with raw SQL.** It is `store.prune_rows()`
+now, which a parquet store answers by rewriting the rows that stay.
+
+### Breaking
+
+Nothing. A project with `store: ./data/qanat.duckdb` behaves exactly as it did.
+`qanat init` writes `store: ./data` for new projects only.
+
 ## 0.5.0 — 2026-10-19
 
 ### Real filings, and nothing invented left in the package
