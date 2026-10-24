@@ -1,5 +1,23 @@
 # Changelog
 
+## 0.6.1 — 2026-10-24
+
+### The size claim in 0.6.0 was wrong
+
+It said the example corpus is 6.7 MB as parquet against **37 MB** in a DuckDB
+file. The 37 MB was that file as it sat on disk after the example had been
+rebuilt many times: about half of it was space freed by earlier writes that
+the file had not given back. Comparing a fresh file to a fresh file, it is
+**7 MB against 18 MB**.
+
+Still worth having, and still mostly one table -- `normalized.spans` holds the
+filing text and goes 12.6 MB to 5.4 MB, because prose repeats itself and
+compresses hard. But two and a half times is the honest figure, not five and a
+half, and the README said the wrong one on PyPI.
+
+Documentation only. No code changed between 0.6.0 and 0.6.1.
+
+
 ## 0.6.0 — 2026-10-24
 
 ### The store is parquet files read by DuckDB
@@ -23,10 +41,26 @@ Measured on `examples/sec-10k`, while a writer was landing 600,000 rows: the
 reader answered in 1–3 ms. On a DuckDB file the same reader gets `StoreBusy`.
 Both cases are tests.
 
-### It is also smaller
+### It is also smaller, by about two and a half times
 
-The forty filings in `examples/sec-10k` are **6.7 MB as parquet against 37 MB
-in a DuckDB file**, same rows.
+The forty filings in `examples/sec-10k` are **7 MB as parquet against 18 MB in
+a freshly built DuckDB file**, same rows.
+
+Nearly all of the difference is one table. `normalized.spans` holds the filing
+text -- 904 sections of English, some over 100 KB -- and goes 12.6 MB to 5.4 MB.
+Prose repeats itself, so it compresses hard. `facts` is 4.7 MB to 1.4 MB and
+the small tables barely move, because an empty DuckDB file is half a megabyte
+before anything is in it.
+
+The two formats are packed for different jobs. DuckDB keeps its pieces small
+enough to reach one row, which is what updating and deleting need. Parquet
+keeps them big, which compresses better and suits a table that is written once
+and scanned. A filing is never edited, so nothing is given up here.
+
+**The figure first published for this was 37 MB, which was wrong.** That was
+the DuckDB file as it actually sat on disk after the example had been rebuilt
+many times, and about half of it was space freed by earlier writes that the
+file had not given back. The honest comparison is against a fresh file.
 
 ### What the tables look like
 
