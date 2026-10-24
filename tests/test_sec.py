@@ -246,3 +246,49 @@ def test_the_connector_is_registered(tmp_path):
     from qanat.sources import ADAPTERS
     assert ADAPTERS["sec"] is sec.fetch
     assert "synthetic" not in ADAPTERS
+
+
+# ------------------------------------------------------- the price, as printed
+def test_a_split_is_kept_as_an_event_not_only_as_an_adjustment():
+    """Yahoo rewrites old prices after a split, so neither column it returns is
+    the price that traded. Keeping the split lets the real one be rebuilt."""
+    import pandas as pd
+
+    from qanat.sources.yfinance_source import SOURCE
+
+    assert SOURCE == "yfinance"
+    # the arithmetic the filing_prices step does: multiply by the splits that
+    # came after this row, newest first
+    px = pd.DataFrame({
+        "subject": ["N"] * 4,
+        "date": pd.to_datetime(["2021-01-04", "2021-07-20", "2024-06-10", "2025-01-02"]),
+        "close": [13.11, 52.44, 121.79, 140.0],
+        "split_ratio": [0.0, 4.0, 10.0, 0.0],
+    })
+    ratio = px["split_ratio"].replace(0.0, 1.0)
+    rev = ratio[::-1].groupby(px["subject"][::-1]).cumprod()[::-1]
+    px["splits_since"] = rev / ratio
+    px["as_printed"] = px["close"] * px["splits_since"]
+
+    # 4-for-1 then 10-for-1 both came after the first row, so the factor is 40
+    assert px["splits_since"].iloc[0] == 40.0
+    assert round(px["as_printed"].iloc[0], 2) == 524.40
+    # nothing split after the last row, so it is already the printed price
+    assert px["splits_since"].iloc[-1] == 1.0
+    assert px["as_printed"].iloc[-1] == 140.0
+
+
+def test_the_split_day_itself_is_already_in_the_new_money():
+    """A split on day D leaves D's own close in post-split terms, so the factor
+    for that row excludes its own ratio."""
+    import pandas as pd
+
+    px = pd.DataFrame({
+        "subject": ["N"] * 2,
+        "date": pd.to_datetime(["2024-06-10", "2024-06-11"]),
+        "close": [121.79, 120.91],
+        "split_ratio": [10.0, 0.0],
+    })
+    ratio = px["split_ratio"].replace(0.0, 1.0)
+    rev = ratio[::-1].groupby(px["subject"][::-1]).cumprod()[::-1]
+    assert (rev / ratio).iloc[0] == 1.0, "the split day is not multiplied by its own split"

@@ -105,6 +105,19 @@ correct. There is no metrics layer and no results layer here: a metric is a
 query over the facts and a screen is a call that returns a list. The pipeline's
 job ends when the facts are clean and dated.
 
+**Three prices, and the one you want depends on the question.**
+`normalized.filing_prices` carries `close_as_printed`, `close` and
+`adjusted_close`. Yahoo rewrites old prices after a split, so neither of its
+own columns is what traded that day: NVIDIA's 2021 close comes back as $13.11
+against the $524.54 that was really on the screen.
+
+A ratio against a filing figure needs **`close_as_printed`**, because the EPS
+comes from a filing and the SEC never rewrites one. Six of these 40 filings
+had the wrong PE before this was fixed — Alphabet's 2022 PE read **1.3**
+instead of 26.4, which would have made it the cheapest company on the list.
+
+A return needs **`adjusted_close`**, because a split is not a loss.
+
 **Prices come from Yahoo and may not be sold from.** `yfinance` reads Yahoo's
 endpoints and Yahoo's terms do not grant redistribution, so every row carries
 `source: yfinance`. That column is what a later cleanup acts on.

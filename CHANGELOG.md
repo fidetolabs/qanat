@@ -1,5 +1,69 @@
 # Changelog
 
+## 0.7.0 — 2026-10-24
+
+### A split made every old price wrong, and the PE with it
+
+Yahoo rewrites its price history after a stock split, and `auto_adjust=False`
+does not turn that off — it turns off the *dividend* half. So both columns it
+returns are split-adjusted, and the one named `close` is not the price that
+traded. NVIDIA split 4-for-1 in 2021 and 10-for-1 in 2024, so its 2021 close
+came back as **$13.11 against the $524.54 that was really on the screen**.
+
+**A filing is never rewritten.** The SEC still reports NVIDIA's FY2022 diluted
+EPS as $3.85. Dividing a restated price by an original EPS mixes two footings,
+and the answer is wrong by the split factor with nothing to show for it:
+
+| filed | `pe` before | `pe` now |
+| --- | --- | --- |
+| NVDA 2022-03-18 | 6.9 | **68.7** |
+| NVDA 2023-02-24 | 13.4 | **133.8** |
+| GOOGL 2022-02-02 | 1.3 | **26.4** |
+| WMT 2022-03-18 | 10.0 | **29.9** |
+
+Six of the forty filings in `examples/sec-10k` were affected. The error points
+one way — a split makes an old price smaller, so it makes an old PE smaller —
+so a value screen was pulled towards whatever had split. Alphabet read as a
+PE of 1.3, which would have ranked it the cheapest company on the list.
+
+### What changed
+
+`raw.prices` keeps two more columns from the same request: `split_ratio`, the
+split that took effect that day, and `dividend`. `history()` already carried
+both, so this is a column kept rather than a second fetch.
+
+`normalized.filing_prices` now carries three prices, and which to use depends
+on the question:
+
+| the question | the column |
+| --- | --- |
+| was it cheap? `pe`, `pbr` | **`close_as_printed`** — the other half of the ratio was never rewritten |
+| what did it return? | **`adjusted_close`** — a split is not a loss |
+
+`pe` moves to version 3 and reads `close_as_printed`. `returns:` moves to
+`adjusted_close`, which also means a return now includes dividends.
+
+### `adjusted_close` is stored, not recomputed
+
+The opposite of the rule for splits, and the reason is measured. A split is
+exact arithmetic, so the adjustment is recomputed from the event. Rebuilding
+`adjusted_close` from the close and the dividends lands about **1.2% away**
+from Yahoo's own figure, because vendors differ on the detail. A 1.2% error on
+a yearly return is not acceptable, so the vendor's number is kept.
+
+### `fetched_at`
+
+`adjusted_close` keeps moving as later dividends are paid, so a stored value
+with no fetch date cannot be audited. Every price row now records when it was
+pulled.
+
+### Breaking
+
+`normalized.filing_prices` has new columns and `pe` is version 3, so a saved
+answer pinned to `pe` v2 resolves to the old definition and the old number.
+That is the versioning working. Re-run the pipeline to pick up the new one.
+
+
 ## 0.6.1 — 2026-10-24
 
 ### The size claim in 0.6.0 was wrong

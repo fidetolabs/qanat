@@ -23,22 +23,54 @@ It is also unofficial, which has an operational cost separate from the legal
 one: Yahoo changes its endpoints and the library catches up afterwards. A
 pipeline that must not break on a Tuesday should not have this in it.
 
-**Both closes are kept, and which is which is a column.** A split-adjusted
-close and an unadjusted close are different numbers for the same day, and a
-per-share figure built from one and an EPS from the other is wrong in a way no
-check catches. `close` is the price as it printed. `adjusted_close` is Yahoo's,
-restated for every split and dividend since, which means it is **not** the
-number that was on the screen that day. For a point-in-time read, use `close`.
+**Neither close is the price that was on the screen that day, and the column
+names say otherwise.** `auto_adjust=False` does not turn adjustment off. It
+turns off the dividend half:
+
+    close             adjusted for every later SPLIT
+    adjusted_close    adjusted for every later split AND dividend
+
+Both reach backwards. NVIDIA split 4-for-1 in 2021 and 10-for-1 in 2024, so
+`close` for 2021-01-04 comes back as $13.11 against the $524.54 that actually
+traded.
+
+**That matters because a filing is never rewritten.** Dividing a restated price
+by an EPS the SEC still reports as filed mixes two different footings, and the
+answer is wrong by the split factor with nothing to show for it. NVIDIA's `pe`
+for its 2022 filing comes out at 6.9 against a true 68.7 — and the error points
+one way, so a value screen is pulled towards whatever split.
+
+So `split_ratio` is stored beside the price. It is the ratio that took effect
+on that day, 0 on every other day, and it is what lets either number be
+rebuilt from the other:
+
+    as printed  =  close x (every split_ratio after that date)
+
+Which one a caller wants depends on the question. A ratio against a filing
+figure -- `pe`, `pbr` -- needs the price as printed, because the other half
+was never restated. A return needs the adjusted price, because a split is not
+a loss. See `O-20261024-01` in fdtl-kb.
 
 Columns:
 
     subject         the ticker, as asked for
     date            the trading day
-    close           the close as it printed that day
-    adjusted_close  restated for later splits and dividends
+    close           split-adjusted. NOT the price that printed -- see above
+    adjusted_close  split and dividend adjusted
+    split_ratio     the split that took effect this day, else 0
+    dividend        the dividend paid this day, else 0
     currency        from Yahoo's own metadata, not assumed
     source          'yfinance'
+    fetched_at      when this row was pulled. `adjusted_close` keeps moving as
+                    later dividends are paid, so a value with no fetch date
+                    cannot be audited
     as_of           the trading day. A close is public when that day ends
+
+**`adjusted_close` is stored rather than recomputed**, which is the opposite of
+the rule for splits. Rebuilding it from the close and the dividends lands about
+1.2% away from Yahoo's own number, because the detail of dividend adjustment
+differs between vendors. A split is exact arithmetic and is recomputed; a
+dividend adjustment is somebody's answer and is kept.
 
 `subject` is a ticker and `facts.subject` is a regulator's id, so the two do not
 join directly. Go through the documents table, which carries both.
@@ -77,6 +109,7 @@ def fetch(source: Source, root: Path, on_warn=None) -> pd.DataFrame:
     if not start:
         raise ValueError(f"source '{source.id}': yfinance needs options.from")
 
+    fetched_at = pd.Timestamp.utcnow().tz_localize(None)
     rows: list[pd.DataFrame] = []
     for ticker in companies:
         t = yf.Ticker(str(ticker))
@@ -106,8 +139,15 @@ def fetch(source: Source, root: Path, on_warn=None) -> pd.DataFrame:
             "close": hist["Close"].astype(float).to_numpy(),
             "adjusted_close": hist["Adj Close"].astype(float).to_numpy()
             if "Adj Close" in hist.columns else hist["Close"].astype(float).to_numpy(),
+            # The event, not the adjustment. `history()` already carries both,
+            # so this is a column to keep rather than a second request.
+            "split_ratio": (hist["Stock Splits"].astype(float).to_numpy()
+                            if "Stock Splits" in hist.columns else 0.0),
+            "dividend": (hist["Dividends"].astype(float).to_numpy()
+                         if "Dividends" in hist.columns else 0.0),
             "currency": currency,
             "source": SOURCE,
+            "fetched_at": fetched_at,
         })
         # A close is knowable when the day it belongs to has ended, so the
         # trading day is also the as-of date.
@@ -116,7 +156,8 @@ def fetch(source: Source, root: Path, on_warn=None) -> pd.DataFrame:
 
     if not rows:
         return pd.DataFrame(columns=[
-            "subject", "date", "close", "adjusted_close", "currency", "source", "as_of",
+            "subject", "date", "close", "adjusted_close", "split_ratio", "dividend",
+            "currency", "source", "fetched_at", "as_of",
         ])
     out = pd.concat(rows, ignore_index=True)
     return out.sort_values(["subject", "date"]).reset_index(drop=True)

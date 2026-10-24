@@ -86,7 +86,9 @@ returns:
   table: normalized.filing_prices
   subject_column: subject
   date_column: as_of
-  price_column: close
+  # adjusted_close here, not close_as_printed: a split is not a loss, and a
+  # return measured on printed prices would report one.
+  price_column: adjusted_close
 
 # ----------------------------------------------------------------- the metrics --
 # A formula with a name and a version. Arithmetic, no judgement: the judgement
@@ -109,12 +111,15 @@ returns:
 # finished map.
 metrics:
   - id: pe
-    version: 2
+    version: 3
     unit: ratio
-    description: price on the filing date, over diluted EPS for the year reported
+    description: >
+      price as it printed on the filing date, over diluted EPS for the year
+      reported. Uses close_as_printed, not close: the EPS comes from a filing
+      and the SEC never rewrites one, so the price must be on the same footing.
     sql: |
       SELECT subject, close / NULLIF(eps, 0) AS value FROM (
-        SELECT f.subject, f.value AS eps, p.close,
+        SELECT f.subject, f.value AS eps, p.close_as_printed AS close,
                row_number() OVER (PARTITION BY f.subject
                                   ORDER BY f.as_of DESC, f.period_end DESC) AS rn
         FROM normalized__facts f
