@@ -38,6 +38,25 @@ table is rewritten and the old row is replaced rather than duplicated.
 **An existing project migrates itself.** A table written by 0.6 or 0.7 as one
 file is moved into its own directory when the store opens.
 
+### Breaking: the file layout, for anything reading the files directly
+
+```
+0.7   tables/raw__prices.parquet
+0.8   tables/raw__prices/0000.parquet
+```
+
+Qanat migrates its own projects on open, so nothing inside the tool notices.
+A script that reads the corpus without Qanat does: `glob('tables/*.parquet')`
+now finds nothing.
+
+**This counts as breaking because the files are a published interface, not an
+implementation detail.** The tables are meant to be read without this engine —
+standard format, documented schema — so the path they sit at is part of what
+was promised. A reader wants `tables/<stage>__<table>/*.parquet`, and a table
+is now every file in that directory rather than one file.
+
+That is also the reason for the minor bump rather than a patch.
+
 ### Prices ask only for the day they are missing
 
 The connector had a fixed `from:` date, so every poll re-downloaded the whole
