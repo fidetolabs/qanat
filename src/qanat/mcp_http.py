@@ -12,11 +12,10 @@ Three things are deliberately fixed here rather than left to the caller.
 scope at all, and D-20260929-04 makes each one a published contract. The flag
 that starts the server decides; nothing in a request can widen it.
 
-**One process serves one project.** A DuckDB file takes one writer, so every
-session on this server shares a single store behind a lock. That is a real
-limit, not a simplification: serving two projects means two processes, and
-serving many tenants means Postgres and a store apiece. Written down in
-`docs/agents.md` rather than implied away.
+**One process serves one project.** Every session on this server shares a
+single store behind a lock. That is a real limit, not a simplification: serving
+two projects means two processes, and serving many tenants means a process and a
+store apiece. Written down in `docs/agents.md` rather than implied away.
 
 **A non-loopback bind needs a token.** Binding to an address the world can reach
 and then answering anybody is not a default worth having, so it is refused.

@@ -178,10 +178,10 @@ def test_check_is_not_cli_only(tmp_path: Path):
     session.close()
 
 
-def test_list_steps_filters_by_stage_and_adds_net(tmp_path: Path):
-    """The shelf is gone and nothing replaced it. What produces the weights tables
-    has no name of its own, so it is found by filtering on the stage that
-    identifies it -- and `net` is what each one has earned."""
+def test_list_steps_filters_by_stage(tmp_path: Path):
+    """The shelf is gone and nothing replaced it. What produces a given table has
+    no name of its own, so it is found by filtering on the stage that identifies
+    it."""
     from qanat.project import validate
 
     session = _session(tmp_path)
@@ -198,8 +198,6 @@ def test_list_steps_filters_by_stage_and_adds_net(tmp_path: Path):
                 if any(w.startswith("features.") for w in st.writes)}
     assert ids == expected and ids
 
-    with_net = _call(session, "list_steps", {"stage": "features", "net": True})
-    assert "net" in with_net["steps"][0]
     session.close()
 
 def test_the_picture_and_the_agent_agree_about_what_is_stale(tmp_path: Path):

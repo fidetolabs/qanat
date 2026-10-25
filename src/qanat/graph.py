@@ -317,7 +317,7 @@ def model(g: dict[str, Any]) -> Model:
             state=t.get("status") or "idle",
             rows=int(t.get("rows") or 0),
             stale=bool(t.get("stale")),
-            via=("backtest" if t.get("written_by_screen") else (t.get("producer") or "")),
+            via=t.get("producer") or "",
             note=_ago(t.get("updated_at")),
             seq=i,
         )

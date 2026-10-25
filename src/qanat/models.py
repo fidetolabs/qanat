@@ -81,7 +81,7 @@ class Universe(Base):
 
     `symbols` is a csv with a `symbol` column. If it also carries `from` and `to`
     dates, membership is **point-in-time**: a symbol counts on date D when it had
-    joined by then and had not yet left. That is what stops a backtest from holding
+    joined by then and had not yet left. That is what stops a screen from returning
     a name years before it listed, or from never holding one that was delisted --
     the survivorship bias that makes a static list flatter every number built on it.
 
@@ -251,9 +251,7 @@ class Project(Base):
 
     # ---- lookups -------------------------------------------------------------
     def store_url(self, root: Path) -> str:
-        """Where the tables live: a DSN as written, or a path relative to the project."""
-        if self.store.startswith(("postgresql://", "postgres://")):
-            return self.store
+        """Where the tables live: a path, relative to the project."""
         return str(root / self.store)
 
     def stage(self, lid: str) -> Stage | None:

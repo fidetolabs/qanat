@@ -148,7 +148,7 @@ Three things are fixed by the command that starts it rather than by anything in 
 the name of the scope it needs instead of pretending not to exist.
 
 **One project per process.** The store takes one writer, so every session on a server shares one
-store behind a lock. Two projects means two processes. Many tenants means Postgres and a store
+store behind a lock. Two projects means two processes. Many tenants means a process and a store
 each. This is the real limit on how far the HTTP transport goes today.
 
 **`qanat serve` is this server with a clock.** It opens the store, starts the scheduler, and

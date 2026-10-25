@@ -45,8 +45,7 @@ def cmd_init(args) -> int:
     target = Path(args.directory).resolve()
     name = args.name or target.name.replace("-", "_")
     target.mkdir(parents=True, exist_ok=True)
-    written = write_project(target, name, force=args.force, postgres=args.postgres,
-                            store=args.store)
+    written = write_project(target, name, force=args.force, store=args.store)
     if not written:
         print(c("nothing written -- files already exist. Use --force to overwrite.", Y))
         return 1
@@ -472,17 +471,13 @@ def build_parser() -> argparse.ArgumentParser:
     sub = p.add_subparsers(dest="command", required=True)
 
     i = sub.add_parser("init", help="scaffold a project")
-    i.add_argument("--store", help="where the tables live: a path, or a postgres:// url")
+    i.add_argument("--store",
+                   help="where the tables live: a directory for parquet, or a .duckdb path")
     i.add_argument("--demo", action="store_true",
                    help="fetch the filings and parse them, so the project starts with rows in it")
     i.add_argument("directory", nargs="?", default=".")
     i.add_argument("--name")
     i.add_argument("--force", action="store_true")
-    i.add_argument(
-        "--postgres",
-        action="store_true",
-        help="use postgresql://qanat:qanat@localhost:5432/qanat instead of DuckDB file",
-    )
     i.set_defaults(func=cmd_init)
 
     ch = sub.add_parser("check", help="hold the pipeline against the stage contract")

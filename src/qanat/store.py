@@ -1,14 +1,12 @@
 """Where the tables live: the run history, the event log, and the data itself.
 
-DuckDB is always the engine -- it is what executes a `.sql` step -- but it does
-not have to be the storage. Three kinds, and the SQL a step writes is identical
-across all of them:
+DuckDB is the engine -- it is what executes a `.sql` step -- and the storage is
+one of two kinds, with the SQL a step writes identical across both:
 
 | `store:` | kind | who can open it at once |
 | --- | --- | --- |
 | a directory | **parquet** | one writer **and** any number of readers |
 | a `.duckdb` path | duckdb | one process, full stop |
-| a `postgresql://` DSN | postgres | many, through the server |
 
 **Parquet is the one to reach for, and the reason is the third column.** A
 DuckDB file takes an exclusive lock, so a second process is refused outright --
@@ -16,6 +14,11 @@ not slowed, refused. That was read for a long time as a hosting limit. It is
 not: it is a limit on the second person, and a team sharing a corpus meets it on
 the first day. With parquet the writer adds a file nobody is reading, so a
 reader is never blocked and never waits.
+
+**There was a third kind, a Postgres server reached by attaching it, and it is
+gone.** The corpus is one writer, append-only, read in wide scans, which is
+what parquet is for -- so the server bought nothing the files do not, and cost a
+second code path through every write, every as-of view and every migration.
 
 A table lives under `<stage>__<name>`, so the stage a table belongs to is
 readable from its name alone -- over MCP, in the DuckDB CLI, and in anything else
@@ -36,8 +39,6 @@ from typing import Any
 
 import duckdb
 import pandas as pd
-
-PG_SCHEMES = ("postgresql://", "postgres://")
 
 #: Where a parquet store keeps its two halves. Data is one file per table and is
 #: rewritten whole; metadata is row-at-a-time and stays in DuckDB, opened only
@@ -89,12 +90,7 @@ class StoreBusy(RuntimeError):
 RUNS = "_qanat_runs"
 EVENTS = "_qanat_events"
 STATE = "_qanat_state"
-BACKTESTS = "_qanat_backtests"
-SESSIONS = "_qanat_sessions"
-ASKS = "_qanat_asks"
-BT_WEIGHTS = "_qanat_bt_weights"
-BT_PERIODS = "_qanat_bt_periods"
-META = (RUNS, EVENTS, STATE, BACKTESTS, BT_WEIGHTS, BT_PERIODS, SESSIONS, ASKS)
+META = (RUNS, EVENTS, STATE)
 
 #: Schema holding the as-of views a screen reads through. Named, not `asof`,
 #: because DuckDB reserves that word for ASOF JOIN.
@@ -145,24 +141,20 @@ def _ident(name: str) -> str:
     return str(name).replace('"', '""')
 
 
-#: DuckDB's names for the integer types, as `duckdb_columns()` reports them --
-#: including for an attached Postgres, which it maps onto the same set.
+#: DuckDB's names for the integer types, as `duckdb_columns()` reports them.
 INT_TYPES = ("TINYINT", "SMALLINT", "INTEGER", "BIGINT", "HUGEINT",
              "UTINYINT", "USMALLINT", "UINTEGER", "UBIGINT", "UHUGEINT")
 
 
-def as_instant(col: str, dtype: str | None = None, kind: str = "duckdb") -> str:
+def as_instant(col: str, dtype: str | None = None) -> str:
     """SQL that turns a time column into a comparable UTC instant.
 
-    Two things used to go wrong here, and the fix for each has to survive being
-    pushed down into an attached Postgres -- so the type is decided in Python and
-    only portable functions appear in the SQL.
+    Two things used to go wrong here, and the type is decided in Python rather
+    than in SQL because a `CASE` over a column's type cannot be written portably.
 
     **Offsets were thrown away.** A bare `CAST(x AS TIMESTAMP)` keeps the wall clock,
     so `16:00-05:00` and `16:00Z` compared equal and a New York close was visible
-    four hours before it happened. Against a DuckDB file the cast now goes through
-    TIMESTAMPTZ. Against Postgres the column already carries its own zone and the
-    plain cast is left alone, because anything richer is rewritten on pushdown.
+    four hours before it happened. The cast now goes through TIMESTAMPTZ.
 
     **Integers are a clock too, and not all the same one.** DuckDB refuses to cast
     them at all, so rather than fail three layers down they are read by magnitude:
@@ -184,8 +176,6 @@ def as_instant(col: str, dtype: str | None = None, kind: str = "duckdb") -> str:
             f"WHEN abs({n}) > 100000000 THEN CAST(to_timestamp({n}) AS TIMESTAMP) "
             f"ELSE NULL END"
         )
-    if kind == "postgres":
-        return f"CAST({q} AS TIMESTAMP)"
     return f"CAST(TRY_CAST({q} AS TIMESTAMPTZ) AT TIME ZONE 'UTC' AS TIMESTAMP)"
 
 
@@ -255,30 +245,14 @@ def is_parquet_dir(target: str) -> bool:
     return path.suffix == ""
 
 
-def is_postgres(url: str) -> bool:
-    return str(url).startswith(PG_SCHEMES)
-
-
 class Store:
-    """One database, whether that is a local file or a Postgres server."""
+    """One database: a directory of parquet files, or a single DuckDB file."""
 
     def __init__(self, target: str | Path):
-        from qanat.sources.rest import expand  # ${PGPASSWORD} etc, never in the file
-
         self.target = str(target)
         self._lock = threading.RLock()
 
-        if is_postgres(self.target):
-            dsn = expand(self.target)
-            self.kind = "postgres"
-            self.path = None
-            self.label = dsn.split("@")[-1] if "@" in dsn else dsn
-            self.con = duckdb.connect()
-            self.con.execute("INSTALL postgres; LOAD postgres;")
-            # ATTACH takes no bind parameters, so the dsn is inlined and quoted
-            self.con.execute(f"ATTACH '{dsn.replace(chr(39), chr(39) * 2)}' AS qanat (TYPE postgres)")
-            self.con.execute("USE qanat")
-        elif is_parquet_dir(self.target):
+        if is_parquet_dir(self.target):
             self.kind = "parquet"
             self.path = Path(self.target)
             self.dir = self.path
@@ -306,7 +280,8 @@ class Store:
                     "    · stop `qanat serve`, then run this again, or\n"
                     "    · reach it through the process that already has it: `qanat mcp --http`\n"
                     "      serves MCP from one that holds the store, or\n"
-                    "    · move the project to Postgres (`qanat init --postgres`), which takes many"
+                    "    · move the project to a parquet store (`store: ./data`), which takes any\n"
+                    "      number of readers beside the writer"
                 ) from exc
         # Without this the meaning of a timestamp depends on the machine: a stamp
         # written as UTC renders in local time, and an as-of comparison is then off
@@ -494,8 +469,8 @@ class Store:
     def _meta(self) -> None:
         """Attach the metadata file, the first time something actually needs it.
 
-        Runs, events, applied state and sessions are row-at-a-time and belong in
-        a database. That database is a DuckDB file, which takes one writer -- so
+        Runs, events and applied state are row-at-a-time and belong in a
+        database. That database is a DuckDB file, which takes one writer -- so
         it is opened late and only by a caller that asked for it. A reader that
         only queries data never touches it, which is what lets a teammate read
         the corpus while an ingest is running.
@@ -548,10 +523,10 @@ class Store:
         if cur is None:
             try:
                 cur = self._readers.cur = self.con.cursor()
-                # A fresh cursor starts on DuckDB's own default schema, not the
-                # writer's. Against a DuckDB file those are the same and nothing
-                # shows; against an attached Postgres the meta tables live in the
-                # attached schema and every bare name here stops resolving.
+                # A fresh cursor starts on DuckDB's own default schema rather
+                # than inheriting the writer's search path, so it is set here --
+                # otherwise a bare table name read through this cursor resolves
+                # against whatever the default happens to be.
                 cur.execute(f"SET search_path='{self.home}'")
             except Exception:  # noqa: BLE001 -- no cursor support: share the one connection
                 cur = self._readers.cur = self.con
@@ -586,117 +561,6 @@ class Store:
             # unattributed rather than being guessed at.
             self.con.execute(
                 f"ALTER TABLE {EVENTS} ADD COLUMN IF NOT EXISTS actor VARCHAR"
-            )
-            self.con.execute(f"""
-                CREATE TABLE IF NOT EXISTS {BACKTESTS} (
-                    run_id      BIGINT PRIMARY KEY,
-                    created_at  TIMESTAMP,
-                    from_date   VARCHAR,
-                    to_date     VARCHAR,
-                    rebalance   VARCHAR,
-                    seed        BIGINT,
-                    digest      VARCHAR,
-                    status      VARCHAR,
-                    periods     BIGINT,
-                    gross       DOUBLE,
-                    fees        DOUBLE,
-                    slippage    DOUBLE,
-                    net         DOUBLE,
-                    turnover    DOUBLE,
-                    report      VARCHAR,
-                    error       VARCHAR
-                )""")
-            # Two migrations on the same column, and the order matters. Databases
-            # written before 2026-10-11 carry it as `alpha`, a word this engine no
-            # longer uses: the thing it named is a step that writes the weights
-            # stage, and the stage is what identifies it. Rename rather than add, so
-            # every backtest anyone already ran keeps its row. Older databases
-            # predate the column entirely, and the ADD below covers both that case
-            # and a database already migrated.
-            #
-            # Asked rather than attempted. A rename that fails because the column is
-            # not there looks exactly like a rename that fails because the database
-            # is unwritable, and swallowing the second to tolerate the first is how a
-            # migration goes quiet.
-            had = [r[0] for r in self.con.execute(
-                "SELECT column_name FROM information_schema.columns "
-                "WHERE table_schema = ? AND table_name = ?",
-                [self.home, BACKTESTS]).fetchall()]
-            if "alpha" in had and "step" not in had:
-                self.con.execute(f"ALTER TABLE {BACKTESTS} RENAME COLUMN alpha TO step")
-            self.con.execute(
-                f"ALTER TABLE {BACKTESTS} ADD COLUMN IF NOT EXISTS step VARCHAR"
-            )
-            self.con.execute(f"""
-                CREATE TABLE IF NOT EXISTS {BT_WEIGHTS} (
-                    run_id  BIGINT,
-                    as_of   TIMESTAMP,
-                    symbol  VARCHAR,
-                    weight  DOUBLE
-                )""")
-            self.con.execute(f"""
-                CREATE TABLE IF NOT EXISTS {BT_PERIODS} (
-                    run_id      BIGINT,
-                    as_of       TIMESTAMP,
-                    priced_from TIMESTAMP,
-                    priced_to   TIMESTAMP,
-                    holdings    BIGINT,
-                    gross       DOUBLE,
-                    turnover    DOUBLE,
-                    fees        DOUBLE,
-                    slippage    DOUBLE,
-                    net         DOUBLE
-                )""")
-            # No DEFAULT: when the store is an attached Postgres, DuckDB refuses a
-            # DEFAULT in ALTER TABLE. Rows written since carry an explicit value,
-            # and rows from before live scoring existed read as NULL, which `WHERE
-            # live` excludes -- which is what they are.
-            self.con.execute(
-                f"ALTER TABLE {BACKTESTS} ADD COLUMN IF NOT EXISTS live BOOLEAN"
-            )
-            self.con.execute(f"""
-                CREATE TABLE IF NOT EXISTS {SESSIONS} (
-                    session_id  VARCHAR PRIMARY KEY,
-                    started_at  TIMESTAMP,
-                    ended_at    TIMESTAMP,
-                    title       VARCHAR,
-                    summary     VARCHAR,
-                    cli         VARCHAR,
-                    model       VARCHAR,
-                    asks        BIGINT,
-                    cost_usd    DOUBLE
-                )""")
-            #  The conversation itself. The CLI keeps its own transcript and that
-            #  is what `--resume` reads; this is ours, and it is what can be read
-            #  back later. Without it a past session is a summary and a count, and
-            #  nobody can see what was actually said.
-            #
-            #  `lines` is the tool log as JSON: what the agent did between the
-            #  question and the answer, which is most of what makes a thread worth
-            #  re-reading.
-            self.con.execute(f"""
-                CREATE TABLE IF NOT EXISTS {ASKS} (
-                    ask_id      BIGINT PRIMARY KEY,
-                    session_id  VARCHAR,
-                    asked_at    TIMESTAMP,
-                    question    VARCHAR,
-                    answer      VARCHAR,
-                    error       VARCHAR,
-                    lines       VARCHAR,
-                    model       VARCHAR,
-                    cost_usd    DOUBLE,
-                    elapsed     DOUBLE
-                )""")
-            #  Which conversation a screen came out of. The run already records
-            #  what was asked of the engine; this records who asked and why, and
-            #  it is the join that lets a session show what it produced and an
-            #  weights table show the sessions it came from.
-            #
-            #  Nullable on purpose: a screen from the CLI or the scheduler belongs
-            #  to no conversation, and pretending otherwise would invent a session
-            #  nobody had.
-            self.con.execute(
-                f"ALTER TABLE {BACKTESTS} ADD COLUMN IF NOT EXISTS session_id VARCHAR"
             )
             self.con.execute(f"""
                 CREATE TABLE IF NOT EXISTS {STATE} (
@@ -739,10 +603,6 @@ class Store:
                     f"UPDATE {RUNS} SET status = 'interrupted', ended_at = now()::TIMESTAMP, "
                     "error = 'the process ended before this run did' WHERE status = 'running'"
                 )
-            self.con.execute(
-                f"UPDATE {BACKTESTS} SET status = 'interrupted', "
-                "error = 'the process ended before this screen did' WHERE status = 'running'"
-            )
             if row is None:
                 return
             self.con.execute(f'DROP SCHEMA IF EXISTS "{PIT}" CASCADE')
@@ -838,7 +698,6 @@ class Store:
             df = df.drop_duplicates(subset=list(key), keep="last")
         with self._lock:
             self.con.register("_incoming", df)
-            self._unshadow(name)
             try:
                 exists = self._exists(name)
                 if mode == "append" and exists:
@@ -1029,7 +888,6 @@ class Store:
     def sql_into(self, ref: str, select_sql: str) -> int:
         name = phys(ref)
         with self._lock:
-            self._unshadow(name)
             try:
                 if self.kind == "parquet":
                     return self._publish(name, select_sql)
@@ -1088,7 +946,7 @@ class Store:
         """`as_instant` for one real column, with its declared type looked up."""
         info = self.table_info(ref)
         dtype = dict(info.columns).get(col) if info else None
-        return as_instant(col, dtype, self.kind)
+        return as_instant(col, dtype)
 
     def time_column(self, ref: str, override: str | None = None) -> str | None:
         """Which column carries this table's timestamp."""
@@ -1137,17 +995,6 @@ class Store:
             )
         self.con.execute(f'CREATE OR REPLACE VIEW "{PIT}"."{name}" AS {body}')
         return col is not None
-
-    def _unshadow(self, name: str) -> None:
-        """Take the as-of view off a table so the table itself can be replaced.
-
-        Postgres refuses to drop a table a view depends on, and replacing a table
-        is a drop. DuckDB allows it, which is why this only ever showed up against
-        a real server.
-        """
-        if self.as_of is None:
-            return
-        self.con.execute(f'DROP VIEW IF EXISTS "{PIT}"."{name}"')
 
     def close_pit(self) -> None:
         with self._lock:
@@ -1361,231 +1208,6 @@ class Store:
                 [status, rows, error, run_id],
             )
 
-    # ---- backtests -----------------------------------------------------------
-    def last_live_backtest(self) -> str | None:
-        """The `to` date of the newest live run that finished, or None."""
-        self._meta()
-        row = self.rcon.execute(
-            f"SELECT to_date FROM {BACKTESTS} WHERE live AND status = 'ok' "
-            "ORDER BY created_at DESC LIMIT 1"
-        ).fetchone()
-        return str(row[0]) if row else None
-
-    def start_backtest(
-        self, frm: str, to: str, rebalance: str, seed: int, digest: str, step: str = "",
-        live: bool = False, session_id: str = "",
-    ) -> int:
-        self._meta()
-        run_id = time.time_ns() // 1000
-        with self._lock:
-            self.con.execute(
-                f"INSERT INTO {BACKTESTS} (run_id, created_at, from_date, to_date, rebalance, "
-                "seed, digest, status, periods, step, live, session_id) "
-                "VALUES (?, now()::TIMESTAMP, ?, ?, ?, ?, ?, 'running', 0, ?, ?, ?)",
-                [run_id, frm, to, rebalance, seed, digest, step, live, session_id or None],
-            )
-        return run_id
-
-    def end_backtest(
-        self, run_id: int, status: str, totals: dict[str, Any] | None = None,
-        report: str | None = None, error: str | None = None,
-    ) -> None:
-        self._meta()
-        t = totals or {}
-        with self._lock:
-            self.con.execute(
-                f"UPDATE {BACKTESTS} SET status = ?, periods = ?, gross = ?, fees = ?, "
-                "slippage = ?, net = ?, turnover = ?, report = ?, error = ? WHERE run_id = ?",
-                [status, t.get("periods", 0), t.get("gross"), t.get("fees"), t.get("slippage"),
-                 t.get("net"), t.get("turnover"), report, error, run_id],
-            )
-
-    def save_bt_weights(self, run_id: int, as_of: str, df: pd.DataFrame) -> int:
-        """Keep the portfolio this screen held at one as-of date."""
-        self._meta()
-        if df is None or df.empty:
-            return 0
-        keep = df.rename(columns={c: c.lower() for c in df.columns})
-        if not {"symbol", "weight"} <= set(keep.columns):
-            return 0
-        keep = keep[["symbol", "weight"]].copy()
-        keep.insert(0, "as_of", pd.Timestamp(as_of))
-        keep.insert(0, "run_id", run_id)
-        with self._lock:
-            self.con.register("_bt_incoming", keep)
-            try:
-                self.con.execute(f"INSERT INTO {BT_WEIGHTS} SELECT * FROM _bt_incoming")
-            finally:
-                self.con.unregister("_bt_incoming")
-        return len(keep)
-
-    def save_bt_period(self, run_id: int, period: Any) -> None:
-        """One closed holding period, written the moment it closes -- so the PnL is
-        queryable while the screen is still running, not only after it ends."""
-        self._meta()
-        with self._lock:
-            self.con.execute(
-                f"INSERT INTO {BT_PERIODS} VALUES (?, CAST(? AS TIMESTAMP), CAST(? AS TIMESTAMP), "
-                "CAST(? AS TIMESTAMP), ?, ?, ?, ?, ?, ?)",
-                [run_id, period.as_of, period.priced_from, period.priced_to, period.holdings,
-                 period.gross, period.turnover, period.fees, period.slippage, period.net],
-            )
-
-    def bt_periods(self, run_id: int) -> list[dict[str, Any]]:
-        self._meta()
-        df = self.rcon.execute(
-            f"SELECT * FROM {BT_PERIODS} WHERE run_id = ? ORDER BY as_of", [run_id]
-        ).df()
-        return _records(df)
-
-    def open_session(self, session_id: str, cli: str = "", title: str = "") -> None:
-        """Record a conversation starting. Safe to call again for one already open."""
-        self._meta()
-        with self._lock:
-            row = self.con.execute(
-                f"SELECT 1 FROM {SESSIONS} WHERE session_id = ?", [session_id]
-            ).fetchone()
-            if row:
-                return
-            self.con.execute(
-                f"INSERT INTO {SESSIONS} (session_id, started_at, title, cli, asks, cost_usd) "
-                "VALUES (?, now()::TIMESTAMP, ?, ?, 0, 0.0)",
-                [session_id, title or None, cli or None],
-            )
-
-    def note_ask(self, session_id: str, cost_usd: float = 0.0, model: str = "",
-                 title: str = "") -> None:
-        """One more question answered in this session, and what it cost.
-
-        The title is the first question asked, kept as a stand-in until a summary
-        exists -- a list of timestamps is not a history anybody reads.
-        """
-        self._meta()
-        with self._lock:
-            self.con.execute(
-                f"UPDATE {SESSIONS} SET asks = coalesce(asks, 0) + 1, "
-                "cost_usd = coalesce(cost_usd, 0.0) + ?, "
-                "model = coalesce(?, model), title = coalesce(title, ?) "
-                "WHERE session_id = ?",
-                [float(cost_usd or 0.0), model or None, title or None, session_id],
-            )
-
-    def end_session(self, session_id: str, summary: str = "") -> None:
-        self._meta()
-        with self._lock:
-            self.con.execute(
-                f"UPDATE {SESSIONS} SET ended_at = now()::TIMESTAMP, "
-                "summary = coalesce(?, summary) WHERE session_id = ?",
-                [summary or None, session_id],
-            )
-
-    def save_ask(self, session_id: str, state: dict[str, Any]) -> int:
-        """One question and everything that came of it, kept so it can be re-read.
-
-        Written when the ask finishes, from the same `state()` the pass was
-        reading live -- so what is re-read later is what actually happened, not a
-        reconstruction of it.
-        """
-        self._meta()
-        import json as _json
-
-        ask_id = time.time_ns() // 1000
-        with self._lock:
-            self.con.execute(
-                f"INSERT INTO {ASKS} (ask_id, session_id, asked_at, question, answer, "
-                "error, lines, model, cost_usd, elapsed) "
-                "VALUES (?, ?, now()::TIMESTAMP, ?, ?, ?, ?, ?, ?, ?)",
-                [ask_id, session_id, state.get("question") or "",
-                 state.get("answer") or "", state.get("error") or "",
-                 _json.dumps(state.get("lines") or []), state.get("model") or "",
-                 float(state.get("cost_usd") or 0.0), float(state.get("elapsed") or 0.0)],
-            )
-        return ask_id
-
-    def session_asks(self, session_id: str) -> list[dict[str, Any]]:
-        """Everything said in one conversation, oldest first -- reading order."""
-        self._meta()
-        import json as _json
-
-        df = self.rcon.execute(
-            f"SELECT * FROM {ASKS} WHERE session_id = ? ORDER BY asked_at", [session_id]
-        ).df()
-        rows = _records(df)
-        for r in rows:
-            try:
-                r["lines"] = _json.loads(r.get("lines") or "[]")
-            except ValueError:
-                r["lines"] = []
-        return rows
-
-    def session(self, session_id: str) -> dict[str, Any] | None:
-        self._meta()
-        df = self.rcon.execute(
-            f"SELECT * FROM {SESSIONS} WHERE session_id = ?", [session_id]
-        ).df()
-        rows = _records(df)
-        return rows[0] if rows else None
-
-    def sessions(self, limit: int = 50) -> list[dict[str, Any]]:
-        """Every conversation, newest first, with what each one produced.
-
-        `runs` counts the screens that came out of it, and is legitimately zero:
-        plenty of sessions are a question and an answer. An empty count is the
-        truth about that session, not a gap in the record.
-        """
-        self._meta()
-        df = self.rcon.execute(f"""
-            SELECT s.*,
-                   count(b.run_id)               AS runs,
-                   max(b.created_at)             AS last_run_at
-            FROM {SESSIONS} s
-            LEFT JOIN {BACKTESTS} b ON b.session_id = s.session_id
-            GROUP BY ALL
-            ORDER BY s.started_at DESC
-            LIMIT {int(limit)}
-        """).df()
-        return _records(df)
-
-    def session_backtests(self, session_id: str) -> list[dict[str, Any]]:
-        """What this conversation screened, newest first."""
-        self._meta()
-        df = self.rcon.execute(f"""
-            SELECT run_id, created_at, from_date, to_date, rebalance, digest, status,
-                   periods, net, turnover, step, live
-            FROM {BACKTESTS} WHERE session_id = ? ORDER BY created_at DESC
-        """, [session_id]).df()
-        return _records(df)
-
-    def step_sessions(self, step: str) -> list[dict[str, Any]]:
-        """Every conversation that screened this weights table, and what it got.
-
-        The other direction of the same join: from a weights table back to the
-        rooms it was worked out in.
-        """
-        self._meta()
-        df = self.rcon.execute(f"""
-            SELECT s.session_id, s.started_at, s.title, s.summary,
-                   count(b.run_id)   AS runs,
-                   max(b.created_at) AS last_run_at,
-                   arg_max(b.net, b.created_at)    AS last_net,
-                   arg_max(b.run_id, b.created_at) AS last_run_id
-            FROM {BACKTESTS} b
-            JOIN {SESSIONS} s ON s.session_id = b.session_id
-            WHERE b.step = ?
-            GROUP BY ALL
-            ORDER BY max(b.created_at) DESC
-        """, [step]).df()
-        return _records(df)
-
-    def backtests(self, limit: int = 50) -> list[dict[str, Any]]:
-        self._meta()
-        df = self.rcon.execute(
-                f"SELECT run_id, created_at, from_date, to_date, rebalance, seed, digest, "
-                f"status, periods, gross, fees, slippage, net, turnover, error, step, live, "
-                f"session_id FROM {BACKTESTS} ORDER BY created_at DESC LIMIT {int(limit)}"
-        ).df()
-        return _records(df)
-
     def bar_history(self, limit: int = 20) -> list[dict[str, Any]]:
         """Every time the bar moved, and who moved it.
 
@@ -1598,46 +1220,6 @@ class Store:
             SELECT ts, level, message, actor FROM {EVENTS}
             WHERE job_id = 'bar' ORDER BY ts DESC LIMIT {int(limit)}
         """).df()
-        return _records(df)
-
-    # ---- the ledger ----------------------------------------------------------
-    def steps_net(self) -> list[dict[str, Any]]:
-        """Every weights table this project has backtested, newest run first.
-
-        Derived from history rather than declared anywhere: a row is here because
-        it produced a net, which is the only claim worth keeping. A step removed
-        from the file keeps its row, because what it earned still happened.
-        """
-        self._meta()
-        with self._lock:
-            df = self.con.execute(f"""
-                SELECT step,
-                       count(*)                                  AS runs,
-                       max(created_at)                           AS last_run,
-                       arg_max(run_id, created_at)               AS last_run_id,
-                       arg_max(net, created_at)                  AS last_net,
-                       max(net)                                  AS best_net
-                FROM {BACKTESTS}
-                WHERE step IS NOT NULL AND step <> '' AND periods > 0
-                GROUP BY step
-                ORDER BY max(created_at) DESC
-            """).df()
-        return _records(df)
-
-    def backtest(self, run_id: int) -> dict[str, Any] | None:
-        self._meta()
-        df = self.rcon.execute(f"SELECT * FROM {BACKTESTS} WHERE run_id = ?", [run_id]).df()
-        rows = _records(df)
-        return rows[0] if rows else None
-
-    def bt_weights(self, run_id: int, as_of: str | None = None) -> list[dict[str, Any]]:
-        self._meta()
-        q = f"SELECT as_of, symbol, weight FROM {BT_WEIGHTS} WHERE run_id = ?"
-        params: list[Any] = [run_id]
-        if as_of:
-            q += " AND CAST(as_of AS TIMESTAMP) = CAST(? AS TIMESTAMP)"
-            params.append(as_of)
-        df = self.rcon.execute(q + " ORDER BY as_of, symbol", params).df()
         return _records(df)
 
     def event(self, level: str, job_id: str, message: str) -> None:

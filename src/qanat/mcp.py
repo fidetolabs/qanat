@@ -2,7 +2,7 @@
 
 `qanat mcp` serves the service layer over MCP on stdio, and `mcp_http` serves the
 same tools over HTTP. Neither one holds logic: both call `store`, `editor`,
-`runner`, `plan` and `backtest`, which is the whole point -- if the CLI can do
+`runner`, `plan` and `screen`, which is the whole point -- if the CLI can do
 it, an agent can do it, and there is no third place where the behaviour could
 quietly differ.
 
@@ -10,9 +10,9 @@ Six things this tries to be, because an agent needs them and a person does not:
 
   * **discoverable** -- `list_tables` and `describe_table` mean no documentation
     is required to find out what exists
-  * **addressable** -- every table, job, run and backtest has an id
+  * **addressable** -- every table, job and run has an id
   * **structured** -- results are JSON with numbers in them, never a screenshot
-  * **repeatable** -- `backtest` takes a seed, and the same seed is the same answer
+  * **repeatable** -- a screen reads one as-of date, and the same date is the same answer
   * **honest in failure** -- an error says what to do next, not only what broke
   * **scoped to the caller** -- `--scope` decides which tools are offered at all
 
@@ -243,17 +243,11 @@ def _lineage(s: Session, args: dict) -> Any:
 
 @tool("list_steps",
       "Every job in the graph -- sources and steps -- in dependency order. `stage` keeps only the "
-      "steps writing into one stage, which is how you find what produces the weights tables: "
-      "there is no separate name for those, the stage is what identifies them. `net` adds what "
-      "each one has earned across every screen it has had.",
+      "steps writing into one stage, which is how you find what produces a given table: there is "
+      "no separate name for those, the stage is what identifies them.",
       {"properties": {
           "stage": {"type": "string",
-                    "description": "keep only steps writing into this stage, e.g. weights"},
-          "net": {"type": "boolean",
-                  "description": "add runs, last_run, last_net and best_net per step, from the "
-                                 "screen history, and say which step is wired now. A step "
-                                 "removed from the file keeps its history, because what it "
-                                 "earned still happened"},
+                    "description": "keep only steps writing into this stage, e.g. normalized"},
       }, "required": []},
       scope="research")
 def _list_steps(s: Session, args: dict) -> Any:
@@ -265,19 +259,12 @@ def _list_steps(s: Session, args: dict) -> Any:
     rows = [{"id": x.id, "from": x.reads, "to": x.writes, "script": x.script,
              "universe": x.universe, "schedule": x.schedule, "options": x.options}
             for x in steps]
-    out: dict[str, Any] = {
+    return {
         "sources": [] if stage else [
             {"id": x.id, "to": x.writes, "connector": x.connector,
              "schedule": x.schedule, "options": x.options} for x in s.project.sources],
         "steps": rows,
     }
-    if args.get("net"):
-        by_step = {r["step"]: r for r in s.store.steps_net()}
-        for r in rows:
-            r["net"] = by_step.get(r["id"])
-        gone = [r for sid, r in by_step.items() if sid not in {x["id"] for x in rows}]
-        out["no_longer_in_the_file"] = gone or None
-    return out
 
 
 @tool("read_step", "The script a step runs.",
@@ -510,14 +497,6 @@ def _list_runs(s: Session, args: dict) -> Any:
           "source": {"type": "string", "description": "the script body to write"},
           "universe": {"type": "string"},
           "schedule": {"type": "string"},
-          # Both of these have always been honoured; neither was in the schema,
-          # so an agent had no way to find out the field existed at all.
-          "rebalance": {"type": "string",
-                        "description": "how often this step wants to decide, e.g. 5d. A backtest "
-                                       "uses it unless told otherwise. Only meaningful on a step "
-                                       "that writes weights"},
-          "decay": {"type": "integer",
-                    "description": "hold a blend of the last N portfolios. 0 or 1 is off"},
           "options": {"type": "object"},
       }, "required": ["id", "to", "script"]},
       writes=True,

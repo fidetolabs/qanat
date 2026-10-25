@@ -289,13 +289,12 @@ def validate(p: Project, root: Path) -> Report:
     # A file store outside the project is not wrong, but it is worth saying out loud:
     # the project and its data then move separately, and a copy of the directory is
     # no longer a copy of the work.
-    if not p.store.startswith(("postgresql://", "postgres://")):
-        try:
-            inside = (root / p.store).resolve().is_relative_to(root.resolve())
-        except (OSError, ValueError):
-            inside = False
-        if not inside:
-            r.warnings.append(
+    try:
+        inside = (root / p.store).resolve().is_relative_to(root.resolve())
+    except (OSError, ValueError):
+        inside = False
+    if not inside:
+        r.warnings.append(
                 f"store '{p.store}' is outside the project directory, so copying or moving "
                 f"the project will not take its data along"
             )
@@ -385,7 +384,7 @@ def validate(p: Project, root: Path) -> Report:
             r.warnings.append(
                 f"step '{st.id}' sets an option called 'as_of'. A screen overwrites it with "
                 "the date being screened, so this step means something different under "
-                "`qanat backtest` than under `qanat run`"
+                "`qanat screen` than under `qanat run`"
             )
 
     # ---- soft advice ----------------------------------------------------------

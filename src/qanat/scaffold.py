@@ -155,15 +155,10 @@ FILES = {
 }
 
 
-def write_project(target: Path, name: str, force: bool = False, postgres: bool = False,
+def write_project(target: Path, name: str, force: bool = False,
                   store: str | None = None) -> list[Path]:
     written = []
-    if store:
-        store_line = f"store: {store}"
-    elif postgres:
-        store_line = "store: postgresql://qanat:qanat@localhost:5432/qanat"
-    else:
-        store_line = "store: ./data"
+    store_line = f"store: {store}" if store else "store: ./data"
     yaml_body = QANAT_YAML.replace("store: ./data", store_line)
     files = {**FILES, "qanat.yaml": yaml_body}
     for rel, body in files.items():

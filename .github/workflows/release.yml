@@ -32,20 +32,6 @@ jobs:
   build:
     runs-on: ubuntu-latest
 
-    # the same server the test workflow uses: without it tests/test_postgres.py
-    # skips itself, and the last gate before a release would be the weaker one
-    services:
-      postgres:
-        image: postgres:16-alpine
-        env:
-          POSTGRES_USER: qanat
-          POSTGRES_PASSWORD: qanat
-          POSTGRES_DB: qanat
-        ports: ["5433:5432"]
-        options: >-
-          --health-cmd "pg_isready -U qanat -d qanat"
-          --health-interval 3s --health-timeout 3s --health-retries 20
-
     steps:
       - uses: actions/checkout@v7
       - uses: astral-sh/setup-uv@v7
@@ -65,14 +51,10 @@ jobs:
       # a release is not the place to find out the tests fail
       - run: uv sync --frozen --extra dev
       - run: uv run ruff check src tests
-      # -n auto spreads a test at a time across the runner's cores. The suite is
-      # dominated by test_backtest.py, where every test replays a pipeline at each
-      # of its rebalance dates -- 36 independent replays that were running one
-      # after another. loadgroup keeps the Postgres file on a single worker; it
-      # shares one database and resets by emptying it.
+      # -n auto spreads a test at a time across the runner's cores. loadgroup is
+      # kept because a test file that shares one resource has to stay on one
+      # worker; nothing needs it today and it costs nothing.
       - run: uv run pytest -q -n auto --dist loadgroup
-        env:
-          QANAT_TEST_PG: postgresql://qanat:qanat@127.0.0.1:5433/qanat
 
       - run: uv build
       - name: the wheel must carry the CLI and the MCP server

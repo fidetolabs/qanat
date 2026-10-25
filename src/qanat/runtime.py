@@ -27,7 +27,7 @@ class AppState:
     sched: Scheduler | None
     _lock: threading.RLock = field(default_factory=threading.RLock)
     #: Held for the whole of a screen, and by nothing else. The state lock guards
-    #: edits to the project, which a screen never makes, so a backtest must not
+    #: edits to the project, which a screen never makes, so a screen must not
     #: take it.
     _screen: threading.Lock = field(default_factory=threading.Lock)
 

@@ -306,7 +306,7 @@ def run_all(
     """Poll every source, then run every step in dependency order. One pass.
 
     A screen passes `sources=False`: the raw tables are the record of what arrived,
-    and re-polling a live feed during a backtest would overwrite the very history
+    and re-polling a live feed during a screen would overwrite the very history
     being measured.
     """
     results: list[RunResult] = []

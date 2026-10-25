@@ -153,8 +153,6 @@ _LABEL = {
     "universe": "universe",
     "mode": "mode",
     "key": "key",
-    "rebalance": "rebalance",
-    "decay": "decay",
     "when": "waits on",
     "timeout": "timeout",
 }

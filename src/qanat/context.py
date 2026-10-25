@@ -80,7 +80,7 @@ class Context:
         #: newer than this, and `ctx.now` is this instant rather than the wall clock,
         #: so the same screen twice gives the same numbers.
         self.as_of: str | None = as_of
-        #: A backtest may hold the same step to a different universe than the file
+        #: A screen may hold the same step to a different universe than the file
         #: names, so "does this work on large caps too" costs one argument, not an edit.
         self.universe_override: str | None = universe
         self.now: datetime = (

@@ -1,21 +1,4 @@
 services:
-  postgres:
-    image: postgres:16-alpine
-    environment:
-      POSTGRES_USER: qanat
-      POSTGRES_PASSWORD: qanat
-      POSTGRES_DB: qanat
-    ports:
-      # Host 5432 is often taken by a local Postgres install — default to 5433.
-      - "${POSTGRES_HOST_PORT:-5433}:5432"
-    volumes:
-      - qanat_pg:/var/lib/postgresql/data
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U qanat -d qanat"]
-      interval: 3s
-      timeout: 3s
-      retries: 20
-
   qanat:
     build: .
     ports:
@@ -31,7 +14,9 @@ services:
       # names no host, so `qanat serve` refuses it unless a caller has to prove
       # who it is. Set it in the environment or a .env file beside this one.
       QANAT_MCP_TOKEN: ${QANAT_MCP_TOKEN:?set QANAT_MCP_TOKEN to serve MCP off loopback}
-      QANAT_STORE: postgresql://qanat:qanat@postgres:5432/qanat
+      # A directory, so the tables are parquet: the container writes while
+      # anything else reads the same files.
+      QANAT_STORE: ./data
       QANAT_RESET: ${QANAT_RESET:-0}
       # The demo project pulls real 10-K filings from SEC EDGAR, which refuses
       # requests that do not say who is making them. No account, no API key --
@@ -41,10 +26,6 @@ services:
     volumes:
       - qanat_project:/project
     working_dir: /project
-    depends_on:
-      postgres:
-        condition: service_healthy
 
 volumes:
-  qanat_pg:
   qanat_project:

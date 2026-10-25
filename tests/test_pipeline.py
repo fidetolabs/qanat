@@ -307,9 +307,9 @@ def test_init_can_be_told_where_the_store_goes(tmp_path: Path):
     import yaml
     from conftest import write_demo_project as write_project
 
-    dsn = "postgresql://qanat:qanat@postgres:5432/qanat"
-    write_project(tmp_path, "demo", store=dsn)
-    assert yaml.safe_load((tmp_path / "qanat.yaml").read_text())["store"] == dsn
+    elsewhere = "./var/corpus"
+    write_project(tmp_path, "demo", store=elsewhere)
+    assert yaml.safe_load((tmp_path / "qanat.yaml").read_text())["store"] == elsewhere
 
     from conftest import STORE_KIND
 
