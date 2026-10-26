@@ -3,6 +3,9 @@
 Qanat is MIT-licensed and open to pull requests. This guide covers local setup and where to
 change things.
 
+**The rules a change must not break are in [CLAUDE.md](CLAUDE.md)**, each one naming the test that
+holds it. Read that before changing behaviour; read this for where things live.
+
 ## Local development
 
 ```bash
@@ -20,37 +23,37 @@ Or with pip: `pip install -e ".[dev]"`.
 Run tests:
 
 ```bash
-uv run pytest
-uv run ruff check src tests
+uv run pytest                        # about nine seconds
+uv run ruff check src tests audit
 ```
 
-The suite takes about eighty seconds serially, nearly all of it `test_backtest.py`
-replaying a pipeline at every rebalance date. CI runs it across cores instead, and
-so can you:
+Across cores it is about three seconds:
 
 ```bash
-uv run pytest -q -n auto --dist loadgroup
+uv run pytest -q -n auto
 ```
 
-`loadgroup` is not optional. `tests/test_postgres.py` shares one database and
-resets by emptying it, so it carries an `xdist_group` mark that keeps the whole
-file on one worker; plain `--dist load` lets two of those tests drop each other's
-tables and the failures move around between runs.
+CI passes `--dist loadgroup` as well. That flag is vestigial — it was there to keep
+`tests/test_postgres.py` on one worker, and nothing carries an `xdist_group` mark any more.
 
-### Testing against Postgres
-
-`tests/test_postgres.py` skips itself unless it can reach a server. Start one — this is the
-Postgres service alone, not the whole image build, so it takes about five seconds:
+The batteries under `audit/` are opt-in — slower, and one of them calls a live public API:
 
 ```bash
-docker compose up -d postgres
-uv run pytest tests/test_postgres.py     # about four seconds
+uv run pytest audit/batteries -m audit
 ```
 
-Worth doing for anything touching `store.py`. Qanat reaches Postgres by attaching it to DuckDB,
-and the two engines disagree in ways a DuckDB file never shows you: Postgres refuses a non-constant
-`DEFAULT` in `ALTER TABLE`, will not drop a table a view depends on, and will not cast an integer to
-a timestamp. Every one of those was a real bug that the rest of the suite ran straight past.
+### Testing against both stores
+
+A table is either a directory of parquet files or a single DuckDB file, and the suite runs against
+either one. The default is the DuckDB file. Run the whole thing against parquet with:
+
+```bash
+QANAT_TEST_STORE=parquet uv run pytest -q -n auto
+```
+
+**The point is equivalence**: the same tests, the same assertions, a different storage kind
+underneath. The same count passes both ways. Worth doing for anything touching `store.py` or
+`reading.py`.
 
 ## Architecture
 
@@ -60,11 +63,14 @@ a timestamp. Every one of those was a real bug that the rest of the suite ran st
 | Contract | `src/qanat/project.py` | Validates the stage rules |
 | Runner | `src/qanat/runner.py` | Executes sources and steps |
 | Scheduler | `src/qanat/scheduler.py` | Cron + retention cleanup |
-| Store | `src/qanat/store.py` | DuckDB engine; DuckDB file or Postgres via ATTACH |
-| Replay | `src/qanat/backtest.py` | Walks the as-of dates and prices what was held |
+| Store | `src/qanat/store.py` | DuckDB engine over a directory of parquet files, or one DuckDB file |
+| Reading | `src/qanat/reading.py` | The reading tools. Every one of them filters in SQL |
+| Filings — XBRL | `src/qanat/xbrl.py` | Inline XBRL: contexts, units, scale, signs |
+| Filings — sections | `src/qanat/sections.py` | Section boundaries, and the span each one records |
+| Screen | `src/qanat/screen.py` | Which companies passed, on a date or over a window |
 | MCP (stdio) | `src/qanat/mcp.py` | The tool surface, and the three scopes |
 | MCP (HTTP) | `src/qanat/mcp_http.py` | The same tools on `/mcp`, with Host and token checks |
-| CLI | `src/qanat/cli.py` | `init`, `run`, `backtest`, and what starts the servers |
+| CLI | `src/qanat/cli.py` | `init`, `check`, `plan`, `prune`, `ls`, `graph`, `run`, `screen`, and what starts the servers |
 | Editor logic | `src/qanat/editor.py` | Mutations that write `qanat.yaml` |
 | Graph | `src/qanat/graph.py` | The read model, and the terminal drawing of it |
 | Connectors | `src/qanat/sources/` | Plugin surface: one `fetch()` per connector |
@@ -79,7 +85,7 @@ a timestamp. Every one of those was a real bug that the rest of the suite ran st
 ## Pull requests
 
 - Keep diffs focused — one feature or fix per PR when possible
-- Run `pytest` and `ruff check` before opening
+- Run `uv run pytest` and `uv run ruff check src tests audit` before opening
 - Update README if you add user-visible behavior
 - The stage contract in `docs/contract.md` is intentional — changes need discussion
 

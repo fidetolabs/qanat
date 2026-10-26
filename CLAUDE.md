@@ -1,11 +1,11 @@
 # qanat — for agents
 
-A data platform for processing metrics from filings. It reads company filings, computes the metrics
-you define, and answers **as of any past date**. Open source, delivered as an MCP server.
+A data platform for processing metrics from filings. It reads company filings, computes the
+metrics you define, and answers **as of any past date**. Open source, delivered as an MCP server.
 
 **What it is not:** a backtesting engine, and not a filings product. Everything that judged a result
-— the significance bar, the trial ledger, indicator scores, run comparison — was removed in 0.4.0 and
-is not coming back. The SEC corpus is the first dataset, not the subject.
+— the significance bar, the trial ledger, indicator scores, run comparison — was removed in 0.4.0
+and is not coming back. The SEC corpus is the first dataset, not the subject.
 
 **Nothing here places an order.** That is a standing commitment, not a missing feature.
 
@@ -47,16 +47,16 @@ everything through silently, and `_check_lookahead` warns about exactly this. A 
 `test_reading.py`, found in T-17.
 
 **`search_documents` uses a LEFT JOIN.** So a span whose document row is in the future survives the
-join with a null entity. This is a property of the views, not of the query. An inner join would fix
-it and would change what the tool returns when a span has no document row — **that is a decision, not
-a cleanup.** Leave it until somebody decides.
+join with a null entity. This is a property of the views, not of the query. An inner join would
+fix it and would change what the tool returns when a span has no document row — **that is a
+decision, not a cleanup.** Leave it until somebody decides.
 
 ## The changelog is part of the work
 
 A release says what changed, and **a wrong claim gets its own release.** `0.6.1` exists only to
-correct a size claim that `0.6.0` got wrong, and `0.8.0` shipped a new file layout without saying so,
-which took a follow-up commit to admit. Bump the version, write the entry, and say the true thing
-about what moved.
+correct a size claim that `0.6.0` got wrong, and `0.8.0` shipped a new file layout without saying
+so, which took a follow-up commit to admit. Bump the version, write the entry, and say the true
+thing about what moved.
 
 ## The ticket lives in fdtl-kb
 
@@ -68,8 +68,8 @@ cd ../fdtl-kb && bin/kb trace T-17       # the decisions and observations behind
 ```
 
 **Closing a card needs a measurement in it**, not a claim that it works. T-17 is the example: rows and
-milliseconds before and after, each acceptance box ticked, and a note on what the build turned up and
-deliberately did not change.
+milliseconds before and after, each acceptance box ticked, and a note on what the build turned up
+and deliberately did not change.
 
 The rules in the table above come from decisions in that record. If a decision is superseded, this
 file is the thing to check — no checker crosses from there to here.
