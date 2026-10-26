@@ -1,5 +1,144 @@
 # Changelog
 
+## 0.9.0 — 2026-10-26
+
+### The reading tools ask for the rows they want
+
+Every tool in the reading surface shared one helper, and the helper had no
+filter in it:
+
+```python
+def _read(store, ref):
+    return store.read(ref)        # SELECT * FROM the table
+```
+
+So opening one section of one filing read every section of every filing first,
+and `read_facts` pulled all 43,104 facts in the example corpus to return fifty
+of them. Each tool then filtered in pandas, after every row had already crossed
+into Python.
+
+Measured on the example corpus, counting rows where DuckDB hands them over:
+
+| tool | rows before | rows after | before | after |
+| --- | --- | --- | --- | --- |
+| `list_sections` | 904 | **22** | 10.4 ms | **0.7 ms** |
+| `read_section` | 904 | **1** | 10.5 ms | **6.4 ms** |
+| `search_documents` | 944 | **8** | 14.8 ms | 17.1 ms |
+| `read_facts` | 43,104 | **939** | 19.2 ms | **2.5 ms** |
+| `check_number` | 43,104 | **939** | 19.6 ms | **3.0 ms** |
+
+**The example corpus is forty filings, which is why nobody noticed.** The cost
+is linear in the corpus. On the same text replicated to 31,500 filings —
+714,160 spans — `search_documents` goes from **23,471 ms to 36 ms** and
+`list_sections` from **55,774 ms to 162 ms**.
+
+`search_documents` costs 2.3 ms more at forty filings and 650× less at 31,500.
+The pandas loop was fast only because it stopped after the first eight matches,
+having already pulled every row's text into memory to do it.
+
+**`read_section` now takes its page with `substr` in the database**, so a 100 KB
+Item 1A is not carried into Python to have 4 KB taken off the front of it. And
+`list_sections` no longer asks for `text` at all — it reports lengths, and on a
+filings corpus `text` is nearly every byte in the table.
+
+**This is not a storage problem, and that is worth saying because it was nearly
+answered by changing the store.** One Parquet file holds 6 row groups and ten
+files hold 10, each carrying its own min and max per column, and DuckDB skips a
+row group exactly as it skips a file — so the file layout moves this by a tenth
+of a millisecond. The directory bought the write cost in 0.8.0. The format was
+already chunked for the read.
+
+### `store.rows()`, and `query()` binds its parameters
+
+```python
+store.rows(ref, where="document = ?", params=[doc],
+           columns="section, char_start, rule", order_by="char_start")
+```
+
+`read()` is still there and still returns the whole table, which is right when
+that is what you want. `rows()` is the one to reach for when you already know
+which rows you are after.
+
+`query()` takes `params` now, and both bind rather than interpolate. **A
+document id is caller input and the caller is an agent**, so an id carrying a
+quote has to stay an id.
+
+`_readable()` is public as `readable()`, for a caller writing its own join that
+still has to respect the as-of clock.
+
+### Postgres is no longer a storage backend
+
+`store:` takes a directory for parquet or a path for a DuckDB file. A
+`postgresql://` DSN is not a store any more.
+
+The corpus is one writer, append-only, never updated in place, and read in wide
+scans, which is what parquet is for — so the server bought nothing the files do
+not, and cost a second code path through every write, every as-of view and every
+migration. What went with it: the `ATTACH` branch, a cast in `as_instant`, a
+service container in two CI workflows, a compose service, 145 lines of tests,
+and `_unshadow`, which existed only because Postgres refuses to drop a table a
+view depends on.
+
+**The `sql` connector stays.** Reading *from* a Postgres server as a data source
+is a different thing from storing in one.
+
+### The backtest ledger is gone
+
+`backtest` and `replay` left the engine in 0.5.0. Three metadata tables did not:
+`_qanat_backtests`, `_qanat_bt_weights` and `_qanat_bt_periods` were created on
+every store open, with four migrations still being applied to them, and twelve
+methods wrote and read them with no caller left. **So a weights table existed in
+every store's metadata, which is the one thing this engine claims it has
+nowhere.**
+
+Two live callers pointed at that ledger and both were broken:
+
+- **`list_steps(net=true)`** promised an agent what each step had earned across
+  every screen it had had. It read the ledger. It had always returned nothing.
+- **`save_step` offered `rebalance` and `decay`**, with a comment saying both
+  had always been honoured. `Step` carries neither field and forbids extras, so
+  an agent using either one wrote a project file that would no longer load.
+
+`progress.py` went too — 128 lines whose own docstring said nothing read it and
+that `run_backtest` filled it, and `run_backtest` had already gone.
+
+The session and ask tables went with them. `_qanat_sessions` and `_qanat_asks`
+had no callers either, the other half of the chat console removed across 0.4.0
+and 0.5.0. **The metadata file is now runs, events and applied state.**
+
+`store.py` is 1,280 lines, from 1,698.
+
+### Breaking
+
+**A `postgresql://` DSN in `store:` no longer opens.** A project on one has to
+move its tables to a directory or a `.duckdb` file. There is no migration path
+in the tool, because the tool can no longer read the old one — the rows come out
+with `pg_dump` or a `COPY` from the server, and go in as parquet.
+
+**`qanat init --postgres` is removed.** `--store` still takes any path.
+
+**`list_steps` no longer accepts `net`**, and `save_step` no longer accepts
+`rebalance` or `decay`. All three read or wrote the removed ledger; the two on
+`save_step` could not have worked at all.
+
+**`search_documents` now has a defined sort order**, `document` then
+`char_start`. It had none before: a pandas left merge keeps the left side's
+order, so the answer was whatever order the spans table happened to hold. On the
+example corpus 75 of 77 checked responses are byte-identical and two differ in
+order only. An agent asking twice should get the same answer twice, and the
+accidental order would have moved on its own the first time a compaction merged
+a day's files.
+
+**Six store methods are gone**, none of them called from anywhere in the package:
+`start_backtest`, `end_backtest`, `save_bt_weights`, `save_bt_period`,
+`bt_periods`, `last_live_backtest` — and with them `backtests`, `backtest`,
+`bt_weights`, `steps_net`, `session_backtests`, `step_sessions`, `bar_history`,
+and the seven session and ask methods.
+
+**An existing store keeps three orphan metadata tables.** Nothing reads them and
+nothing breaks. Dropping them would mean adding migration code in order to
+remove code.
+
 ## 0.8.0 — 2026-10-25
 
 ### An append writes what arrived, not the whole table again
