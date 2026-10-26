@@ -50,7 +50,7 @@ jobs:
 
       # a release is not the place to find out the tests fail
       - run: uv sync --frozen --extra dev
-      - run: uv run ruff check src tests
+      - run: uv run ruff check src tests audit
       # -n auto spreads a test at a time across the runner's cores. loadgroup is
       # kept because a test file that shares one resource has to stay on one
       # worker; nothing needs it today and it costs nothing.

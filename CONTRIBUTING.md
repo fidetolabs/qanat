@@ -33,8 +33,9 @@ Across cores it is about three seconds:
 uv run pytest -q -n auto
 ```
 
-CI passes `--dist loadgroup` as well. That flag is vestigial — it was there to keep
-`tests/test_postgres.py` on one worker, and nothing carries an `xdist_group` mark any more.
+CI passes `--dist loadgroup` as well, and keeps it on purpose. Nothing needs it today — no test
+file has carried an `xdist_group` mark since the Postgres store went — but a file that shares one
+resource has to stay on one worker, and the flag costs nothing while no file does.
 
 The batteries under `audit/` are opt-in — slower, and one of them calls a live public API:
 
