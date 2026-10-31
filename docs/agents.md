@@ -1,5 +1,7 @@
 # Notes on the agent surface
 
+For how a filing becomes a number an agent can read, see [dataflow.md](dataflow.md) — the whole path, with the counts read out of the bundled example rather than estimated.
+
 The README covers adding qanat to an MCP client. These are the parts that only matter once you are
 using them. There are 33 tools at `authoring`, 28 at `full`, 20 at `research` and 14 at `data`.
 

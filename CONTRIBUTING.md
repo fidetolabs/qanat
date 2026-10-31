@@ -63,6 +63,10 @@ underneath. The same count passes both ways. Worth doing for anything touching `
 
 ## Architecture
 
+**[docs/dataflow.md](docs/dataflow.md) walks the whole path first** — EDGAR to a tool call, six
+stations, with every count read out of `examples/sec-10k` rather than estimated. Read it before the
+table below if you want to know why the pieces are arranged this way rather than only where they are.
+
 | Layer | Path | Role |
 | --- | --- | --- |
 | Project file | `qanat.yaml` | Stages, sources, steps, retention, store URL |
