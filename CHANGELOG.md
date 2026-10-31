@@ -1,5 +1,340 @@
 # Changelog
 
+## 0.10.0 — 2026-10-31
+
+### Six tools that take you from picking filings to a screened list
+
+The surface was shaped for a different job than the product has. Walked end to
+end on 0.9.0: it would let an agent rewire the pipeline and would not let it
+define a metric — the one object the product is named after. The purpose is one
+sentence, processing filings into metrics, and the pipeline that serves it is
+the same in every project. So the pipeline stops being something a caller
+assembles, and the surface becomes the two things somebody actually does:
+**choose the filings, and define what to measure.**
+
+#### Choosing the filings
+
+`find_filings` asks EDGAR's submissions index what exists. **Any of the 106
+forms**, because the index is uniform across all of them; no fetch and no store
+write, because "what could I look at" is the question anybody opens with and it
+should not cost a download. `ingest_filings` spends the fetch on the ones you
+pick. `subscribe_filings` points the same selection forwards, on an interval and
+at an hour you set, and `list_subscriptions` reports **whether anything is
+actually running it** — which over stdio is nothing, because this server is your
+client's child and a thread it started would die with the conversation. That is
+a fact about process lifetime, and the docs said it was a rule about authority.
+
+**What is not uniform is whether anything can be parsed out of a filing, and
+EDGAR's own flag does not say.** `isInlineXBRL` is true for 29.8% of filings in
+a 48,807-filing sample and means financial statements in 1.2% of those: for a
+10-K or a 10-Q it is the same sentence, and nowhere else. An 8-K is 99.9%
+flagged and carries 23 to 58 cover-page text tags and no numbers. `isXBRLNumeric`
+is worse — it reads 4.3% on 10-Ks, which cannot be true. **Neither flag is read
+anywhere in this release.** The question is answered twice instead, by two tests
+that cost different amounts: a form allowlist in `find_filings`, and the
+taxonomy of the facts actually parsed in `ingest_filings`. A filing holds
+statements if it yields `us-gaap`, `ifrs-full`, `us-gaap-ebp` or `oef` facts;
+`dei` and `ecd` alone are the cover page. That rule was correct on all 84 real
+primary documents sampled across 26 forms.
+
+**Only the 10-K and the 10-Q are ingested, and the boundary ships with them.**
+The 106 forms sort into four piles by what they would need, and a product that
+ingests one pile and crashes or silently empties on the rest is not scoped, it
+is broken. So any form can be found and labelled, and a form outside the pile is
+refused **with its pile named** — a 20-F is fetched, reports `ifrs-full`, and is
+not ingested. A 6-K, S-1, FWP, SD or SC 13G used to raise `ET.ParseError` out of
+`xbrl.parse`: inline XBRL is what forces a filing to be XHTML, so an untagged
+form is loose HTML and strict parsing dies on it. Those now land zero rows and
+say why.
+
+**The 10-K/A is the case that bites.** It carries the form name of a 10-K and
+the flag of a 10-K; three opened held two to four `dei` facts, a public float
+and a share count. No allowlist can tell an amendment apart without opening it,
+so `find_filings` labels one `unknown` rather than guessing in either direction.
+
+#### Defining what to measure
+
+`define_metric` and `remove_metric`. **Nothing wrote a metric before** — the
+word `metric` appeared twice in `cli.py`, once in a help blurb and once inside
+an example — so the product's one verb failed on a new project with
+`no metric called pe. This project has: (none defined)`.
+
+The verb is `define`, not `save`. `save` says *keep this for me*, and there is
+no *me*: a scope is a capability boundary and not an identity one. **A formula
+is run before it is stored**, against your project, through the same code path a
+screen uses, so a syntax error or an unknown column comes back as the database's
+own message instead of as a definition that fails on somebody else's call. The
+one thing that is not a refusal is a table the project declares and has not
+written yet, because defining a metric before the first run is the normal order
+on a new project.
+
+**Bumping the version is yours to decide, and it is refused rather than
+guessed.** Redefining an id without naming a version used to be impossible and
+is now an error: replacing version N changes what a kept answer meant, and
+writing N+1 claims the meaning moved. Version N+1 is written beside N and both
+still resolve.
+
+A definition reports whether it was **shipped** with the product or **defined**
+here. The example's `pe` and `net_margin` are labelled `origin: shipped` — a
+starter set, enough to screen with on the day you install, and deliberately not
+a metric library.
+
+#### A filter is a named object, and it is yours
+
+`screen` reported `"filter": null, "version": null` — two fields waiting for an
+object that could not be created. It takes a named filter now:
+`[{filter, version, clauses}]`, and the name comes back in `applied`, so
+whatever keeps your filters can record which rule produced which list. **A
+clause may pin `metric_version`**, and then somebody bumping a formula cannot
+change what your rule computes.
+
+**And a screen now returns enough to keep a record of it.** The rows carry
+`values` — the numbers the verdict was reached on, for the companies that failed
+as well as the ones that passed — and a new `execution` block names the
+definition versions it actually read, the dates, and the corpus range it ran
+over. A clause records `metric_version_used` alongside whatever it pinned, so an
+unpinned clause can still say which definition computed it.
+
+`execution.id` is a **digest of those inputs, not a random handle.** Two runs of
+the same filter over the same definitions and the same corpus share an id; a
+different id means an input moved. That matters because an as-of date protects a
+replay from a filer restating their numbers and does **not** protect it from a
+parser being fixed and the corpus reloaded — so a record that cannot tell those
+apart is not a record. There is no wall-clock timestamp in it on purpose: the
+same screen twice is the same answer, which is a claim this product makes and a
+test holds, and when a caller asked is the caller's own fact to record.
+
+#### A company index, and a screen can be bounded to one
+
+`list_companies` is new, and **nothing answered the question before.**
+`read_company` takes a filer and tells you about it; the only listing anywhere
+was buried in the error you got for naming one it did not have. So a caller
+building a list of companies to screen had no way to find out which names would
+land — and a name that does not land is a company quietly missing from an answer.
+It reports the filer, the ticker, the name, how many filings, which forms and the
+dates they span, and `query` matches a ticker or a company name.
+
+`screen` takes `universe`: **a list of tickers or CIKs, passed with the call.** A
+ticker is placed against its filer out of that index, because the facts carry a
+CIK and the thing a person writes in a list is a ticker.
+
+**It is a list and not the name of a stored one.** An earlier cut of this also
+accepted the name of a universe declared in the project file, and that was the
+same mistake as storing a filter — it made this end look up a list belonging to
+the caller. Which companies somebody cares about sits on the client's side of the
+line next to their filters and their history, so it arrives with the call and
+nothing here keeps it.
+
+**It widens the answer as well as narrowing it, and that is the point.** Without
+a universe the subjects are whoever the metrics returned, so there is no way to
+know who is missing — and *"nobody else qualified"* is not the same answer as
+*"I could not judge nine of them."* With one, a member that has no value for a
+metric the filter names comes back as a row that could not be evaluated, and
+`counts.dropped` says how many.
+
+A name the project does not hold is **reported, never dropped**: a list of fifty
+where ten are not held is a screen that quietly answered for forty. And the check
+is against the company index rather than skipped — the first cut took any string
+as a subject whenever the corpus carried no tickers, so a typo became a
+"could not be judged" row indistinguishable from a real company with no data.
+
+**Where there is no index, the answer says the names were not checked.** A
+subject is not required to be a filer — the SEC corpus is the first dataset here,
+not the subject — so a project that declares no documents table takes its names
+as written, and `universe.checked` is `false`. **A name that was never checked is
+not a name that passed a check**, and an empty index is not evidence that a name
+is wrong.
+
+`universe.matched` is **null** in that case rather than a count. It reported
+`placed: 2` for a while, which reads as *"I found both of them"* when the truth
+was *"I looked for neither"* — and `unknown: []` beside it looks exactly like a
+clean result. A number that only means something under a condition has to be
+absent when the condition fails, or the condition is the thing nobody reads.
+
+Membership is **point-in-time** when entries carry `from` and `to`, reusing the
+same rule a step's universe already followed. A list without them is reported as
+such, because then it is today's membership applied to every date screened and
+every number built on it is flattered by the names that survived.
+
+The universe is part of `execution.id`: the same filter over a different list is
+a different answer.
+
+**Filters are not stored here, and that is the line this release draws.** This
+is shared data infrastructure: it owns the filings, the facts, the metric
+definitions and the screening execution. A filter is one caller's research
+criteria rather than a financial dataset, and a server that cannot tell two
+callers apart has nowhere to keep one correctly — stored here, one person's
+threshold would be everybody's. Holding them would also mean taking on the
+research workspace of every application that ever connects: portfolio screening,
+factor research, thesis tracking. Your own agent or your own application keeps
+them, and hands them back with the call.
+
+**The obligation that falls on this end is the execution interface**, and it is
+what makes the split workable rather than merely tidy: filters in, companies and
+their metric values out, with enough metadata that the caller can store a run it
+can read back later without asking again.
+
+#### A screen refuses a window it cannot answer for
+
+`coverage` reports the dates a screen can be answered for, per table and
+overall. A read as of a date sees the rows published on or before it, so before
+the oldest row **there is nothing to read** — and a screen there returns a list
+of nobody, which is not the same answer as nobody passing. A window starting
+before the corpus is now refused with the range it does hold, instead of coming
+back quietly short. A date past the newest row is a note rather than a refusal:
+it repeats the newest answer, which is flat and not false.
+
+`counts` gains `nothing_evaluable`, said out loud rather than left to be
+inferred from three zeros.
+
+#### A company is somewhere to start
+
+`read_company` takes a ticker or a CIK and returns the way in: which filings
+this project holds, each one's sections with their lengths and **the rule that
+found each boundary**, and which concepts are tagged. It returns a map and no
+bodies, and its answer does not grow with the length of a filing — `read_section`
+still pages the text and `read_facts` still returns the numbers.
+
+Every other reading tool starts from a document, and the thing anybody asks
+about is the company. The facts carry a CIK — `0000320193`, not `AAPL` — and a
+screen returns those, so a screen's output can be handed straight back in.
+
+#### The 10-Q gets its own vocabulary
+
+`sections.py` held `FORM_10K` and applied it to whatever it was handed. The
+10-K is fine: 21 to 23 spans on four filers. **The 10-Q was not** — 1 to 3 spans
+of about ten Items, finding Item 1A and Item 4 and missing Item 1 and Item 2,
+the statements and the MD&A. So a number from a 10-Q could not be traced to the
+sentence it came from, which is a thing this product promises.
+
+`FORM_10Q` ships. **A 10-Q numbers its Items inside Parts**, so the same number
+is two different sections — Part I Item 1 is the financial statements and Part II
+Item 1 is legal proceedings — and the Part is therefore part of the section
+name. What makes that cheap is that the titles do not collide, so the title test
+that already decides the number also decides the Part.
+
+**`split` is now told which form it is working in, and a form without a
+vocabulary returns no spans.** It used to default to the 10-K's, which is how
+Microsoft's 8-K came back holding Item 1, Item 7 and Item 8 — those are `7.01`
+and `8.01`, read through a pattern for a different form — and how Oracle's
+DEF 14A produced an Item 7 from a heading that is not one. **A decimal Item
+number is now declined by the regex outright**, rather than left to a title test
+to reject. Zero spans is the honest answer and a small number is not: the
+reading tools report no sections, which degrades cleanly.
+
+No vocabulary ships for a form that is not ingested. One for a form nothing
+reads would be a claim with nothing behind it.
+
+#### The command line is four verbs
+
+`init`, `check`, `mcp`, `schedule`. **`ls`, `graph`, `plan`, `prune`, `run`,
+`screen` and `serve` are gone**, and running one prints where it went:
+
+| gone | use instead |
+| --- | --- |
+| `ls` | `list_tables`, `list_steps`, `describe_table` — it was those three in one dump |
+| `graph` | **nothing.** It drew a picture for a person out of a thing whose caller is a program, and its own markers disagreed with its legend: `○ 4 rows` for a table `ls` drew as `●` |
+| `plan` | the `plan` tool |
+| `prune` | the `plan` tool's `prune` flag |
+| `run` | the `run` tool |
+| `screen` | the `screen` tool |
+| `serve` | `qanat mcp --http --schedule`, or the two halves separately |
+
+Each was a second door onto a question a tool already answers, and a second door
+is a second place the behaviour can quietly differ. `prune` was folded into
+`plan` rather than kept: it was the one irreversible verb at the top level, and
+folding it in means you see the list of orphans from the same call that drops
+them.
+
+What stays, stays because there is nothing to ask. `init` runs before a project
+exists. `mcp` is the transport. `check` is deliberate — somebody connecting for
+the first time has to be able to tell a broken project from a broken server, and
+a tool cannot answer that when the tool is what is broken.
+
+**The clock and the server are two commands now.** They were one process with
+`--no-schedule` to turn the clock off and no way at all to run the clock alone,
+which is backwards for both deployments that exist: a recorder wants a clock and
+no open port, and a hosted reader wants a server over a store something else
+fills. `qanat schedule` is the clock. `qanat mcp --http` is the server.
+`qanat mcp --http --schedule` is one machine doing both, which is what the
+container runs.
+
+#### A fourth scope, and the default stops below it
+
+`save_step`, `remove_step` and `save_source` moved to a new `authoring` scope
+above the default. They keep working, and the caller they serve is the
+professional bringing a feed in through the HTTP, SQL or CSV connector — but the
+pipeline from a filing to a metric is the same in every project, so nobody
+screening filings needs the tools that rewire it, and carrying them means an
+agent can rewire it by accident. `define_metric` and `remove_metric` sit there
+too: a formula is the same number for every reader of a given Qanat, so there is
+no private definition and the owner of one is whoever runs the deployment.
+
+`lineage` and `stale_tables` stay in `data`, unmoved. Both only mean something
+to a caller who may change the pipeline, so both look like they belong above the
+default as well — but each scope is a published contract, and taking a tool out
+of `data` breaks what somebody has already built against it worse than adding
+one would. Moving them is a separate decision, not a cleanup.
+
+### Fixed: an edit deleted the metrics, the returns table and the corpus
+
+`dump_project` did not write `metrics`, `returns` or `corpus` back. The
+round-tripper deletes any key the new dict does not carry, so **one
+`save_step`, `save_source` or `save_universe` call on a filings project removed
+every metric definition, the price table a screen reads, and the three tables
+the reading tools read** — and the dump then matched the file it had just
+emptied, so the check that is supposed to refuse a bad write passed.
+
+The function already carried a comment saying anything the model holds has to be
+written back. Three fields were missing from the dict under it.
+`test_every_field_the_model_holds_is_written_back` walks the model rather than a
+list, so the next field added to one and not the other fails a test.
+
+### Fixed: `check` warned that nothing read the facts table
+
+The never-read warning counted only steps as readers. A metric is a query rather
+than a step, and the reading tools are readers in their own right — so **the
+terminal table of every correct filings pipeline was reported as read by
+nothing**, which is the one thing a metric is for. A metric's SQL and the three
+tables named in `corpus:` now count. `examples/sec-10k` validates with no
+warnings, and the paragraph in its README apologising for the message is gone.
+
+### Removed: the contract rules for two stage kinds that left in 0.5.0
+
+`weights` and `pnl` stopped being things the platform owned in 0.5.0 and their
+rules stayed behind: at most one `weights` stage, a `pnl` stage needs one to
+price, one table per step, no step reads another's weights, a source may not
+write into a weights stage. A stage kind is a name you choose now, so a rule
+keyed on one of five fixed words could only ever be enforced against a project
+that happened to use them. `docs/contract.md` has said "four properties and no
+names" for some time; `project.py` now agrees with it.
+
+That is also what made `check` warn on every correct pipeline: the never-read
+warning exempted exactly one stage kind, and it was `weights`.
+
+`lineage`'s own description said *"which weights tables break if it breaks"*.
+
+### Other
+
+- The `sec` connector reads a universe: `from_universe: sp5` instead of an
+  inline array, so a list of companies is a named list that outlives the source.
+- The `sec` connector takes **several forms** — `form: [10-K, 10-Q]` — because a
+  table has exactly one producer, so one form per source would have meant one
+  form per corpus. `years` is per form.
+- A source may bound the period it accepts: `from:` and `to:`.
+- `screen` with no `filters` argument now errors naming the missing field. The
+  schema said `required` and the handler did not check, so the call came back
+  `subjects: 0, passed: 0, applied: []` — which reads as "nobody passed" rather
+  than "you called it wrong".
+- The CLI flag is `--filters`, matching the tool argument. One service layer had
+  two spellings for one list of one kind of object. (The command itself is gone;
+  the flag was renamed on the way out.)
+- `store.time_range()` reports a table's oldest and newest timestamps, which is
+  what `coverage` is computed from.
+- `project.metric(id, version)` resolves a definition at a version, and
+  `metric_versions(id)` lists them. Two definitions at one version is a contract
+  error.
+
 ## 0.9.0 — 2026-10-26
 
 ### The reading tools ask for the rows they want
