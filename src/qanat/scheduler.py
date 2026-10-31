@@ -159,10 +159,13 @@ class Scheduler:
         return True
 
     def _close_open_run(self, job_id: str, status: str, why: str) -> None:
-        row = self.store.rcon.execute(
+        # Drained, like every scalar read on the store: a one-row fetch leaves
+        # the result open and DuckDB 2.0 then refuses to register a frame on that
+        # connection -- and `rcon` is the writing connection wherever cursors are
+        # unavailable, so a read here can break the next write.
+        row = self.store._one(
             "SELECT run_id FROM _qanat_runs WHERE job_id = ? AND status = 'running' "
-            "ORDER BY started_at DESC LIMIT 1", [job_id]
-        ).fetchone()
+            "ORDER BY started_at DESC LIMIT 1", [job_id], con=self.store.rcon)
         if row:
             self.store.end_run(row[0], status, 0, why)
 

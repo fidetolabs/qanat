@@ -1,5 +1,48 @@
 # Changelog
 
+## 0.10.2 — 2026-10-31
+
+### The store stops leaving DuckDB results open, and cleanup stops lying
+
+0.10.1 capped `duckdb` so a fresh install could write again. This is the defect
+under that cap: **the store took scalar reads with a one-row fetch, which never
+reaches end-of-stream and leaves the connection holding an unfinished result.**
+DuckDB 1.x let that pass. 2.0 refuses `register()` on such a connection while
+still tolerating `execute()`, so a read taken anywhere broke the next write and
+nothing in between complained. Seventeen such reads across `store.py` and
+`scheduler.py`; four of them sat inside a register window.
+
+Every one now goes through `Store._scalar` or `Store._one`, which drain. The
+code was relying on undefined cleanup even on 1.x — 2.0's stricter lifecycle is
+defensible, and this half was always qanat's to fix.
+
+**`_publish` no longer counts the table.** It returned a `count(*)` that
+`_write_parquet` assigned and then deleted unread, so every write paid for a
+scan of the whole table to throw the answer away — and that discarded query was
+what poisoned the connection *after* the rows had landed. The two callers that
+want a total ask for it outside the register window.
+
+**Cleanup can no longer turn a landed write into a reported failure.** The
+`unregister` in each `finally` runs after the parquet file is on disk and the
+view is rebuilt; an exception from there told the caller a successful write had
+failed, which is a wrong answer rather than an error. It is now suppressed and
+logged. A frame left registered is a name waiting to be reused; a write reported
+wrong is the failure shape this product exists to avoid.
+
+`tests/test_duckdb_result_lifecycle.py` holds the guards, and the one that
+matters is version-independent: **a write that reached disk never raises.** It
+fails against the old code on 1.5.5 as well as on 2.0.0, so it keeps holding
+after whatever DuckDB tightens next.
+
+**And the CI gap, which is the real cause.** Every job ran `uv sync --frozen`,
+so a `>=`-only dependency could not fail CI — it could only fail users. A new
+`unpinned` job resolves the way a visitor does, runs the suite on what it gets,
+then installs the next major and runs the suite again. It is
+`continue-on-error`: a dependency shipping a breaking major is not this push
+being wrong, and a job that reddens unrelated pull requests gets deleted. It is
+there to be looked at. When its last step is green, the upper bound can widen on
+that evidence; the bound stays at `<2` until then.
+
 ## 0.10.1 — 2026-10-31
 
 ### A fresh install could not write, because the floor moved

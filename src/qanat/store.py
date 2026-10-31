@@ -287,7 +287,7 @@ class Store:
         # written as UTC renders in local time, and an as-of comparison is then off
         # by the offset. It passed CI on a UTC box and was nine hours wrong in Seoul.
         self.con.execute("SET TimeZone='UTC'")
-        self.home = self.con.execute("SELECT current_schema()").fetchone()[0]
+        self.home = self._scalar("SELECT current_schema()")
         self.as_of: str | None = None
         self._pit_overrides: dict[str, str] = {}
         self._readers = threading.local()
@@ -379,23 +379,74 @@ class Store:
         nums = [int(p.stem) for p in parts if p.stem.isdigit()]
         return f"{(max(nums) + 1 if nums else 0):04d}"
 
-    def _rows(self, name: str) -> int:
-        return int(self.con.execute(f"SELECT count(*) FROM {self._q(name)}").fetchone()[0])
+    # ---- reads that do not poison the connection -----------------------------
+    #
+    # A one-row fetch hands back its row without reaching end-of-stream, so the
+    # connection keeps an *unfinished result*. DuckDB 1.x ignored that. DuckDB
+    # 2.0 refuses `register()` and `unregister()` on such a connection while
+    # still tolerating further `execute()` -- so a scalar read taken anywhere
+    # breaks the next write, and nothing between them complains. Every write
+    # registers a frame, so that asymmetry made the product read-only.
+    #
+    # These two drain. Nothing below reads a scalar any other way, and that is
+    # the whole reason `register` is safe where it is used. The prose here says
+    # "one-row fetch" rather than naming the method, so that grepping this file
+    # for the method name stays a guard that finds a regression and nothing else
+    # -- `test_no_undrained_reads_remain` greps exactly that.
 
-    def _publish(self, name: str, select_sql: str) -> int:
+    def _one(self, sql: str, params: Sequence[Any] | None = None,
+             con: Any = None) -> tuple[Any, ...] | None:
+        """The first row, with the result drained, or None if there is no row."""
+        rows = (con if con is not None else self.con).execute(
+            sql, list(params) if params else []).fetchall()
+        return tuple(rows[0]) if rows else None
+
+    def _scalar(self, sql: str, params: Sequence[Any] | None = None,
+                con: Any = None) -> Any:
+        """The first column of the first row, drained. See `_one`."""
+        row = self._one(sql, params, con)
+        return row[0] if row is not None else None
+
+    def _release(self, frame: str = "_incoming") -> None:
+        """Unregister the incoming frame, without letting cleanup fail the write.
+
+        This runs in a `finally` reached *after* the rows are on disk. An
+        exception from here turns a write that succeeded into a write the caller
+        was told had failed -- which is precisely how the DuckDB 2.0 break
+        presented: the parquet file landed, the view was rebuilt, and then
+        `unregister` threw from the cleanup. A frame left registered is a name
+        waiting to be reused; a landed write reported as an error is a wrong
+        answer, and the worse of the two by far.
+        """
+        try:
+            self.con.unregister(frame)
+        except Exception as exc:  # noqa: BLE001 -- cleanup cannot fail a landed write
+            with contextlib.suppress(Exception):  # nor can logging the cleanup
+                self.event("warn", "store", f"could not release {frame}: {exc}")
+
+    def _rows(self, name: str) -> int:
+        return int(self._scalar(f"SELECT count(*) FROM {self._q(name)}"))
+
+    def _publish(self, name: str, select_sql: str) -> None:
         """Replace a table: one new file, and the old ones go.
 
         The new file is written first and the old ones are removed after, so a
         reader is never looking at an empty directory.
+
+        Returns nothing. This used to return `_rows(name)`, and `_write_parquet`
+        -- its main caller -- assigned that and then deleted it unread. Every
+        write paid for a `count(*)` over the whole table to throw the answer
+        away, and under DuckDB 2.0 that discarded query was the thing that broke
+        the cleanup *after* the rows had landed. A caller that wants the total
+        asks `_rows` for it, outside the register window.
         """
         before = self._parts(name)
         self._write_part(name, select_sql, "0000" if not before else self._next_stem(name))
         for old_part in before:
             old_part.unlink(missing_ok=True)
         self._view(name)
-        return self._rows(name)
 
-    def _add_part(self, name: str, select_sql: str) -> int:
+    def _add_part(self, name: str, select_sql: str) -> None:
         """Append: one new file, and nothing existing is touched.
 
         This is the cheap path and the reason a table is a directory. Landing
@@ -403,7 +454,6 @@ class Store:
         """
         self._write_part(name, select_sql, self._next_stem(name))
         self._view(name)
-        return self._rows(name)
 
     def _overlaps(self, name: str, key: Sequence[str], frame: str) -> bool:
         """Could any incoming key already be in a file that is here?
@@ -417,8 +467,8 @@ class Store:
         parts = self._parts(name)
         if not parts:
             return False
-        bounds = {k: self.con.execute(
-            f'SELECT min("{_ident(k)}"), max("{_ident(k)}") FROM {frame}').fetchone()
+        bounds = {k: self._one(
+            f'SELECT min("{_ident(k)}"), max("{_ident(k)}") FROM {frame}')
             for k in key}
         if any(lo is None for lo, _ in bounds.values()):
             return True          # a null key could match anything
@@ -478,9 +528,8 @@ class Store:
         if self.kind != "parquet" or self._meta_open:
             return
         path = self.dir / META_FILE
-        already = self.con.execute(
-            "SELECT count(*) FROM duckdb_databases() WHERE database_name = 'meta'"
-        ).fetchone()[0]
+        already = self._scalar(
+            "SELECT count(*) FROM duckdb_databases() WHERE database_name = 'meta'")
         if already:
             # Another Store on this directory got here first. Same instance, so
             # the attachment is already ours to use.
@@ -614,13 +663,12 @@ class Store:
         """
         self.interrupted_screen: str | None = None
         with self._lock:
-            row = self.con.execute(
+            row = self._one(
                 f"SELECT spec FROM {self._meta_home}{STATE} WHERE job_id IN (?, ?) ORDER BY job_id LIMIT 1",
                 [self._SCREEN_MARK, self._SCREEN_MARK_WAS],
-            ).fetchone()
-            stranded = self.con.execute(
-                f"SELECT count(*) FROM {self._meta_home}{RUNS} WHERE status = 'running'"
-            ).fetchone()[0]
+            )
+            stranded = self._scalar(
+                f"SELECT count(*) FROM {self._meta_home}{RUNS} WHERE status = 'running'")
             if stranded:
                 self.con.execute(
                     f"UPDATE {self._meta_home}{RUNS} SET status = 'interrupted', ended_at = now()::TIMESTAMP, "
@@ -689,7 +737,7 @@ class Store:
                     try:
                         self._publish(name, "SELECT * FROM _incoming")
                     finally:
-                        self.con.unregister("_incoming")
+                        self._release()
                     return 0
                 if self._exists(name):
                     self.con.execute(f"DELETE FROM {self._q(name)}")
@@ -704,7 +752,7 @@ class Store:
                         f'CREATE OR REPLACE TABLE {self._q(name)} AS SELECT * FROM _incoming'
                     )
                 finally:
-                    self.con.unregister("_incoming")
+                    self._release()
             return 0
         df = _typed(df)
         if self.kind == "parquet":
@@ -762,7 +810,7 @@ class Store:
                         f'CREATE OR REPLACE TABLE {self._q(name)} AS SELECT * FROM _incoming'
                     )
             finally:
-                self.con.unregister("_incoming")
+                self._release()
                 if self.as_of is not None:
                     self._shadow(ref)
         return len(df)
@@ -793,7 +841,7 @@ class Store:
             try:
                 appending = mode == "append" and self._exists(name)
                 if not appending:
-                    rows = self._publish(name, "SELECT * FROM _incoming")
+                    self._publish(name, "SELECT * FROM _incoming")
                 else:
                     # Checked before the path is chosen, not inside one of them.
                     # The cheap path skipped this once, and a frame with the
@@ -825,7 +873,7 @@ class Store:
                     # a day of prices after the last day stored -- there is
                     # nothing to replace either. One file goes down and the rest
                     # of the table is not read, let alone rewritten.
-                    rows = self._add_part(name, f"SELECT {cols} FROM _incoming")
+                    self._add_part(name, f"SELECT {cols} FROM _incoming")
                 elif appending:
                     kept = f"SELECT {cols} FROM {self._q(name)}"
                     if key:
@@ -845,16 +893,16 @@ class Store:
                     #
                     # By name, not by position: a feed that reordered its columns
                     # would otherwise write dates into the symbol column.
-                    rows = self._publish(
+                    self._publish(
                         name, f"{kept} UNION ALL BY NAME SELECT {cols} FROM _incoming")
             finally:
-                self.con.unregister("_incoming")
+                self._release()
                 if self.as_of is not None:
                     self._shadow(ref)
-        # What this job did, which is the rows it handed over. Returning the
-        # table total instead made an incremental append of 16 rows report
-        # 11,672 and look like it had re-fetched everything.
-        del rows
+        # What this job did, which is the rows it handed over -- never the table
+        # total, which made an incremental append of 16 rows report 11,672 and
+        # look like it had re-fetched everything. The total is not counted here
+        # at all now; see `_publish`.
         return len(df)
 
     def prune_rows(self, ref: str, col: str, cutoff: Any) -> int:
@@ -866,15 +914,15 @@ class Store:
         name = phys(ref)
         where = f'CAST("{_ident(col)}" AS TIMESTAMP) < ?'
         with self._lock:
-            before = self.con.execute(f'SELECT count(*) FROM {self._q(name)}').fetchone()[0]
+            before = self._scalar(f'SELECT count(*) FROM {self._q(name)}')
             if self.kind == "parquet":
                 keep = (f'SELECT * FROM {self._q(name)} WHERE NOT ('
                         f'CAST("{_ident(col)}" AS TIMESTAMP) < TIMESTAMP \'{cutoff}\')')
-                after = self._publish(name, keep)
+                self._publish(name, keep)
+                after = self._rows(name)
             else:
                 self.con.execute(f'DELETE FROM {self._q(name)} WHERE {where}', [cutoff])
-                after = self.con.execute(
-                    f'SELECT count(*) FROM {self._q(name)}').fetchone()[0]
+                after = self._scalar(f'SELECT count(*) FROM {self._q(name)}')
         return int(before - after)
 
     def _widen(self, name: str, ref: str, have: list[str]) -> None:
@@ -913,9 +961,10 @@ class Store:
         with self._lock:
             try:
                 if self.kind == "parquet":
-                    return self._publish(name, select_sql)
+                    self._publish(name, select_sql)
+                    return self._rows(name)
                 self.con.execute(f'CREATE OR REPLACE TABLE {self._q(name)} AS ({select_sql})')
-                return self.con.execute(f'SELECT count(*) FROM {self._q(name)}').fetchone()[0]
+                return int(self._scalar(f'SELECT count(*) FROM {self._q(name)}'))
             finally:
                 if self.as_of is not None:
                     self._shadow(ref)
@@ -948,10 +997,9 @@ class Store:
 
     def _has_view(self, name: str) -> bool:
         try:
-            return bool(self.con.execute(
+            return bool(self._scalar(
                 "SELECT count(*) FROM duckdb_views() WHERE schema_name = ? AND view_name = ?",
-                [PIT, name],
-            ).fetchone()[0])
+                [PIT, name]))
         except Exception:  # noqa: BLE001 -- no view catalogue: fall back to the table
             return False
 
@@ -1082,9 +1130,8 @@ class Store:
         if col is None or not self.exists(ref):
             return None
         with self._lock:
-            v = self.con.execute(
-                f'SELECT max({self._instant(ref, col)}) FROM {self._q(phys(ref))}'
-            ).fetchone()[0]
+            v = self._scalar(
+                f'SELECT max({self._instant(ref, col)}) FROM {self._q(phys(ref))}')
         return str(v) if v is not None else None
 
     def time_range(self, ref: str, override: str | None = None) -> tuple[str, str] | None:
@@ -1098,10 +1145,9 @@ class Store:
         if col is None or not self.exists(ref):
             return None
         with self._lock:
-            lo, hi = self.con.execute(
+            lo, hi = self._one(
                 f'SELECT min({self._instant(ref, col)}), max({self._instant(ref, col)}) '
-                f'FROM {self._q(phys(ref))}'
-            ).fetchone()
+                f'FROM {self._q(phys(ref))}') or (None, None)
         return None if lo is None or hi is None else (str(lo), str(hi))
 
     def query(self, sql: str, params: Sequence[Any] | None = None) -> pd.DataFrame:
@@ -1120,13 +1166,10 @@ class Store:
             # The files are the table. The view over them is a detail that can
             # be rebuilt, so the files are what get asked.
             return bool(self._parts(name))
-        return bool(
-            self.con.execute(
-                "SELECT count(*) FROM duckdb_tables() WHERE database_name = current_catalog() "
-                "AND schema_name = ? AND table_name = ?",
-                [self.home, name],
-            ).fetchone()[0]
-        )
+        return bool(self._scalar(
+            "SELECT count(*) FROM duckdb_tables() WHERE database_name = current_catalog() "
+            "AND schema_name = ? AND table_name = ?",
+            [self.home, name]))
 
     def exists(self, ref: str) -> bool:
         with self._lock:
@@ -1202,7 +1245,7 @@ class Store:
         ).fetchall()
         if not cols:
             return None
-        rows = r.execute(f'SELECT count(*) FROM {self._q(name)}').fetchone()[0]
+        rows = self._scalar(f'SELECT count(*) FROM {self._q(name)}', con=r)
         # When this table was last written is in the run log, and `table_info` is
         # on the read path -- `read()` reaches it through `time_column`. Opening
         # the metadata file here would mean every reader took the one writer lock
@@ -1210,10 +1253,9 @@ class Store:
         # gets no timestamp instead.
         last = None
         if self.kind != "parquet" or self._meta_open:
-            last = r.execute(
+            last = self._scalar(
                 f"SELECT max(ended_at) FROM {self._meta_home}{RUNS} WHERE targets LIKE ? AND status = 'ok'",
-                [f"%{ref}%"],
-            ).fetchone()[0]
+                [f"%{ref}%"], con=r)
         stage, _, tname = ref.partition(".")
         return TableInfo(ref, stage, tname, rows, [(c, t) for c, t in cols],
                          str(last) if last else None)
@@ -1244,8 +1286,8 @@ class Store:
                 if with_range:
                     parts.append(f"CAST(min({q}) AS VARCHAR) AS lo{i}")
                     parts.append(f"CAST(max({q}) AS VARCHAR) AS hi{i}")
-            return self.rcon.execute(
-                f'SELECT {", ".join(parts)} FROM {self._q(name)}').fetchone()
+            return self._one(
+                f'SELECT {", ".join(parts)} FROM {self._q(name)}', con=self.rcon)
 
         ranged = True
         try:

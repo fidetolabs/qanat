@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "qanat-fdtl"
-version = "0.10.1"
+version = "0.10.2"
 description = "A data platform for processing metrics from filings. It reads company filings, computes the metrics you define, and answers as of any past date. Delivered as an MCP server."
 readme = "README.md"
 license = { file = "LICENSE" }
@@ -22,9 +22,12 @@ classifiers = [
 ]
 dependencies = [
   # 2.0 refuses register()/unregister() on a connection whose result was not
-  # drained, and that killed every store write on a fresh install. Capped at the
-  # major with no other change, so this ships as a hotfix; the bound widens once
-  # the suite passes against 2.x.
+  # drained, and that killed every store write on a fresh install. The store no
+  # longer leaves a result open and the suite passes on 2.0.0, so this bound is
+  # now caution rather than necessity: the `unpinned` CI job runs the suite on
+  # the next major every push, and widening this waits on that staying green.
+  # What does not come back is the missing bound -- a `>=`-only floor is how an
+  # untested major reached users in the first place.
   "duckdb>=1.0,<2",
   "numpy>=1.24",
   "pandas>=2.0",

@@ -1485,7 +1485,7 @@ wheels = [
 
 [[package]]
 name = "qanat-fdtl"
-version = "0.10.1"
+version = "0.10.2"
 source = { editable = "." }
 dependencies = [
     { name = "croniter" },

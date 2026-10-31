@@ -31,6 +31,45 @@ jobs:
         env:
           QANAT_TEST_STORE: parquet
 
+  # Every job above runs `uv sync --frozen`, which is why 0.10.0 shipped broken:
+  # the lock pinned duckdb 1.5.5, a `uv tool install` resolved 2.0.0, and CI
+  # could not see the difference. A `>=`-only dependency cannot fail a frozen
+  # job -- it fails users. So this one resolves the way a visitor does.
+  #
+  # It is `continue-on-error`, deliberately: a dependency releasing a breaking
+  # major is not this push being wrong, and a red mark on an unrelated PR would
+  # get this job deleted inside a month. It is here to be *looked at*.
+  unpinned:
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v7
+        with: { enable-cache: true }
+      - run: uv python install 3.12
+
+      - name: what a fresh install resolves
+        run: |
+          uv venv
+          uv pip install -e ".[dev]"
+          uv run --no-sync python -c "import duckdb; print('duckdb', duckdb.__version__)"
+
+      - name: the suite, on whatever that was
+        run: uv run --no-sync pytest -q -n auto --dist loadgroup
+
+      - name: and on parquet
+        run: uv run --no-sync pytest -q -n auto --dist loadgroup
+        env:
+          QANAT_TEST_STORE: parquet
+
+      # The floor the upper bound keeps us off. When this passes, the bound in
+      # pyproject.toml can widen -- that is the evidence to widen it on.
+      - name: the next major, which the bound currently excludes
+        run: |
+          uv pip install --no-deps "duckdb>=2,<3"
+          uv run --no-sync python -c "import duckdb; print('duckdb', duckdb.__version__)"
+          uv run --no-sync pytest -q -n auto --dist loadgroup
+
   # The standing chaos batteries. Slower than the suite above and one of them calls
   # live public APIs, so they run once rather than across the matrix -- their job is
   # to notice a regression in ground a past audit already covered, not to gate a
