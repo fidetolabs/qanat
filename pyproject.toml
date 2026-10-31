@@ -21,14 +21,15 @@ classifiers = [
   "Topic :: Office/Business :: Financial :: Investment",
 ]
 dependencies = [
-  # 2.0 refuses register()/unregister() on a connection whose result was not
-  # drained, and that killed every store write on a fresh install. The store no
-  # longer leaves a result open and the suite passes on 2.0.0, so this bound is
-  # now caution rather than necessity: the `unpinned` CI job runs the suite on
-  # the next major every push, and widening this waits on that staying green.
-  # What does not come back is the missing bound -- a `>=`-only floor is how an
-  # untested major reached users in the first place.
-  "duckdb>=1.0,<2",
+  # Bounded at the *next* major, not left open. 2.0 refuses register() on a
+  # connection whose result was not drained, which killed every store write on a
+  # fresh install; the store no longer leaves one open and the suite passes on
+  # 1.5.6 and 2.0.0 alike, so 2.x is supported rather than excluded. The bound
+  # itself stays, because a `>=`-only floor is how an untested major reached
+  # users in the first place -- the `unpinned` CI job is what earns the next
+  # widening, by running the suite on whatever a visitor resolves plus the major
+  # after this one.
+  "duckdb>=1.0,<3",
   "numpy>=1.24",
   "pandas>=2.0",
   "pydantic>=2.6",

@@ -36,9 +36,14 @@ jobs:
   # could not see the difference. A `>=`-only dependency cannot fail a frozen
   # job -- it fails users. So this one resolves the way a visitor does.
   #
-  # It is `continue-on-error`, deliberately: a dependency releasing a breaking
-  # major is not this push being wrong, and a red mark on an unrelated PR would
-  # get this job deleted inside a month. It is here to be *looked at*.
+  # The lock now spans both duckdb majors on its own -- 2.x needs Python 3.12,
+  # so the matrix above gets 1.5.6 on 3.10 and 2.0.0 on 3.12. That is the better
+  # guard and it was a consequence of this job, not a replacement for it: what
+  # is still invisible to a frozen job is the major that has not shipped yet.
+  #
+  # `continue-on-error`, deliberately: a dependency releasing a breaking major is
+  # not this push being wrong, and a red mark on an unrelated PR would get this
+  # job deleted inside a month. It is here to be *looked at*.
   unpinned:
     runs-on: ubuntu-latest
     continue-on-error: true
@@ -62,11 +67,22 @@ jobs:
         env:
           QANAT_TEST_STORE: parquet
 
-      # The floor the upper bound keeps us off. When this passes, the bound in
-      # pyproject.toml can widen -- that is the evidence to widen it on.
-      - name: the next major, which the bound currently excludes
+      # The major the bound keeps us off, read out of pyproject rather than
+      # written here -- hardcoding it is how this step goes stale the first time
+      # the bound moves. When this passes, that is the evidence to widen on.
+      #
+      # A major that does not exist yet is the expected case and is reported, not
+      # failed: this step is a watch on upstream, and "nothing to try" is a
+      # perfectly good answer from a watch.
+      - name: the major the bound excludes, if it exists
         run: |
-          uv pip install --no-deps "duckdb>=2,<3"
+          cap="$(grep -oE '"duckdb>=[^"]+"' pyproject.toml | grep -oE '<[0-9]+' | tr -d '<')"
+          if [ -z "$cap" ]; then echo "no upper bound in pyproject -- nothing excluded"; exit 0; fi
+          echo "the bound excludes duckdb >=${cap}"
+          if ! uv pip install --no-deps "duckdb>=${cap},<$((cap + 1))"; then
+            echo "no duckdb ${cap}.x release yet -- nothing to try, which is the usual answer"
+            exit 0
+          fi
           uv run --no-sync python -c "import duckdb; print('duckdb', duckdb.__version__)"
           uv run --no-sync pytest -q -n auto --dist loadgroup
 

@@ -40,8 +40,14 @@ so a `>=`-only dependency could not fail CI — it could only fail users. A new
 then installs the next major and runs the suite again. It is
 `continue-on-error`: a dependency shipping a breaking major is not this push
 being wrong, and a job that reddens unrelated pull requests gets deleted. It is
-there to be looked at. When its last step is green, the upper bound can widen on
-that evidence; the bound stays at `<2` until then.
+there to be looked at.
+
+**And it is what widened the bound.** `duckdb` is `>=1.0,<3` here, not `<2`: the
+job is green on a real runner for a fresh resolve (1.5.6), for the parquet
+backend, and for the next major (2.0.0) — 428 tests each. **So 2.x is supported
+rather than excluded**, and the 0.10.1 cap was the hotfix it was meant to be
+rather than a position. What stays is the bound itself. A `>=`-only floor is how
+an untested major reached users, and the job is what earns the next widening.
 
 ## 0.10.1 — 2026-10-31
 
