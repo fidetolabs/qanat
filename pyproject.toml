@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "qanat-fdtl"
-version = "0.10.0"
+version = "0.10.1"
 description = "A data platform for processing metrics from filings. It reads company filings, computes the metrics you define, and answers as of any past date. Delivered as an MCP server."
 readme = "README.md"
 license = { file = "LICENSE" }
@@ -21,7 +21,11 @@ classifiers = [
   "Topic :: Office/Business :: Financial :: Investment",
 ]
 dependencies = [
-  "duckdb>=1.0",
+  # 2.0 refuses register()/unregister() on a connection whose result was not
+  # drained, and that killed every store write on a fresh install. Capped at the
+  # major with no other change, so this ships as a hotfix; the bound widens once
+  # the suite passes against 2.x.
+  "duckdb>=1.0,<2",
   "numpy>=1.24",
   "pandas>=2.0",
   "pydantic>=2.6",

@@ -1,5 +1,38 @@
 # Changelog
 
+## 0.10.1 — 2026-10-31
+
+### A fresh install could not write, because the floor moved
+
+`uv tool install qanat-fdtl` resolves dependencies fresh and ignores `uv.lock`.
+`duckdb>=1.0` had no upper bound, so an installed user got **duckdb 2.0.0** while
+the lockfile pinned 1.5.5 and all three CI jobs ran `uv sync --frozen`. **The code
+that shipped was never run against the DuckDB it shipped on.**
+
+DuckDB 2.0 tightened the result lifecycle: a connection whose result was not
+drained refuses `register()` and `unregister()`. `fetchone()` on a one-row result
+never reaches end-of-stream, so it leaves a result open. Reads kept working — a
+read is nothing but `execute`. **Writes are the only thing that registers a
+frame, so every `store.write()` failed, on both store kinds, for every caller.**
+
+```
+ResourceInUseException: Resource In Use Error: connection has an unfinished
+result from execute(); call complete() or abort(), or fetch until a fetch
+returns no rows, before other work on this connection
+```
+
+**The worse half is not that writes failed.** On a parquet store the file was
+written, the view was rebuilt, and *then* the exception came out of the cleanup
+in a `finally` block — so the write landed and the caller was told it failed.
+`qanat run` reported `0 rows, failed`; `qanat ls` reported the rows. Two commands
+contradicted each other about one table, and re-running never cleared it.
+
+`duckdb` is now capped at `>=1.0,<2`, which is the whole of this release: no code
+changed, so anyone already stuck can `uv tool upgrade qanat-fdtl` and write
+again. The undrained reads are a real defect in `store.py` and are fixed next,
+along with the CI gap that made a major bump invisible — `--frozen` everywhere
+cannot fail on a dependency it never resolves.
+
 ## 0.10.0 — 2026-10-31
 
 ### Six tools that take you from picking filings to a screened list

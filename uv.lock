@@ -1485,7 +1485,7 @@ wheels = [
 
 [[package]]
 name = "qanat-fdtl"
-version = "0.10.0"
+version = "0.10.1"
 source = { editable = "." }
 dependencies = [
     { name = "croniter" },
@@ -1519,7 +1519,7 @@ sql = [
 [package.metadata]
 requires-dist = [
     { name = "croniter", specifier = ">=2.0" },
-    { name = "duckdb", specifier = ">=1.0" },
+    { name = "duckdb", specifier = ">=1.0,<2" },
     { name = "fastapi", specifier = ">=0.110" },
     { name = "httpx", specifier = ">=0.27" },
     { name = "numpy", specifier = ">=1.24" },
