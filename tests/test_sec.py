@@ -86,7 +86,7 @@ def patched(monkeypatch):
 
         monkeypatch.setattr(sec.httpx, "Client", client)
         # The throttle is a real sleep. There is nothing to be kind to here.
-        monkeypatch.setattr(sec._Throttle, "wait", lambda self: None)
+        monkeypatch.setattr(sec.Throttle, "wait", lambda self: None)
         return seen
     return install
 

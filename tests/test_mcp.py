@@ -35,10 +35,26 @@ def test_every_tool_declares_a_schema():
 
 
 # ---------------------------------------------------------------------- scopes
-def test_every_tool_names_one_of_the_three_scopes():
-    assert mcp.SCOPES == ("data", "research", "full")
+def test_every_tool_names_one_of_the_scopes():
+    assert mcp.SCOPES == ("data", "research", "full", "authoring")
     for t in mcp.TOOLS:
         assert t["scope"] in mcp.SCOPES, f"{t['name']}: scope {t['scope']!r}"
+
+
+def test_the_default_scope_is_not_the_widest_one():
+    """`authoring` is reached by asking for it.
+
+    The pipeline from a filing to a metric is the same in every project, so
+    nobody screening filings needs the tools that rewire it -- and carrying
+    them means an agent can rewire it by accident.
+    """
+    assert mcp.DEFAULT_SCOPE == "full"
+    assert mcp.DEFAULT_SCOPE != mcp.SCOPES[-1]
+    offered = {t["name"] for t in mcp.tools_for(mcp.DEFAULT_SCOPE)}
+    assert not offered & {"save_step", "remove_step", "save_source"}
+    # And a caller who asks for the authoring scope still gets all three.
+    assert {"save_step", "remove_step", "save_source"} <= {
+        t["name"] for t in mcp.tools_for("authoring")}
 
 
 def test_a_tool_cannot_be_declared_without_a_scope():
@@ -53,13 +69,13 @@ def test_an_unknown_scope_says_what_the_three_are():
 
 
 def test_the_scopes_nest():
-    data, research, full = (
+    data, research, full, authoring = (
         [t["name"] for t in mcp.tools_for(s)] for s in mcp.SCOPES)
-    assert set(data) < set(research) < set(full)
-    assert len(full) == len(mcp.TOOLS)
+    assert set(data) < set(research) < set(full) < set(authoring)
+    assert len(authoring) == len(mcp.TOOLS)
     # whatever the scope, the order a caller sees is the declaration order
-    assert data == [n for n in full if n in set(data)]
-    assert research == [n for n in full if n in set(research)]
+    for narrower in (data, research, full):
+        assert narrower == [n for n in authoring if n in set(narrower)]
 
 
 def test_data_offers_nothing_that_writes():
@@ -70,10 +86,13 @@ def test_research_never_writes_the_project_file():
     """A screen writes nothing at all, so `research` has no writers left. What
     the scope line still has to hold is that nothing in it edits qanat.yaml."""
     assert not {t["name"] for t in mcp.tools_for("research") if t["writes"]}
-    # Anything that edits qanat.yaml is authoring, so a research caller cannot
-    # reach it: a hosted caller may screen and may not rewrite the project
-    assert {"save_step", "save_source", "run"} <= {
-        t["name"] for t in mcp.TOOLS if t["scope"] == "full"}
+    # Anything that rewires the pipeline is authoring; running it is `full`.
+    # A hosted caller may screen, and may not rewrite the project.
+    by_scope = {t["name"]: t["scope"] for t in mcp.TOOLS}
+    assert by_scope["save_step"] == "authoring"
+    assert by_scope["save_source"] == "authoring"
+    assert by_scope["remove_step"] == "authoring"
+    assert by_scope["run"] == "full"
 
 
 def test_a_tool_above_the_scope_says_so_instead_of_denying_it_exists(tmp_path: Path):
@@ -83,7 +102,7 @@ def test_a_tool_above_the_scope_says_so_instead_of_denying_it_exists(tmp_path: P
                           mcp.tools_for("data"))
     body = reply["result"]["content"][0]["text"]
     assert reply["result"]["isError"] is True
-    assert "'full' scope" in body and "--scope full" in body
+    assert "'authoring' scope" in body and "--scope authoring" in body
     session.close()
 
 
@@ -227,3 +246,119 @@ def test_the_picture_and_the_agent_agree_about_what_is_stale(tmp_path: Path):
     session.close()
 
 
+
+
+# ------------------------------------------------- the surface stops offering it
+def test_the_cli_is_four_verbs_and_nothing_else():
+    """It was ten. Six of them were a person's door onto a question a tool
+    already answers, which is a second place the behaviour can differ."""
+    from qanat.cli import build_parser
+
+    verbs = set()
+    for action in build_parser()._actions:
+        if getattr(action, "choices", None):
+            verbs |= set(action.choices)
+    assert verbs == {"init", "check", "mcp", "schedule"}
+
+
+def test_every_removed_command_names_what_replaced_it():
+    from qanat.cli import MOVED, main
+
+    assert set(MOVED) == {"ls", "graph", "plan", "prune", "run", "screen", "serve"}
+    for name, instead in MOVED.items():
+        assert instead, f"{name} says nothing about where it went"
+        assert main([name]) == 2, f"{name} should exit 2, not run"
+    # And `graph` is the one named as having no replacement.
+    assert "nothing" in MOVED["graph"]
+
+
+def test_a_removed_command_is_still_caught_behind_a_project_flag():
+    """`qanat -p ./proj graph` puts a path in front of the verb."""
+    from qanat.cli import _verb, main
+
+    assert _verb(["-p", "/tmp/anything", "graph"]) == "graph"
+    assert _verb(["--project=/tmp", "ls"]) == "ls"
+    assert main(["-p", "/tmp/anything", "graph"]) == 2
+
+
+def test_the_clock_and_the_server_are_each_one_command():
+    """`serve` ran both and had no way to run the clock alone -- backwards for
+    a recorder that wants a clock and no open port, and for a hosted reader
+    over a store somebody else fills."""
+    from qanat.cli import build_parser
+
+    parser = build_parser()
+    sub = next(a for a in parser._actions if getattr(a, "choices", None))
+
+    # The clock, serving nothing.
+    schedule = sub.choices["schedule"]
+    flags = {opt for a in schedule._actions for opt in a.option_strings}
+    assert "--port" not in flags and "--host" not in flags, "it serves nothing"
+    assert "--workers" in flags
+
+    # The server, with no clock unless one is asked for.
+    mcp_flags = {opt for a in sub.choices["mcp"]._actions for opt in a.option_strings}
+    assert "--http" in mcp_flags
+    assert "--schedule" in mcp_flags, "one machine may still do both jobs"
+    assert "--no-schedule" not in mcp_flags, "the clock is opt-in, not opt-out"
+
+
+def test_a_clock_over_stdio_is_refused_with_the_lifetime_reason(capsys):
+    """Not a rule about authority: a thread started here dies with the client."""
+    from qanat.cli import main
+
+    assert main(["mcp", "--schedule"]) == 2
+    said = capsys.readouterr().err
+    assert "dies with the conversation" in said
+    assert "qanat schedule" in said
+
+
+def test_retention_still_runs_on_the_schedulers_clock():
+    """It was checked and is live, so it is not on the deletion list."""
+    import inspect
+
+    from qanat.scheduler import Scheduler
+
+    loop = inspect.getsource(Scheduler._loop)
+    assert "run_retention" in loop
+    assert "p.retention" in loop or "project.retention" in loop
+
+
+def test_lineage_and_stale_tables_are_still_in_data_unmoved():
+    """Both only mean something to a caller who may change the pipeline, so
+    both look like they belong above the default too -- and `data` is a
+    published contract. Taking a tool out of one is worse than adding one.
+    Moving them is a separate decision, not a cleanup."""
+    by_scope = {t["name"]: t["scope"] for t in mcp.TOOLS}
+    assert by_scope["lineage"] == "data"
+    assert by_scope["stale_tables"] == "data"
+
+
+def test_lineages_description_names_no_removed_concept():
+    entry = next(t for t in mcp.TOOLS if t["name"] == "lineage")
+    assert "weights" not in entry["description"]
+    assert "pnl" not in entry["description"]
+
+
+def test_prune_is_a_flag_on_the_tool_that_already_finds_the_orphans(tmp_path: Path):
+    """The one irreversible verb does not belong at the top level, and folding
+    it in means the list and the action come from one call."""
+    entry = next(t for t in mcp.TOOLS if t["name"] == "plan")
+    assert "prune" in entry["inputSchema"]["properties"]
+    assert entry["writes"] is True, "it can drop a table now"
+
+    session = _session(tmp_path)
+    try:
+        out = entry["handler"](session, {})
+        assert "pruned" not in out, "it does not drop anything unless told to"
+    finally:
+        session.close()
+
+
+def test_no_stage_kind_vocabulary_is_left_in_the_drawing():
+    """`weights` and `pnl` left the engine in 0.5.0; a palette keyed on them
+    meant the starter project's own `normalized` stage drew in FAINT."""
+    src = (Path(__file__).resolve().parents[1] / "src" / "qanat" / "graph.py").read_text()
+    assert 'kind: str = "features"' not in src
+    assert 'or "features"' not in src
+    assert '"stage_kind") or "features"' not in src

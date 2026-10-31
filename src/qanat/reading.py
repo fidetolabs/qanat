@@ -41,7 +41,7 @@ that genuinely wants everything.
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, NamedTuple
 
 import pandas as pd
 
@@ -259,6 +259,408 @@ def read_facts(store: Store, project: Project, document: str,
     }
 
 
+# ------------------------------------------------------------- the company
+#: How many distinct concept names one filing reports unless asked for fewer.
+#: A large filer tags several hundred, and the list is the way in rather than
+#: the answer -- `read_facts` returns the numbers.
+CONCEPTS = 50
+
+
+def resolve_filer(store: Store, project: Project, filer: str) -> dict[str, Any]:
+    """A ticker or a CIK -> the filer this corpus knows, or an error naming why.
+
+    **The filer is the key and the ticker is a label on it.** The facts carry a
+    CIK -- `0000320193`, not `AAPL` -- and a screen returns those, so a tool
+    that could not turn a name into a filer would leave a caller holding
+    numbers it cannot read back to anybody. It resolves both ways for the same
+    reason: a person asks about Apple.
+
+    Resolved against this corpus and not against EDGAR, because the question is
+    which filer this project holds documents for.
+    """
+    docs = _table(project, "documents")
+    if not store.exists(docs):
+        raise ReadingError(f"'{docs}' does not exist yet. Run the pipeline first.")
+
+    asked = str(filer).strip()
+    if not asked:
+        raise ReadingError("read_company needs a filer: a ticker, or a CIK")
+
+    # The ticker and the company name live inside `source_keys`, which is the
+    # connector's own record of what the SEC said. A documents table built by
+    # something else may not carry it, and a corpus addressable only by CIK is
+    # still a corpus -- so the column is checked rather than assumed.
+    named = _has(store, docs, "source_keys")
+    ticker = ("max(json_extract_string(source_keys, '$.ticker'))" if named
+              else "CAST(NULL AS VARCHAR)")
+    name = ("max(json_extract_string(source_keys, '$.company_name'))" if named
+            else "CAST(NULL AS VARCHAR)")
+
+    # A CIK is digits, and EDGAR pads it to ten. A screen hands back the padded
+    # form; a person types 320193.
+    if asked.lstrip("0").isdigit():
+        where, params = "CAST(entity AS VARCHAR) IN (?, ?)", [asked, f"{int(asked):010d}"]
+    elif named:
+        where = "upper(json_extract_string(source_keys, '$.ticker')) = upper(?)"
+        params = [asked]
+    else:
+        raise ReadingError(
+            f"'{docs}' stores no `source_keys`, so a ticker cannot be resolved here. "
+            f"Give the CIK -- which is what the facts carry and what a screen returns"
+        )
+
+    found = store.query(
+        f"""SELECT CAST(entity AS VARCHAR) AS cik, {ticker} AS ticker, {name} AS name,
+                   count(*) AS filings
+            FROM {store.readable(docs)}
+            WHERE {where}
+            GROUP BY 1 ORDER BY filings DESC""",
+        params,
+    )
+    if found.empty:
+        raise ReadingError(
+            f"no filer '{asked}' in this project. It holds: {_filers(store, docs, named)}"
+            f". Call find_filings and ingest_filings to add one"
+        )
+    row = found.iloc[0]
+    return {"cik": str(row["cik"]),
+            "ticker": None if not row["ticker"] else str(row["ticker"]),
+            "name": None if not row["name"] else str(row["name"]),
+            "filings": int(row["filings"]), "resolved_from": asked}
+
+
+def _has(store: Store, ref: str, column: str) -> bool:
+    info = store.table_info(ref)
+    return bool(info) and column in {c for c, _ in info.columns}
+
+
+def _filers(store: Store, docs: str, named: bool) -> str:
+    """Who this corpus does hold, for an error that is worth reading."""
+    pick = ("json_extract_string(source_keys, '$.ticker')" if named
+            else "CAST(entity AS VARCHAR)")
+    try:
+        rows = store.query(
+            f"SELECT DISTINCT {pick} AS who FROM {store.readable(docs)} "
+            f"WHERE who IS NOT NULL ORDER BY 1 LIMIT 25")
+    except Exception:  # noqa: BLE001 -- an error about an error is not worth raising
+        return "(could not be listed)"
+    have = [x for x in rows["who"].astype(str) if x and x != "None"]
+    return ", ".join(have) or "(nothing)"
+
+
+def filer_map(store: Store, project: Project) -> dict[str, str]:
+    """Every name this corpus answers to -> the filer it means.
+
+    Tickers and CIKs both, upper-cased, so one lookup places either. Built in
+    one query rather than one per name, because the caller asking is screening
+    a list and resolving fifty names one at a time is fifty round trips.
+
+    Empty when the project declares no documents table, or when the one it
+    declares carries no `source_keys` -- a corpus addressable only by CIK is
+    still a corpus, and a CIK needs no map.
+    """
+    try:
+        docs = _table(project, "documents")
+    except ReadingError:
+        return {}
+    if not store.exists(docs) or not _has(store, docs, "source_keys"):
+        return {}
+    rows = store.query(
+        f"""SELECT DISTINCT upper(json_extract_string(source_keys, '$.ticker')) AS ticker,
+                   CAST(entity AS VARCHAR) AS cik
+            FROM {store.readable(docs)}
+            WHERE ticker IS NOT NULL""")
+    return {str(r.ticker): str(r.cik) for r in rows.itertuples() if r.ticker}
+
+
+def list_companies(store: Store, project: Project, query: str | None = None,
+                   limit: int = 100) -> dict[str, Any]:
+    """Who this project holds filings for. The index, not one company's filings.
+
+    **Nothing answered this before.** `read_company` takes a filer and tells you
+    about it; the only listing anywhere was buried in the error you got for
+    naming one it did not have. So a caller building a list of companies to
+    screen had no way to find out which names would land -- and a name that does
+    not land is a company quietly missing from an answer.
+    """
+    docs = _table(project, "documents")
+    if not store.exists(docs):
+        raise ReadingError(f"'{docs}' does not exist yet. Run the pipeline first.")
+
+    named = _has(store, docs, "source_keys")
+    ticker = ("max(json_extract_string(source_keys, '$.ticker'))" if named
+              else "CAST(NULL AS VARCHAR)")
+    name = ("max(json_extract_string(source_keys, '$.company_name'))" if named
+            else "CAST(NULL AS VARCHAR)")
+    forms = ("string_agg(DISTINCT CAST(doc_type AS VARCHAR), ', ')"
+             if _has(store, docs, "doc_type") else "CAST(NULL AS VARCHAR)")
+
+    where, params = "", []
+    if query:
+        if not named:
+            raise ReadingError(
+                f"'{docs}' stores no `source_keys`, so there is no name to search. "
+                f"Leave `query` out to list the filers it holds")
+        where = ("WHERE upper(coalesce(json_extract_string(source_keys, '$.ticker'), '')) "
+                 "LIKE '%' || upper(?) || '%' OR upper(coalesce("
+                 "json_extract_string(source_keys, '$.company_name'), '')) "
+                 "LIKE '%' || upper(?) || '%'")
+        params = [str(query), str(query)]
+
+    rows = store.query(
+        f"""SELECT CAST(entity AS VARCHAR) AS cik, {ticker} AS ticker, {name} AS name,
+                   count(*) AS filings, {forms} AS forms,
+                   min(CAST(published_at AS VARCHAR)) AS first_filed,
+                   max(CAST(published_at AS VARCHAR)) AS last_filed
+            FROM {store.readable(docs)}
+            {where}
+            GROUP BY 1
+            ORDER BY filings DESC, cik
+            LIMIT {max(0, int(limit))}""",
+        params,
+    )
+    total = store.query(
+        f"SELECT count(DISTINCT CAST(entity AS VARCHAR)) AS n "
+        f"FROM {store.readable(docs)}")["n"].iloc[0]
+
+    out = [
+        {"cik": str(r.cik),
+         "ticker": None if not r.ticker else str(r.ticker),
+         "name": None if not r.name else str(r.name),
+         "filings": int(r.filings),
+         "forms": None if not r.forms else sorted(str(r.forms).split(", ")),
+         "first_filed": str(r.first_filed)[:10],
+         "last_filed": str(r.last_filed)[:10]}
+        for r in rows.itertuples()
+    ]
+    return {
+        "companies": out,
+        "returned": len(out),
+        "total": int(total),
+        "searchable_by_name": named,
+        "next": ("read_company(filer) for one company's filings and sections. "
+                 "These are the names a screen's `universe` will place"),
+    }
+
+
+class CompanyIndex(NamedTuple):
+    """Every name this corpus answers to, and every filer it holds.
+
+    `names` maps an upper-cased ticker **or** CIK to the filer it means.
+    `filers` is every filer in the corpus.
+
+    **`known` is the field a caller must read before deciding a name is wrong.**
+    An empty index means this project declares no documents table or has not
+    been run -- not that the name does not exist. Those are different answers
+    and only one of them is the caller's mistake.
+    """
+
+    names: dict[str, str]
+    filers: frozenset[str]
+    known: bool
+
+    def place(self, symbol: str) -> str | None:
+        """The filer this name means, or None if this index does not hold it."""
+        return self.names.get(str(symbol).strip().upper())
+
+
+def company_index(store: Store, project: Project) -> CompanyIndex:
+    """Build the index. Empty and `known=False` when there is nothing to build from."""
+    empty = CompanyIndex({}, frozenset(), False)
+    try:
+        docs = _table(project, "documents")
+    except ReadingError:
+        return empty
+    if not store.exists(docs):
+        return empty
+    named = _has(store, docs, "source_keys")
+    ticker = ("upper(json_extract_string(source_keys, '$.ticker'))" if named
+              else "CAST(NULL AS VARCHAR)")
+    rows = store.query(
+        f"""SELECT DISTINCT {ticker} AS ticker, CAST(entity AS VARCHAR) AS cik
+            FROM {store.readable(docs)}""")
+    names: dict[str, str] = {}
+    filers: set[str] = set()
+    for r in rows.itertuples():
+        cik = str(r.cik)
+        filers.add(cik)
+        # A filer is addressable by its padded CIK, its unpadded one, and its
+        # ticker, because a screen hands back the first and a person types the
+        # other two.
+        names[cik.upper()] = cik
+        names[cik.lstrip("0").upper() or cik.upper()] = cik
+        if r.ticker:
+            names[str(r.ticker)] = cik
+    return CompanyIndex(names, frozenset(filers), bool(filers))
+
+
+def read_company(store: Store, project: Project, filer: str,
+                 frm: str | None = None, to: str | None = None,
+                 form: str | None = None, limit: int = 20,
+                 concept: str | None = None,
+                 concepts: int = CONCEPTS) -> dict[str, Any]:
+    """One filer's way in: its filings, their sections, and what is tagged.
+
+    **It returns a map and no bodies.** `read_section` still pages the text and
+    `read_facts` still returns the numbers; this is the index over them, keyed
+    by the thing a person names. Every other reading tool starts from a
+    document, so a caller holding a company and a question had to find the
+    filings first, then the sections, then the facts -- and the thing anybody
+    asks about is the company.
+    """
+    who = resolve_filer(store, project, filer)
+    docs = _table(project, "documents")
+
+    has_form = _has(store, docs, "doc_type")
+    has_period = _has(store, docs, "period_end")
+    # The period a filing reports on, or the day it was filed for a form that
+    # reports on an event and so has no period at all.
+    when = ("coalesce(CAST(period_end AS VARCHAR), CAST(published_at AS VARCHAR))"
+            if has_period else "CAST(published_at AS VARCHAR)")
+
+    where = ["CAST(entity AS VARCHAR) = ?"]
+    params: list[Any] = [who["cik"]]
+    if form:
+        if not has_form:
+            raise ReadingError(
+                f"'{docs}' stores no `doc_type`, so it cannot be narrowed to one form")
+        where.append("upper(CAST(doc_type AS VARCHAR)) = upper(?)")
+        params.append(str(form))
+    if frm:
+        where.append(f"{when} >= ?")
+        params.append(str(frm))
+    if to:
+        where.append(f"{when} <= ?")
+        params.append(str(to))
+
+    filings = store.query(
+        f"""SELECT id,
+                   {'CAST(doc_type AS VARCHAR)' if has_form else 'CAST(NULL AS VARCHAR)'}
+                       AS form,
+                   CAST(published_at AS VARCHAR) AS filed,
+                   {'CAST(period_end AS VARCHAR)' if has_period else 'CAST(NULL AS VARCHAR)'}
+                       AS period_end
+            FROM {store.readable(docs)}
+            WHERE {' AND '.join(where)}
+            ORDER BY published_at DESC
+            LIMIT {max(0, int(limit))}""",
+        params,
+    )
+    ids = [str(x) for x in filings["id"]]
+
+    spans_by_doc = _spans_for(store, project, ids)
+    facts_by_doc = _facts_for(store, project, ids, concept, int(concepts))
+
+    out = []
+    for r in filings.itertuples():
+        out.append({
+            "document": str(r.id),
+            "form": r.form,
+            "filed": str(r.filed)[:10],
+            "period_end": None if not r.period_end else str(r.period_end)[:10],
+            "sections": spans_by_doc.get(str(r.id), []),
+            "facts": facts_by_doc.get(str(r.id), {"total": 0, "taxonomies": {},
+                                                  "concepts_total": 0, "concepts": []}),
+        })
+    return {
+        "filer": who,
+        "returned": len(out),
+        "filings": out,
+        "next": (
+            "read_section(document, section) for the text, a page at a time. "
+            "read_facts(document, concept) for the numbers. check_number(document, value) "
+            "to put a number you read in prose beside what was tagged"
+        ),
+    }
+
+
+def _spans_for(store: Store, project: Project, ids: list[str]) -> dict[str, list[dict]]:
+    """Each document's sections: name, length and the rule that found it.
+
+    Never `text`. On a filings corpus that column is nearly every byte in the
+    table, and this tool's whole promise is that its answer does not grow with
+    the length of a filing.
+    """
+    if not ids:
+        return {}
+    try:
+        spans = _table(project, "spans")
+    except ReadingError:
+        return {}
+    if not store.exists(spans):
+        return {}
+    holes = ", ".join("?" * len(ids))
+    rows = store.query(
+        f"""SELECT document, section, n_chars, char_start, char_end, rule
+            FROM {store.readable(spans)}
+            WHERE document IN ({holes})
+            ORDER BY document, char_start""",
+        ids,
+    )
+    out: dict[str, list[dict]] = {}
+    for r in rows.itertuples():
+        out.setdefault(str(r.document), []).append({
+            "section": r.section,
+            "chars": int(r.n_chars),
+            "char_start": int(r.char_start),
+            "char_end": int(r.char_end),
+            # The rule travels with the answer, because detection is a
+            # heuristic on a document it has not seen before.
+            "rule": r.rule,
+            "pages": max(1, -(-int(r.n_chars) // PAGE)),
+        })
+    return out
+
+
+def _facts_for(store: Store, project: Project, ids: list[str],
+               concept: str | None, limit: int) -> dict[str, dict]:
+    """What is tagged in each document: how much, in which taxonomies, and which
+    concepts -- the names, not the numbers."""
+    if not ids:
+        return {}
+    try:
+        facts = _table(project, "facts")
+    except ReadingError:
+        return {}
+    if not store.exists(facts):
+        return {}
+    holes = ", ".join("?" * len(ids))
+    where = [f"document IN ({holes})"]
+    params: list[Any] = list(ids)
+    if concept:
+        where.append("contains(lower(concept), lower(?))")
+        params.append(str(concept))
+
+    # Counted in the database, grouped by document. A concept list is the way
+    # in; `read_facts` is what returns values.
+    rows = store.query(
+        f"""SELECT document, concept, count(*) AS n
+            FROM {store.readable(facts)}
+            WHERE {' AND '.join(where)}
+            GROUP BY 1, 2
+            ORDER BY document, n DESC, concept""",
+        params,
+    )
+    out: dict[str, dict] = {}
+    for r in rows.itertuples():
+        doc = str(r.document)
+        entry = out.setdefault(doc, {"total": 0, "taxonomies": {}, "concepts_total": 0,
+                                     "concepts": []})
+        entry["total"] += int(r.n)
+        entry["concepts_total"] += 1
+        taxonomy = str(r.concept).partition(":")[0]
+        entry["taxonomies"][taxonomy] = entry["taxonomies"].get(taxonomy, 0) + int(r.n)
+        if len(entry["concepts"]) < limit:
+            entry["concepts"].append(str(r.concept))
+    for entry in out.values():
+        if entry["concepts_total"] > len(entry["concepts"]):
+            entry["concepts_note"] = (
+                f"{len(entry['concepts'])} of {entry['concepts_total']} concepts, the "
+                f"most-tagged first. Pass `concept` to filter, or raise `concepts`"
+            )
+    return out
+
+
 # -------------------------------------------------------- the honesty check
 def check_number(store: Store, project: Project, document: str, value: float,
                  within: float = 0.25, limit: int = 10) -> dict[str, Any]:
@@ -295,5 +697,19 @@ def check_number(store: Store, project: Project, document: str, value: float,
     }
 
 
-__all__ = ["PAGE", "ReadingError", "check_number", "list_sections", "read_facts",
-           "read_section", "search_documents"]
+__all__ = [
+    "CONCEPTS",
+    "PAGE",
+    "CompanyIndex",
+    "ReadingError",
+    "check_number",
+    "company_index",
+    "filer_map",
+    "list_companies",
+    "list_sections",
+    "read_company",
+    "read_facts",
+    "read_section",
+    "resolve_filer",
+    "search_documents",
+]

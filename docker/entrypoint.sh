@@ -29,4 +29,8 @@ fi
 HOST="${QANAT_HOST:-127.0.0.1}"
 PORT="${QANAT_PORT:-8421}"
 
-exec qanat serve --host "$HOST" --port "$PORT" --run-now
+# One container, both jobs: the MCP server and the clock that fills the store
+# behind it. `qanat serve` was this and nothing else, and it could not be split
+# -- so it is a flag on the server now, and `qanat schedule` is the clock alone
+# for a recorder that serves nothing.
+exec qanat mcp --http --schedule --host "$HOST" --port "$PORT" --run-now

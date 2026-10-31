@@ -277,7 +277,7 @@ class Store:
                     f"{self.path} is already open in another process.\n"
                     "  A DuckDB file takes one writer at a time, so the CLI, the scheduler and\n"
                     "  an agent cannot each open it. Pick one:\n"
-                    "    · stop `qanat serve`, then run this again, or\n"
+                    "    · stop whatever is serving this project, then run this again, or\n"
                     "    · reach it through the process that already has it: `qanat mcp --http`\n"
                     "      serves MCP from one that holds the store, or\n"
                     "    · move the project to a parquet store (`store: ./data`), which takes any\n"
@@ -587,7 +587,7 @@ class Store:
 
         Sets `interrupted_screen` to the as-of date it died at. The derived tables
         are functions of raw, which a screen never touches, so one ordinary pass
-        rebuilds them -- `qanat run` and `qanat serve` do that on sight.
+        rebuilds them -- the `run` tool and `qanat schedule` do that on sight.
         """
         self.interrupted_screen: str | None = None
         with self._lock:
@@ -612,7 +612,7 @@ class Store:
             self.event("warn", "store", (
                 f"a screen was interrupted at as-of {row[0]}. Every table a step writes was "
                 "left holding only the rows that existed then -- run the pipeline once "
-                "(`qanat run`) to rebuild them from raw."
+                "(the `run` tool) to rebuild them from raw."
             ))
 
     def screen_open(self, as_of: str) -> None:
@@ -1063,6 +1063,23 @@ class Store:
                 f'SELECT max({self._instant(ref, col)}) FROM {self._q(phys(ref))}'
             ).fetchone()[0]
         return str(v) if v is not None else None
+
+    def time_range(self, ref: str, override: str | None = None) -> tuple[str, str] | None:
+        """The oldest and newest timestamps in a table, or None with no clock.
+
+        `max_time` answers what a source should ask for next. This answers what
+        a point-in-time read can be asked for at all: before the oldest row
+        there was nothing public, so a screen as of then has no corpus to read.
+        """
+        col = self.time_column(ref, override)
+        if col is None or not self.exists(ref):
+            return None
+        with self._lock:
+            lo, hi = self.con.execute(
+                f'SELECT min({self._instant(ref, col)}), max({self._instant(ref, col)}) '
+                f'FROM {self._q(phys(ref))}'
+            ).fetchone()
+        return None if lo is None or hi is None else (str(lo), str(hi))
 
     def query(self, sql: str, params: Sequence[Any] | None = None) -> pd.DataFrame:
         """Run a statement. `params` are bound by the database, never pasted in.

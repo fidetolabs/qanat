@@ -49,7 +49,7 @@ rebuilt from the other:
 Which one a caller wants depends on the question. A ratio against a filing
 figure -- `pe`, `pbr` -- needs the price as printed, because the other half
 was never restated. A return needs the adjusted price, because a split is not
-a loss. See `O-20261024-01` in fdtl-kb.
+a loss.
 
 Columns:
 

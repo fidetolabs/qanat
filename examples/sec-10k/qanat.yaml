@@ -1,7 +1,7 @@
 # Forty real 10-K filings: eight companies, five years each, straight from EDGAR.
 #
 #   qanat check                # the contract
-#   qanat run                  # fetch, parse, split. First run is ~10 minutes
+#   qanat schedule --run-now   # fetch, parse, split. First pass is ~10 minutes
 #   qanat mcp --scope research # hand it to an agent
 #
 # Nothing here is invented and nothing is bundled. The documents are downloaded
@@ -113,8 +113,19 @@ returns:
 # net margin. Mapping plain names onto the tags filers really use is the large
 # piece of work here, and these two metrics are a worked example of it, not a
 # finished map.
+# ----------------------------------------------------------------- the metrics --
+# A formula with a name and a version. Shared: `price / diluted EPS` is
+# arithmetic, so it is the same number for every caller. The threshold you
+# compare it against is the judgement, and that is yours -- it travels with the
+# screen call and is never stored here.
+#
+# `origin: shipped` marks these two as the **starter set**: enough to screen
+# with on the day you install, and deliberately not a metric library. A
+# definition you write is labelled `defined`, and does not join this set by
+# being stored beside it.
 metrics:
   - id: pe
+    origin: shipped
     version: 3
     unit: ratio
     description: >
@@ -135,6 +146,7 @@ metrics:
       ) WHERE rn = 1
 
   - id: net_margin
+    origin: shipped
     version: 2
     unit: ratio
     description: net income over revenue, for the year reported

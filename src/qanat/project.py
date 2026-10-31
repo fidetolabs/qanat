@@ -6,13 +6,17 @@ becoming a pile of tables nobody can explain:
   1. `raw` is landed and never edited -- no step may write into a raw stage.
   2. Data only ever moves forward. A step may read from its own stage (a feature
      chain) but never from a later one.
-  3. There is exactly one `weights` stage. It holds **one table per step**, each
-     written by exactly one step. No step may read another's weights, so no edge is
-     ever counted twice.
-  4. A `pnl` stage may follow it, and if it exists it is last. Nothing writes it by
-     hand: a screen does, one table per weights table, holding what it earned per
-     rebalance. It is the end of the pipeline.
-  4. Every table read has a producer.
+  3. Every table read has a producer, and every table has exactly one.
+  4. Every row carries both dates, and a screen filters on the public one.
+
+**It is four properties and no names**, which `docs/contract.md` has said for
+some time and this module did not. Two more rules used to sit here, ordering a
+`weights` stage and a `pnl` stage after it. Those two stage kinds left the engine
+in 0.5.0 and their rules did not: a project that stops at clean dated facts is a
+complete project, because a metric is a query over those facts and a screen is a
+call that returns a list, and neither needs a stage to land in. **A kind is now
+a name you choose, so a rule keyed on one of five fixed words could only be
+enforced against projects that happened to use them.**
 """
 
 from __future__ import annotations
@@ -73,39 +77,6 @@ def validate(p: Project, root: Path) -> Report:
     if not p.stages:
         r.errors.append("a project needs at least one stage")
 
-    # ---- rules 3 and 4: weights, then optionally pnl --------------------------
-    # A weights stage used to be required, from when the only thing a project
-    # could produce was a basket. A project that stops at clean dated facts is a
-    # complete project: a metric is a query over those facts and a screen is a
-    # call that returns a list, so neither needs a stage to land in. What is
-    # still enforced is at most one, and that a pnl stage has one to price.
-    weights = [x for x in p.stages if x.kind == "weights"]
-    pnls = [x for x in p.stages if x.kind == "pnl"]
-    if len(weights) > 1:
-        r.errors.append(f"at most one stage may have kind 'weights', found {len(weights)}")
-    if pnls and not weights:
-        r.errors.append("a pnl stage has nothing to price without a weights stage before it")
-    if len(pnls) > 1:
-        r.errors.append(f"at most one stage may have kind 'pnl', found {len(pnls)}")
-    last = p.stages[-1].kind if p.stages else None
-    if pnls:
-        if last != "pnl":
-            r.errors.append(f"the pnl stage must be last, but '{p.stages[-1].id}' is")
-        if weights and p.stage_index(pnls[0].id) != p.stage_index(weights[0].id) + 1:
-            r.errors.append(
-                f"'{pnls[0].id}' must come directly after the weights stage "
-                f"'{weights[0].id}'. Anything between them is a stage the weights "
-                "would have to pass through"
-            )
-        for st in p.steps:
-            if any(w.startswith(f"{pnls[0].id}.") for w in st.writes):
-                r.errors.append(
-                    f"step '{st.id}' writes into the pnl stage. Nothing writes it by hand: "
-                    "a screen does, once it knows what the portfolio earned"
-                )
-    elif weights and last != "weights":
-        r.errors.append(f"the weights stage must be last, but '{p.stages[-1].id}' is")
-
     # ---- rule 2a: normalized sits between raw and features -------------------
     # `normalized` became a kind of its own on 2026-10-11. Before that the stage
     # holding point-in-time facts carried `kind: features`, so the contract could
@@ -130,10 +101,9 @@ def validate(p: Project, root: Path) -> Report:
 
     producers = p.producers()
 
-    # One table, one producer. `producers()` is a dict, so a second job writing the
-    # same table used to disappear from it silently -- and in the weights stage that
-    # meant one portfolio counted twice, which is the double counting the
-    # whole closure rule exists to prevent.
+    # One table, one producer. `producers()` is a dict, so a second job writing
+    # the same table used to disappear from it silently, and then nothing could
+    # say which run made the rows in it.
     writers: dict[str, list[str]] = {}
     for j in p.jobs:
         for ref in j.writes:
@@ -145,25 +115,6 @@ def validate(p: Project, root: Path) -> Report:
                 "producer, or nothing can say which run made the rows in it"
             )
 
-    if weights:
-        wl = weights[0].id
-        wtables = [t for t in producers if t.startswith(f"{wl}.")]
-        if not wtables:
-            r.warnings.append(f"nothing writes into the weights stage '{wl}' yet")
-        for st in p.steps:
-            mine = [w for w in st.writes if w.startswith(f"{wl}.")]
-            if len(mine) > 1:
-                r.errors.append(
-                    f"step '{st.id}' writes {len(mine)} weights tables. One step is one "
-                    "portfolio, so one step writes one weights table"
-                )
-            # the closure rule: a weights step reads features, never other weights
-            if mine and any(rd.startswith(f"{wl}.") for rd in st.reads):
-                r.errors.append(
-                    f"step '{st.id}' reads another step's weights. Weights never stack -- "
-                    "an edge counted through a tower of them is counted twice"
-                )
-
     # ---- sources --------------------------------------------------------------
     seen_ids: set[str] = set()
     for s in p.sources:
@@ -172,8 +123,6 @@ def validate(p: Project, root: Path) -> Report:
         seen_ids.add(s.id)
         if s.stage not in stage_ids:
             r.errors.append(f"source '{s.id}' writes to unknown stage '{s.stage}'")
-        elif (lay := p.stage(s.stage)) and lay.kind == "weights":
-            r.errors.append(f"source '{s.id}' writes into the weights stage -- only a step may")
         if s.mode == "append" and not s.key and s.schedule:
             r.warnings.append(
                 f"source '{s.id}' appends on a schedule with no `key:`, so every poll keeps a "
@@ -384,15 +333,43 @@ def validate(p: Project, root: Path) -> Report:
             r.warnings.append(
                 f"step '{st.id}' sets an option called 'as_of'. A screen overwrites it with "
                 "the date being screened, so this step means something different under "
-                "`qanat screen` than under `qanat run`"
+                "a screen than under an ordinary run"
             )
 
+    # ---- metrics --------------------------------------------------------------
+    # A bumped version is written beside the old one, so an id appears more than
+    # once on purpose. The pair has to be unique, or `metric(id, version)`
+    # resolves to whichever one happens to be first.
+    seen: set[tuple[str, int]] = set()
+    for m in p.metrics:
+        if (m.id, m.version) in seen:
+            r.errors.append(
+                f"metric '{m.id}' is defined twice at version {m.version}. A changed "
+                f"formula is a new version written beside the old one, not a second "
+                f"copy of the same one")
+        seen.add((m.id, m.version))
+
     # ---- soft advice ----------------------------------------------------------
+    #: A metric reads a table the way SQL does, by its physical name. Counting
+    #: only steps as readers meant the terminal table of every correct filings
+    #: pipeline was reported as read by nothing -- the thing a metric is for.
+    from qanat.metrics import tables_read
+
+    read_by_metric: set[str] = set()
+    for m in p.metrics:
+        read_by_metric.update(tables_read(p, m.sql))
+
+    #: And a table named in `corpus:` is read by the reading tools, which are a
+    #: reader like any other -- `list_sections` and `read_facts` do nothing else.
+    #: A project of filings was being told its documents, spans and facts were
+    #: read by nothing, which is every table it has.
+    if p.corpus:
+        read_by_metric.update(
+            ref for ref in (p.corpus.documents, p.corpus.spans, p.corpus.facts) if ref)
+
     for ref, who in producers.items():
         read_by = [st.id for st in p.steps if ref in st.reads]
-        lid = ref.split(".")[0]
-        lay = p.stage(lid)
-        if not read_by and lay and lay.kind != "weights":
+        if not read_by and ref not in read_by_metric:
             r.warnings.append(f"'{ref}' (from {who}) is never read by anything")
 
     return r

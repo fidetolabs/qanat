@@ -13,10 +13,15 @@ git clone https://github.com/fidetolabs/qanat.git && cd qanat
 uv sync --extra dev
 
 qanat init demo && cd demo
-uv run qanat run
-uv run qanat mcp            # serve this project to an agent over stdio
-uv run qanat serve          # scheduler + MCP over HTTP at http://127.0.0.1:8421/mcp
+uv run qanat check                      # hold it against the stage contract
+uv run qanat mcp                        # serve it to an agent over stdio
+uv run qanat schedule --run-now         # the clock, serving nothing
+uv run qanat mcp --http --schedule      # both, at http://127.0.0.1:8421/mcp
 ```
+
+There is no `qanat run`: running the graph is the `run` tool, which is what an
+agent calls. `qanat schedule --run-now` fires every job once at startup, which is
+the equivalent from a shell.
 
 Or with pip: `pip install -e ".[dev]"`.
 
@@ -69,9 +74,11 @@ underneath. The same count passes both ways. Worth doing for anything touching `
 | Filings — XBRL | `src/qanat/xbrl.py` | Inline XBRL: contexts, units, scale, signs |
 | Filings — sections | `src/qanat/sections.py` | Section boundaries, and the span each one records |
 | Screen | `src/qanat/screen.py` | Which companies passed, on a date or over a window |
-| MCP (stdio) | `src/qanat/mcp.py` | The tool surface, and the three scopes |
+| MCP (stdio) | `src/qanat/mcp.py` | The tool surface, and the four scopes |
 | MCP (HTTP) | `src/qanat/mcp_http.py` | The same tools on `/mcp`, with Host and token checks |
-| CLI | `src/qanat/cli.py` | `init`, `check`, `plan`, `prune`, `ls`, `graph`, `run`, `screen`, and what starts the servers |
+| CLI | `src/qanat/cli.py` | `init`, `check`, `mcp`, `schedule`. Nothing else |
+| Filings | `src/qanat/filings.py` | Which filings exist, which parse, and landing the chosen ones |
+| Metrics | `src/qanat/metrics.py` | Defining a metric, and refusing a formula that will not run |
 | Editor logic | `src/qanat/editor.py` | Mutations that write `qanat.yaml` |
 | Graph | `src/qanat/graph.py` | The read model, and the terminal drawing of it |
 | Connectors | `src/qanat/sources/` | Plugin surface: one `fetch()` per connector |

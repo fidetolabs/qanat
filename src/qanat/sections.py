@@ -26,6 +26,36 @@ much to trust an answer. Until detection is good, that is the honest interface.
 `FORM_10K` is the SEC's vocabulary, not the platform's. It lives here as data a
 source adapter supplies, which is what keeps `spans` itself general: a document,
 a section name, two offsets.
+
+## One vocabulary per form, and no guessing when there is none
+
+**A form whose numbering merely resembles the 10-K's returns a confident wrong
+offset**, which is the failure this module exists to avoid. Measured: an 8-K
+split with the 10-K's vocabulary produced Item 1, Item 7 and Item 8 -- those are
+`1.01`, `7.01` and `8.01`, the 8-K's own scheme, read through a pattern for a
+different form. A DEF 14A produced an Item 7 from a heading that is not one.
+
+So `split` is told which form it is working in, and **a form with no vocabulary
+returns no spans.** Zero is the honest answer and a small number is not: the
+reading tools report no sections, which degrades cleanly, where three wrong ones
+look like an answer.
+
+**A decimal Item number is declined outright.** `Item 7.01` is not Item 7 in any
+vocabulary here; it is a different numbering scheme, and the regex rejects it
+rather than relying on a title test to fail.
+
+## The Part is part of the section name
+
+A 10-K numbers its Items once, straight through. **A 10-Q numbers them twice** --
+Part I Items 1 to 4 and Part II Items 1 to 6 -- so the same number is two
+different sections depending on the Part, and resolving that away would merge
+the financial statements with the legal proceedings. The Part therefore goes in
+the name.
+
+What makes that cheap is that the titles do not collide: Part I Item 1 is the
+financial statements and Part II Item 1 is legal proceedings. **The title test
+that already decides the number also decides the Part**, so no separate pass
+over the Part headings is needed.
 """
 
 from __future__ import annotations
@@ -64,6 +94,69 @@ FORM_10K: dict[str, str] = {
     "16": r"form\s+10-k\s+summary",
 }
 
+#: The 10-Q's Items, by Part. A quarterly report numbers from 1 inside each
+#: Part, so `Item 1` means the financial statements in Part I and legal
+#: proceedings in Part II. Item 1A appears only in Part II.
+FORM_10Q_PARTS: dict[str, dict[str, str]] = {
+    "I": {
+        "1": r"financial\s+statements",
+        "2": r"management.{0,3}s\s+discussion",
+        "3": r"quantitative\s+and\s+qualitative",
+        "4": r"controls\s+and\s+procedures",
+    },
+    "II": {
+        "1": r"legal\s+proceedings",
+        "1A": r"risk\s+factors",
+        "2": r"unregistered\s+sales",
+        "3": r"defaults\s+upon\s+senior",
+        "4": r"mine\s+safety",
+        "5": r"other\s+information",
+        "6": r"exhibits?",
+    },
+}
+
+#: An Item number -> every section it could be, each a (name, title pattern).
+#: More than one when a form numbers inside Parts.
+Vocabulary = dict[str, list[tuple[str, str]]]
+
+
+def _one_part(titles: dict[str, str]) -> Vocabulary:
+    """A form that numbers its Items once, straight through."""
+    return {num: [(f"Item {num}", pattern)] for num, pattern in titles.items()}
+
+
+def _by_part(parts: dict[str, dict[str, str]]) -> Vocabulary:
+    """A form that numbers its Items inside Parts, so the Part names the section."""
+    out: Vocabulary = {}
+    for part, titles in parts.items():
+        for num, pattern in titles.items():
+            out.setdefault(num, []).append((f"Part {part} Item {num}", pattern))
+    return out
+
+
+#: form -> its Item vocabulary. **A form absent from this table has none**, and
+#: gets no spans rather than another form's offsets.
+#:
+#: Only the two forms whose facts are parsed are here. A 20-F numbers Items 1 to
+#: 19 and a 6-K has no Items at all; neither is ingested, and shipping a
+#: vocabulary for a form nothing reads would be a claim with nothing behind it.
+VOCABULARIES: dict[str, Vocabulary] = {
+    "10-K": _one_part(FORM_10K),
+    "10-Q": _by_part(FORM_10Q_PARTS),
+}
+
+
+def vocabulary(form: str | None) -> Vocabulary:
+    """The Item vocabulary for a form, or an empty one for a form without.
+
+    An empty vocabulary finds nothing, which is the point: the caller gets no
+    spans instead of a confident wrong offset.
+    """
+    if not form:
+        return {}
+    return VOCABULARIES.get(str(form).strip().upper(), {})
+
+
 #: What follows an Item number when it is being referred to rather than opened.
 _REFERENCE = re.compile(
     r"\s*(?:of\s+th|in\s+th|to\s+th|under|above|below|hereof|herein|and\s+Item|through\s+Item"
@@ -89,8 +182,12 @@ _REFERENCE = re.compile(
 #: Part III heading extracts as `PART IIIItem10.Directors, Executive Officers`,
 #: and the `.` is what tells that from the many places a bare `Item` happens to
 #: sit in front of a digit.
+#: **And a decimal number is declined outright.** `Item 7.01` is the 8-K's
+#: scheme, not Item 7 of anything here, and leaving it to the title test to
+#: reject was how an 8-K came back holding Item 1, Item 7 and Item 8.
 _ITEM = re.compile(
-    r"Item(?:\s+|(?=\d{1,2}[A-C]?\s*[.:—–-]))\s*(\d{1,2})([A-C]?)(?![0-9])\s*[.:—–-]?\s*",
+    r"Item(?:\s+|(?=\d{1,2}[A-C]?\s*[.:—–-]))\s*(\d{1,2})([A-C]?)(?![0-9])"
+    r"(?!\s*\.\s*\d)\s*[.:—–-]?\s*",
     re.IGNORECASE,
 )
 
@@ -161,14 +258,19 @@ def normalise(text: str) -> str:
 
 
 class _Hit(NamedTuple):
-    """One `Item N` whose number the title has already confirmed."""
+    """One `Item N` whose number the title has already confirmed.
 
-    num: str
+    `section` is the full name, which carries the Part for a form that numbers
+    inside Parts -- the title is what decided which Part, so this is where that
+    decision is recorded.
+    """
+
+    section: str
     start: int
     end: int
 
 
-def _hits(text: str, titles: dict[str, str]) -> list[_Hit]:
+def _hits(text: str, titles: Vocabulary) -> list[_Hit]:
     """Every Item reference whose own title follows it.
 
     `Item 1Business` and `Item 1BUnresolved Staff Comments` are the same shape,
@@ -176,20 +278,29 @@ def _hits(text: str, titles: dict[str, str]) -> list[_Hit]:
     neither reading has its title after it, the match is not a heading and is
     not returned at all -- that is what removes the thousands of running page
     headers Microsoft puts on every page.
+
+    **The title also settles the Part**, where there is one. A 10-Q's Item 1 is
+    the financial statements in Part I and legal proceedings in Part II, and
+    those two patterns do not both match the same text.
     """
     out: list[_Hit] = []
     for m in _ITEM.finditer(text):
         digits, letter = m.group(1), (m.group(2) or "").upper()
+        hit = None
         # Longest reading first: `1C` before `1`.
         for num, end in ((digits + letter, m.end()), (digits, m.end() - len(letter))):
             if letter and num == digits:
                 # Re-read the separator that the letter had swallowed.
                 tail = re.match(r"\s*[.:—–-]?\s*", text[end:])
                 end = end + tail.end() if tail else end
-            pattern = titles.get(num)
-            if pattern and re.match(pattern, text[end:end + 90], re.IGNORECASE):
-                out.append(_Hit(num, m.start(), end))
+            for name, pattern in titles.get(num, ()):
+                if re.match(pattern, text[end:end + 90], re.IGNORECASE):
+                    hit = _Hit(name, m.start(), end)
+                    break
+            if hit is not None:
                 break
+        if hit is not None:
+            out.append(hit)
     return out
 
 
@@ -224,7 +335,7 @@ def _toc_ranges(hits: list[_Hit]) -> list[tuple[int, int]]:
     current: list[_Hit] = []
     for h in hits:
         if current and h.start - current[-1].end <= _TOC_GAP \
-                and _rank(h.num) > _rank(current[-1].num):
+                and _rank(h.section) > _rank(current[-1].section):
             current.append(h)
         else:
             runs.append(current)
@@ -233,7 +344,8 @@ def _toc_ranges(hits: list[_Hit]) -> list[tuple[int, int]]:
     return [(r[0].start, r[-1].end) for r in runs if len(r) >= _TOC_RUN]
 
 
-def find_boundaries(text: str, titles: dict[str, str] | None = None) -> list[Boundary]:
+def find_boundaries(text: str, form: str | None,
+                    *, titles: Vocabulary | None = None) -> list[Boundary]:
     """Where each section starts, and which rule decided it.
 
     `rule` is one of:
@@ -245,8 +357,15 @@ def find_boundaries(text: str, titles: dict[str, str] | None = None) -> list[Bou
     rather than returned, because a span with no body is not a span. What a
     caller can tell from the result is which sections were found at all, and
     `list_sections` reports the misses.
+
+    **`form` has no default.** It used to fall through to the 10-K's vocabulary,
+    which is how an 8-K came back with three sections it does not have. A form
+    with no vocabulary returns an empty list; pass `titles` to supply one
+    directly.
     """
-    titles = titles or FORM_10K
+    titles = vocabulary(form) if titles is None else titles
+    if not titles:
+        return []
     hits = _hits(text, titles)
     toc = _toc_ranges(hits)
 
@@ -258,7 +377,7 @@ def find_boundaries(text: str, titles: dict[str, str] | None = None) -> list[Bou
             continue
         if _is_quoted(text, h):
             continue
-        found.append(Boundary(section=f"Item {h.num}", start=h.start, rule="title"))
+        found.append(Boundary(section=h.section, start=h.start, rule="title"))
 
     # Keep one boundary per section -- the first body occurrence -- then take the
     # longest run that goes forwards through the document.
@@ -294,16 +413,36 @@ def _longest_ordered(bounds: list[Boundary]) -> list[Boundary]:
     return out[::-1]
 
 
-def _rank(section: str) -> tuple[int, str]:
-    num = section.split()[-1]
-    digits = re.match(r"(\d+)([A-C]?)", num)
-    return (int(digits.group(1)), digits.group(2)) if digits else (99, "")
+#: Part numbers, so `Part II Item 1` sorts after every Part I Item. A form
+#: without Parts sorts as though every Item were in part 0.
+_PART = {"I": 1, "II": 2, "III": 3, "IV": 4}
 
 
-def split(text: str, titles: dict[str, str] | None = None) -> list[Span]:
-    """Every section found, each running to the start of the next."""
+def _rank(section: str) -> tuple[int, int, str]:
+    """Where this section sits in the form's order.
+
+    Three places, because a 10-Q runs Part I Items 1 to 4 and then starts again
+    at Part II Item 1. Ranking on the number alone would read that restart as
+    the document going backwards, and `_longest_ordered` would drop half of it.
+    """
+    part = re.match(r"Part\s+([IVX]+)\s+Item", section, re.IGNORECASE)
+    where = _PART.get(part.group(1).upper(), 9) if part else 0
+    digits = re.search(r"Item\s+(\d+)([A-C]?)", section, re.IGNORECASE)
+    if not digits:
+        return (where, 99, "")
+    return (where, int(digits.group(1)), (digits.group(2) or "").upper())
+
+
+def split(text: str, form: str | None, *, titles: Vocabulary | None = None) -> list[Span]:
+    """Every section found, each running to the start of the next.
+
+    **`form` is required and may be None.** Passing it explicitly is the whole
+    fix: the old signature defaulted to the 10-K's vocabulary, so handing it any
+    other form produced that form's text cut at a 10-K's headings. None means
+    no vocabulary and therefore no spans.
+    """
     text = normalise(text)
-    bounds = find_boundaries(text, titles)
+    bounds = find_boundaries(text, form, titles=titles)
     spans: list[Span] = []
     for i, b in enumerate(bounds):
         end = bounds[i + 1].start if i + 1 < len(bounds) else len(text)
@@ -311,4 +450,5 @@ def split(text: str, titles: dict[str, str] | None = None) -> list[Span]:
     return spans
 
 
-__all__ = ["FORM_10K", "Boundary", "Span", "find_boundaries", "normalise", "split"]
+__all__ = ["FORM_10K", "FORM_10Q_PARTS", "VOCABULARIES", "Boundary", "Span",
+           "Vocabulary", "find_boundaries", "normalise", "split", "vocabulary"]

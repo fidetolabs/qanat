@@ -19,8 +19,12 @@ which group it is asking about.
 pip install 'qanat-fdtl[prices]'                    # the prices extra brings yfinance
 export SEC_USER_AGENT="your name you@example.com"   # the SEC refuses anonymous requests
 qanat check
-qanat run            # about ten minutes the first time, seconds after that
+qanat schedule --run-now   # about ten minutes the first time, seconds after that
 ```
+
+`--run-now` fires every job once at startup, in dependency order, and then the
+clock takes over. Ctrl-C when the first pass is done if a clock is not what you
+wanted — or call the `run` tool from an agent instead, which is the same pass.
 
 The documents are cached under `data/documents` as gzip. A filing never changes
 once it is accepted -- an amendment gets a new accession number -- so the cache
@@ -44,10 +48,15 @@ qanat mcp --scope research
 
 ## Screening it
 
-```bash
-qanat screen --filter '[{"metric":"pe","op":"<","value":30},
-                        {"metric":"net_margin","op":">","value":0.15}]' \
-             --from 2023-12-31 --to 2025-12-31
+A screen is a tool call. Ask `coverage` first and the window will be one this
+corpus can answer for.
+
+```json
+{"name": "screen", "arguments": {
+  "filters": [{"filter": "cheap_and_profitable", "clauses": [
+    {"metric": "pe", "metric_version": 3, "op": "lt", "value": 30},
+    {"metric": "net_margin", "metric_version": 2, "op": "gt", "value": 0.15}]}],
+  "from": "2023-12-31", "to": "2025-12-31", "every": "1y"}}
 ```
 
 ```
@@ -64,9 +73,11 @@ much of each to hold, and that decision is yours.
 
 ## Two metrics, and why they are a warning
 
-`pe` and `net_margin` are defined in `qanat.yaml`. Both got two things wrong
-first time, and both failures are the reason the metric map is the large piece
-of work left:
+`pe` and `net_margin` are defined in `qanat.yaml`, marked `origin: shipped` —
+they are the **starter set**, enough to screen with on the day you install and
+deliberately not a metric library. `define_metric` writes your own beside them,
+labelled `defined`. Both of these got two things wrong first time, and both
+failures are the reason the metric map is the large piece of work left:
 
 **A 10-K reports three years, all stamped with the same filing date.** Ordering
 by `as_of` alone picks an arbitrary one of the three. Meta's PE came out at 80
@@ -100,10 +111,15 @@ June, August, September, December -- because a pipeline that only ever sees
 
 ## Two things worth knowing
 
-**Nothing reads `facts` or `spans`, and `qanat check` says so.** That warning is
-correct. There is no metrics layer and no results layer here: a metric is a
-query over the facts and a screen is a call that returns a list. The pipeline's
-job ends when the facts are clean and dated.
+**Nothing *computes* anything from `facts` or `spans`, and that is the shape.**
+There is no metrics layer and no results layer here: a metric is a query over
+the facts and a screen is a call that returns a list. The pipeline's job ends
+when the facts are clean and dated.
+
+`qanat check` used to warn that those tables were read by nothing, which was
+false in a way worth fixing rather than explaining: a metric's formula reads
+`normalized__facts`, and the reading tools read all three. Both now count as
+readers, so this project checks clean and a warning here means something.
 
 **Three prices, and the one you want depends on the question.**
 `normalized.filing_prices` carries `close_as_printed`, `close` and

@@ -54,8 +54,8 @@ became public. Ask about a past date and you get what was public by then.
 ## How it is put together
 
 **One store.** Parquet files read by DuckDB. Point `store:` at a directory and
-the tables are files in it; point it at a `.duckdb` path for a single file, or a
-`postgresql://` DSN for a server.
+the tables are files in it. A `.duckdb` path also opens, as a single file, and
+the paragraph below is why you should not want one.
 
 **A directory is the default, and the reason is the second person.** A DuckDB
 file takes an exclusive lock, so while one person is ingesting, a teammate
@@ -121,13 +121,42 @@ Now you can ask for things:
 
 | | Tools | What it can do |
 | --- | --- | --- |
-| `--scope data` | 12 | read the tables as they stood on a past date, and read the filings |
-| `--scope research` | 15 | and read a step, and screen |
-| *(default)* | 23 | and write steps, sources and universes |
+| `--scope data` | 14 | read the tables as they stood on a past date, list the companies it holds and read one, read the filings themselves |
+| `--scope research` | 20 | and find filings on EDGAR, screen, and ask what window a screen can answer for |
+| *(default)* | 28 | and ingest filings, subscribe to the ones that have not happened yet, run the graph |
+| `--scope authoring` | 33 | and define metrics, and rewire the pipeline |
 
 Every tool description is sent to the model on every request. A smaller scope
 costs fewer tokens and gives the agent a shorter list to choose from, so pick
 the smallest one that does your job.
+
+**The default is not the widest one, on purpose.** The pipeline that turns a
+filing into a metric is the same in every project, so an agent screening filings
+has no use for the tools that rewire it — and carrying them means it can rewire
+them by accident. `authoring` is for whoever runs the deployment: defining a
+metric is their call, because a formula is the same number for every reader of
+that Qanat and there is no such thing as a private one.
+
+### The two things you actually do
+
+Everything else is in service of these.
+
+**Choose the filings.** `find_filings` asks EDGAR what exists — any of the 106
+forms, no fetch, nothing stored — and labels each one with whether facts can be
+derived from it. `ingest_filings` spends the fetch on the ones you pick.
+`subscribe_filings` points the same selection forwards, and
+`list_subscriptions` tells you whether anything is actually running it.
+
+**Define what to measure.** `define_metric` writes a formula with a name and a
+version, after running it against your project so a broken one comes back as the
+database's own message rather than as a screen that fails later. Bumping the
+version is yours to decide: version N+1 is written beside N and an answer
+pointing at N still resolves.
+
+Only the 10-K and the 10-Q are parsed into the corpus today. Every other form is
+found and labelled, never parsed, and `ingest_filings` says which pile a refused
+form is in rather than failing quietly — because a product that ingests two forms
+and crashes on the rest is not scoped, it is broken.
 
 ### The project file
 
@@ -197,10 +226,60 @@ One verb, one date or a window. A window of one is a single date, so the rows
 come back the same shape either way and you never branch on which you asked
 for.
 
-```bash
-qanat screen --filter '[{"metric":"pe","op":"<","value":30}]' --as-of 2025-12-31
-qanat screen --filter '[{"metric":"pe","op":"<","value":30}]' --from 2021-12-31 --to 2025-12-31
+Screening is a tool call, not a command: this is reached by an agent, and a
+second door onto the same question is a second place the behaviour can differ.
+
+```json
+{"name": "screen", "arguments": {
+  "filters": [{"metric": "pe", "op": "lt", "value": 30}],
+  "universe": ["AAPL", "MSFT", "NVDA"],
+  "as_of": "2025-12-31"}}
+
+{"name": "screen", "arguments": {
+  "filters": [{"filter": "deep_value", "version": 2, "clauses": [
+    {"metric": "pe", "metric_version": 3, "op": "lt", "value": 30}]}],
+  "from": "2021-12-31", "to": "2025-12-31", "every": "1y"}}
 ```
+
+**A filter is a named object and the name is yours.** Pass it and it comes back
+in `applied`, so whatever is keeping your filters can record which rule produced
+which list. It is not stored here: a filter is your research criteria rather
+than a financial dataset, and a server with no identity has nowhere to keep one
+person's preference. A clause may pin `metric_version`, and then somebody
+bumping a formula cannot change what your rule computes.
+
+**Because you keep the record, a screen hands you enough to keep one.** Each row
+carries `values` — the numbers the verdict was reached on, for the companies that
+failed as well as the ones that passed — and an `execution` block names the
+definition versions it actually read and the corpus range it ran over.
+`execution.id` is a digest of those inputs, so the same inputs give the same id
+and a changed id means something underneath moved. An as-of date protects a
+replay from a filer restating their numbers; it does not protect it from a parser
+being fixed and the corpus reloaded, and that id is how you see the difference.
+
+**`universe` bounds who is considered, and widens the answer as well as
+narrowing it.** Pass a list of tickers or CIKs — a list, not the name of a
+stored one, because which companies you care about is yours to keep. **Build it
+from `list_companies`**, which is the index of every company this project holds
+filings for.
+
+A name you asked about that has no value for one of your metrics comes back as a
+row that could not be evaluated, rather than being quietly absent — because
+without a universe the subjects are whoever the metrics returned, and *"nobody
+else qualified"* is not the same answer as *"I could not judge nine of them."*
+A name this project does not hold **at all** is reported rather than dropped: a
+list of fifty where ten are not held is a screen that quietly answered for
+forty.
+
+Entries may carry `from` and `to`, and then membership is point-in-time. A list
+without them says so, because then it is today's membership applied to the past
+and every number built on it is flattered by the names that survived.
+
+**Ask `coverage` before asking for a window.** A read as of a date sees the rows
+published on or before it, so before the oldest row there is nothing to read —
+and a screen there returns a list of nobody, which is not the same answer as
+nobody passing. A window that starts before the corpus is refused, with the
+range it does hold.
 
 Three things come back, and nothing else:
 
@@ -230,9 +309,10 @@ Alphabet, Meta, NVIDIA, Walmart, Target and Costco. 43,104 tagged numbers and
 August, September and December, so the two-date clock gets a real test rather
 than a convenient one.
 
-More in [docs/contract.md](https://github.com/fidetolabs/qanat/blob/main/docs/contract.md),
-[docs/words.md](https://github.com/fidetolabs/qanat/blob/main/docs/words.md)
-and [docs/agents.md](https://github.com/fidetolabs/qanat/blob/main/docs/agents.md).
+More in [docs/dataflow.md](https://github.com/fidetolabs/qanat/blob/main/docs/dataflow.md) for the whole pipeline end to
+end, [docs/contract.md](https://github.com/fidetolabs/qanat/blob/main/docs/contract.md) for what `check` enforces,
+[docs/words.md](https://github.com/fidetolabs/qanat/blob/main/docs/words.md) for what each word means, and
+[docs/agents.md](https://github.com/fidetolabs/qanat/blob/main/docs/agents.md) for the surface once you are using it.
 
 ## Cautions
 
@@ -240,13 +320,10 @@ and [docs/agents.md](https://github.com/fidetolabs/qanat/blob/main/docs/agents.m
 something breaks, open an [issue](https://github.com/fidetolabs/qanat/issues) or
 say so on [Discord](https://discord.gg/JUmwATScS8).
 
-**One connector so far.** SEC EDGAR, and it reads 10-K filings. Anything else
-you bring yourself through the HTTP, SQL or CSV connectors. More will be added
-one at a time, each finished before the next is started.
-
-**No prices.** A filing does not contain one, and nothing in here fetches one
-yet. So you can screen on what a company reported and you cannot yet ask what
-the list did next.
+**Two data connectors so far.** SEC EDGAR, which reads 10-K filings, and Yahoo
+Finance, which reads prices. Anything else you bring yourself through the HTTP,
+SQL or CSV connectors. More will be added one at a time, each finished before
+the next is started.
 
 **You write the formulas and pick the numbers.** Qanat works out what you asked
 for and reports what came out. Choosing a threshold is your job.
@@ -269,7 +346,9 @@ documents it has not seen. Every span carries the rule that found it, so you
 can tell how much to trust one.
 
 **Still missing:** industry grouping, so a ranking is against whatever list of
-companies you hand it. Also backfills and incremental updates.
+companies you hand it. Also backfills: `options.from` is where a cold table
+starts, and there is no verb for filling in history behind what you already
+have.
 
 **For general pipelines, use something else.** Airflow, Dagster and Prefect run
 any DAG and run it across many machines. Qanat runs one shape.

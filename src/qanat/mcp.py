@@ -16,13 +16,22 @@ Six things this tries to be, because an agent needs them and a person does not:
   * **honest in failure** -- an error says what to do next, not only what broke
   * **scoped to the caller** -- `--scope` decides which tools are offered at all
 
-Three scopes, nested: `data` reads tables, `research` adds screens and their
-results, `full` adds authoring, ingest and scheduling. One server and one service
-layer; the scope only picks which tools are listed. Two reasons, and the second is
-the larger one. A server that reads and a server that runs jobs on request are
-different things to defend, which starts to matter the day this is hosted. And
-every tool definition is sent on every request, so an agent that wants filing rows
-should not carry thirty-three definitions to use four.
+Four scopes, nested: `data` reads tables, `research` adds screens and the
+coverage behind them, `full` adds ingest, subscriptions and metric definitions,
+`authoring` adds the pipeline itself. One server and one service layer; the scope
+only picks which tools are listed. Two reasons, and the second is the larger one.
+A server that reads and a server that runs jobs on request are different things to
+defend, which starts to matter the day this is hosted. And every tool definition
+is sent on every request, so an agent that wants filing rows should not carry
+thirty-odd definitions to use four.
+
+**`authoring` is the top rung and the default stops below it.** `save_step`,
+`remove_step` and `save_source` keep working, and the caller they serve is the
+professional bringing a feed in through the HTTP, SQL or CSV connector. But the
+pipeline from a filing to a metric is the same in every project, so somebody
+screening filings has no use for the tools that rewire it -- and carrying them
+means an agent can rewire it by accident. The rung is the whole of the fix: a
+caller who asks for the authoring scope gets all three.
 
 Each scope is a **published contract**. Adding a tool to `data` later changes what
 somebody has already built against, so the line moves deliberately or not at all.
@@ -58,6 +67,19 @@ class Session:
         self.path = project_path
         self.project, self.root = load(project_path)
         self._store = None
+        #: The running process's state, when there is one. A served process hands it
+        #: over; on stdio there is none, and that is the honest answer to "is
+        #: anything running the schedules" rather than something to paper over.
+        self.state = None
+
+    @property
+    def sched(self):
+        """The scheduler reading this project's cron lines, or None.
+
+        None is a fact about process lifetime. Over stdio this server is the
+        client's child, so a thread it started would die with the conversation.
+        """
+        return getattr(self.state, "sched", None)
 
     @property
     def store(self):
@@ -81,10 +103,18 @@ class Session:
 # ----------------------------------------------------------------------- tools
 TOOLS: list[dict[str, Any]] = []
 
-#: The three scopes, narrowest first. Each one contains the one before it, so a
-#: server started at `research` offers the `data` tools too. The order in this
-#: tuple *is* the nesting; nothing else encodes it.
-SCOPES: tuple[str, ...] = ("data", "research", "full")
+#: The scopes, narrowest first. Each one contains the one before it, so a server
+#: started at `research` offers the `data` tools too. The order in this tuple *is*
+#: the nesting; nothing else encodes it.
+#:
+#: `authoring` sits above the default on purpose. It is reached by asking for it.
+SCOPES: tuple[str, ...] = ("data", "research", "full", "authoring")
+
+#: What `qanat mcp` offers when nothing says otherwise. Not the widest scope:
+#: the tools that rewire the pipeline are a rung above, because the pipeline from
+#: a filing to a metric is the same in every project and nobody screening filings
+#: needs to change it.
+DEFAULT_SCOPE = "full"
 
 _RANK = {name: i for i, name in enumerate(SCOPES)}
 
@@ -99,7 +129,7 @@ def rank(scope: str) -> int:
         return _RANK[scope]
     except KeyError:
         raise ScopeError(
-            f"no scope called '{scope}'. The three are: {', '.join(SCOPES)}") from None
+            f"no scope called '{scope}'. They are: {', '.join(SCOPES)}") from None
 
 
 def tools_for(scope: str) -> list[dict[str, Any]]:
@@ -217,7 +247,8 @@ def _profile_table(s: Session, args: dict) -> Any:
     return prof
 
 
-@tool("lineage", "What feeds a table, and which weights tables break if it breaks.",
+@tool("lineage", "What feeds a table, what it feeds, and everything downstream that "
+      "breaks if it breaks.",
       {"properties": {"ref": {"type": "string"}}, "required": ["ref"]},
       scope="data")
 def _lineage(s: Session, args: dict) -> Any:
@@ -294,18 +325,47 @@ def _check(s: Session, args: dict) -> Any:
     return {"ok": rep.ok, "errors": rep.errors, "warnings": rep.warnings}
 
 
-@tool("plan", "What would change if the file were applied: adds, drift, orphans.",
-      {"properties": {}},
+@tool("plan",
+      "What would change if the file were applied: adds, drift, orphans. With "
+      "`prune: true` it also drops the orphans -- the tables nothing in the file "
+      "produces any more. That is the one irreversible thing on this surface, so it "
+      "is a flag on the tool that already finds them rather than a verb of its own: "
+      "you see the list from the same call that would act on it.",
+      {"properties": {
+          "prune": {"type": "boolean", "default": False,
+                    "description": "drop the orphan tables. Cannot be undone"},
+      }, "required": []},
+      writes=True,
       scope="full")
 def _plan(s: Session, args: dict) -> Any:
     from qanat.plan import plan as plan_project
 
     pl = plan_project(s.project, s.root, s.store)
-    return {
+    out: dict[str, Any] = {
         "first_run": pl.first_run, "unchanged": pl.unchanged,
         "changes": [{"action": c.action, "target": c.target, "note": c.note,
                      "details": c.details} for c in pl.changes],
     }
+    if not args.get("prune"):
+        if pl.orphans:
+            out["prune_would_drop"] = [c.target for c in pl.orphans]
+            out["note"] = (
+                f"{len(pl.orphans)} orphan table(s) nothing produces any more. Call "
+                f"again with prune: true to drop them, which cannot be undone"
+            )
+        return out
+
+    dropped = []
+    for change in pl.orphans:
+        rows = s.store.drop(change.target)
+        s.store.event("warn", "plan", f"dropped {change.target} ({rows:,} rows)")
+        dropped.append({"table": change.target, "rows": rows})
+    forgotten = [c.target for c in pl.removes]
+    if forgotten:
+        s.store.forget_state(forgotten)
+    out["pruned"] = dropped
+    out["forgotten"] = forgotten
+    return out
 
 
 # ---- run ---------------------------------------------------------------------
@@ -338,43 +398,174 @@ def _run(s: Session, args: dict) -> Any:
 
 @tool("screen",
       "Which companies passed a filter, on one date or on every date in a window. "
-      "Returns the list, each company's own forward return, and how many could be "
-      "evaluated at all. Writes nothing.",
+      "Returns the list, **the metric values the verdict was reached on**, each company's "
+      "own forward return, how many could be evaluated at all, and an `execution` block "
+      "naming the definition versions it actually read and the corpus range it ran over. "
+      "Writes nothing: store that block beside whatever you keep, because nothing here "
+      "keeps it for you. `execution.id` is a digest of those inputs, so the same inputs "
+      "give the same id and a changed id means something underneath moved. "
+      "`universe` bounds who is considered: a list of tickers or CIKs you pass with the "
+      "call, built from list_companies. It is a list and not a stored name because which "
+      "companies you care about is yours to keep. It widens the answer as well as "
+      "narrowing it: a name you asked about that has no value for one of your metrics "
+      "comes back as a row that could not be evaluated, instead of being quietly absent, "
+      "and a name this project does not hold at all is reported rather than dropped. "
+      "`filters` is either a bare list of clauses -- `[{metric, op, value}]`, which is "
+      "the normal way to try a threshold -- or a list of named filters, "
+      "`[{filter, version, clauses}]`. Pass the name and it comes back in `applied`, so "
+      "whoever keeps the filter can record which rule produced which list. Filters are "
+      "not stored here: a filter is your research criteria, and this server cannot tell "
+      "two callers apart. A clause may also pin `metric_version`, and then bumping a "
+      "metric cannot change what your rule computes.",
       {"type": "object",
        "properties": {
            "filters": {"type": "array",
-                       "description": "clauses, each {metric, op, value}; or a list of "
-                                      "named filters each holding clauses",
+                       "description": "clauses, each {metric, op, value, metric_version?}; "
+                                      "or a list of named filters, each "
+                                      "{filter, version, clauses}",
                        "items": {"type": "object"}},
            "as_of": {"type": "string", "description": "one date, YYYY-MM-DD"},
            "from": {"type": "string", "description": "start of a window"},
            "to": {"type": "string", "description": "end of a window"},
            "every": {"type": "string", "default": "1y",
                      "description": "gap between dates in a window"},
+           "universe": {"type": "array",
+                        "description": "tickers or CIKs. Each entry may also be "
+                                       "{symbol, from, to}, and then membership is "
+                                       "point-in-time -- which is what stops a list of "
+                                       "today's winners being applied to the past",
+                        "items": {}},
        },
        "required": ["filters"]},
       "research")
 def _screen(s: Session, args: dict) -> Any:
     from qanat.screen import ScreenError, parse_filters, screen
 
+    # The schema said `required` and the handler did not check, so a call with
+    # the argument missing came back `subjects: 0, passed: 0, applied: []` --
+    # which reads as "nobody passed" rather than "you called it wrong". Those
+    # are not the same answer and the second one is actionable.
+    _need(args, "filters")
     try:
         return screen(
             s.store, s.project, parse_filters(args.get("filters")),
             as_of=args.get("as_of"), frm=args.get("from"), to=args.get("to"),
             every=args.get("every") or "1y",
+            universe=args.get("universe"),
         )
     except ScreenError as exc:
         raise ToolError(str(exc)) from exc
 
 
+@tool("coverage",
+      "The dates a screen can be answered for, and what sets the bound. Call this before "
+      "asking for a window: a read as of a date sees the rows published on or before it, "
+      "so before the oldest row there is nothing to read and a screen there returns a list "
+      "of nobody -- which is not the same answer as nobody passing. Reports the range per "
+      "table as well as overall, so a metric that reads two tables shows which one is the "
+      "short side. Writes nothing.",
+      {"type": "object",
+       "properties": {
+           "metrics": {"type": "array", "items": {"type": "string"},
+                       "description": "only these metrics. Omit for every one defined"},
+       },
+       "required": []},
+      scope="research")
+def _coverage(s: Session, args: dict) -> Any:
+    from qanat.screen import ScreenError, coverage
+
+    try:
+        return coverage(s.store, s.project, args.get("metrics") or None)
+    except ScreenError as exc:
+        raise ToolError(str(exc)) from exc
+
+
 @tool("list_metrics",
-      "Every metric this project defines: its name, version, unit and formula. "
-      "A metric is shared arithmetic; the threshold you compare it against is yours.",
+      "Every metric this project defines: its name, every version of it, unit, formula, and "
+      "whether it was shipped with the product or written here. A metric is shared "
+      "arithmetic -- the same number for every caller -- and the threshold you compare it "
+      "against is yours and stays with you. `current` marks the newest version of each; the "
+      "older ones are listed because an answer you kept points at one.",
       {"type": "object", "properties": {}}, "data")
 def _list_metrics(s: Session, args: dict) -> Any:
-    return [{"id": m.id, "version": m.version, "unit": m.unit,
-             "description": m.description, "sql": m.sql}
-            for m in s.project.metrics]
+    from qanat.metrics import listing
+
+    return listing(s.project)
+
+
+# ---- metrics -----------------------------------------------------------------
+@tool("define_metric",
+      "Define a metric, or replace one at the same version. `sql` selects `subject` and "
+      "`value`, one row per subject, and `:as_of` in it is replaced with the date being "
+      "screened so a formula can filter its own history. The formula is run before it is "
+      "stored, so a syntax error or an unknown column comes back as the database's own "
+      "message rather than as a definition that fails on somebody else's screen. "
+      "**Bumping the version is yours to decide**: an answer somebody kept points at a "
+      "version, so version N+1 is written beside N and both still resolve. The threshold "
+      "you compare a metric against is not part of a definition -- it is yours, and it "
+      "travels with the screen call.",
+      {"type": "object",
+       "properties": {
+           "id": {"type": "string", "description": "lower case, e.g. pe"},
+           "sql": {"type": "string",
+                   "description": "the formula, selecting subject and value"},
+           "version": {"type": "integer",
+                       "description": "required once the id exists: the same version to "
+                                      "replace that formula, or one higher to write a new "
+                                      "one beside it"},
+           "unit": {"type": "string", "description": "e.g. ratio, USD, percent"},
+           "description": {"type": "string",
+                           "description": "what the number means. This is the part a "
+                                          "reader cannot recover from the SQL"},
+       },
+       "required": ["id", "sql"]},
+      writes=True,
+      scope="authoring")
+def _define_metric(s: Session, args: dict) -> Any:
+    from qanat.metrics import MetricError, define
+
+    try:
+        out = define(
+            s.store, s.project, s.root,
+            mid=str(_need(args, "id")), sql=str(_need(args, "sql")),
+            version=None if args.get("version") is None else int(args["version"]),
+            unit=str(args.get("unit") or ""),
+            description=str(args.get("description") or ""),
+        )
+    except MetricError as exc:
+        raise ToolError(str(exc)) from exc
+    s.reload()
+    return out
+
+
+@tool("remove_metric",
+      "Drop a metric, or one version of it. Removing the last version of an id is refused "
+      "unless you pass force: a filter naming this metric is one caller's own criteria and "
+      "is held by that caller, not here, so this server cannot check whether anything "
+      "still points at it -- and whoever holds the filter is the only one who can.",
+      {"type": "object",
+       "properties": {
+           "id": {"type": "string"},
+           "version": {"type": "integer",
+                       "description": "one version. Omit for every version of the id"},
+           "force": {"type": "boolean", "default": False},
+       },
+       "required": ["id"]},
+      writes=True,
+      scope="authoring")
+def _remove_metric(s: Session, args: dict) -> Any:
+    from qanat.metrics import MetricError, remove
+
+    try:
+        out = remove(
+            s.project, s.root, mid=str(_need(args, "id")),
+            version=None if args.get("version") is None else int(args["version"]),
+            force=bool(args.get("force")),
+        )
+    except MetricError as exc:
+        raise ToolError(str(exc)) from exc
+    s.reload()
+    return out
 
 
 # ----------------------------------------------------------- the reading surface
@@ -384,6 +575,55 @@ def _reading(fn, s, args, **kw):
         return fn(s.store, s.project, **kw)
     except ReadingError as exc:
         raise ToolError(str(exc)) from exc
+
+
+@tool("list_companies",
+      "Which companies this project holds filings for: filer, ticker, name, how many "
+      "filings, which forms, and the dates they span. **This is what you build a screen's "
+      "`universe` from** -- a name this project does not hold is a company quietly missing "
+      "from an answer, and nothing else on this surface lists them. `query` matches a "
+      "ticker or a company name.",
+      {"type": "object",
+       "properties": {
+           "query": {"type": "string", "description": "match a ticker or a company name"},
+           "limit": {"type": "integer", "default": 100,
+                     "description": "most companies, the ones with most filings first"},
+       },
+       "required": []}, "data")
+def _list_companies(s: Session, args: dict) -> Any:
+    from qanat.reading import list_companies
+    return _reading(list_companies, s, args, query=args.get("query"),
+                    limit=int(args.get("limit") or 100))
+
+
+@tool("read_company",
+      "One filer's way in: which filings this project holds for it, each one's sections "
+      "with their lengths and the rule that found each boundary, and which concepts are "
+      "tagged in it. Takes a ticker or a CIK -- a screen returns CIKs, so its output can "
+      "be handed straight back in. **Returns a map and no bodies**: read_section pages the "
+      "text and read_facts returns the numbers. Start here when you have a company and a "
+      "question; every other reading tool starts from a document.",
+      {"type": "object",
+       "properties": {
+           "filer": {"type": "string", "description": "a ticker, or a CIK"},
+           "form": {"type": "string", "description": "only this form, e.g. 10-K"},
+           "from": {"type": "string", "description": "earliest period, YYYY-MM-DD"},
+           "to": {"type": "string", "description": "latest period, YYYY-MM-DD"},
+           "limit": {"type": "integer", "default": 20,
+                     "description": "most filings, newest filed first"},
+           "concept": {"type": "string",
+                       "description": "keep only concepts whose name contains this"},
+           "concepts": {"type": "integer", "default": 50,
+                        "description": "most concept names per filing, most-tagged first"},
+       },
+       "required": ["filer"]}, "data")
+def _read_company(s: Session, args: dict) -> Any:
+    from qanat.reading import read_company
+    return _reading(read_company, s, args, filer=_need(args, "filer"),
+                    frm=args.get("from"), to=args.get("to"), form=args.get("form"),
+                    limit=int(args.get("limit") or 20),
+                    concept=args.get("concept"),
+                    concepts=int(args.get("concepts") or 50))
 
 
 @tool("list_sections",
@@ -474,6 +714,157 @@ def _stale_tables(s: Session, args: dict) -> Any:
     } if stale else {"stale": [], "fix": "nothing to do: every table matches the file"}
 
 
+# ---- filings -----------------------------------------------------------------
+@tool("find_filings",
+      "What EDGAR holds for these companies, and whether facts can be derived from each "
+      "one. Company, form and period in; accession, form, both dates, whether this project "
+      "already holds it and an `ingestable` label out. Writes nothing and fetches no "
+      "document, so this is the cheap call to open with. `form` is optional and "
+      "unrestricted -- the submissions index is uniform across every form a filer uses. "
+      "An empty list means that company filed none of those in that period, which is an "
+      "answer and not an error.",
+      {"type": "object",
+       "properties": {
+           "companies": {"type": "array", "items": {"type": "string"},
+                         "description": "tickers or CIKs. A CIK is the stable one"},
+           "form": {"type": "string",
+                    "description": "one form, e.g. 10-K, 10-Q, 8-K, 20-F. Omit for every form"},
+           "from": {"type": "string", "description": "earliest period, YYYY-MM-DD"},
+           "to": {"type": "string", "description": "latest period, YYYY-MM-DD"},
+           "limit": {"type": "integer", "default": 50,
+                     "description": "most rows per company, newest filed first"},
+       },
+       "required": ["companies"]},
+      scope="research")
+def _find_filings(s: Session, args: dict) -> Any:
+    from qanat.filings import FilingsError, find
+
+    companies = args.get("companies")
+    if not companies:
+        raise ToolError(
+            "'companies' is required: a list of tickers or CIKs. "
+            "Call tools/list to see this tool's arguments.")
+    try:
+        return find(
+            s.store, s.project, [str(c) for c in companies],
+            form=args.get("form"), frm=args.get("from"), to=args.get("to"),
+            limit=int(args.get("limit") or 50),
+        )
+    except (FilingsError, ValueError) as exc:
+        raise ToolError(str(exc)) from exc
+
+
+@tool("ingest_filings",
+      "Fetch the chosen filings and land the ones in scope. Each entry is {company, "
+      "accession}, straight from find_filings. Only the 10-K and the 10-Q are parsed into "
+      "the corpus today; every other form is fetched, reported with the taxonomy it "
+      "actually holds, and refused with its pile named. A form with nothing to parse lands "
+      "zero rows and says why rather than raising.",
+      {"type": "object",
+       "properties": {
+           "filings": {"type": "array", "items": {"type": "object"},
+                       "description": "each {company, accession}, as find_filings returns"},
+           "cache": {"type": "string",
+                     "description": "where the gzipped bodies land, relative to the project"},
+       },
+       "required": ["filings"]},
+      writes=True,
+      scope="full")
+def _ingest_filings(s: Session, args: dict) -> Any:
+    from qanat.filings import FilingsError, ingest
+
+    chosen = args.get("filings")
+    if not chosen:
+        raise ToolError(
+            "'filings' is required: a list of {company, accession}. Call find_filings "
+            "first and pass the rows it returns.")
+    try:
+        return ingest(s.store, s.project, s.root,
+                      [dict(c) for c in chosen], cache=args.get("cache"))
+    except (FilingsError, ValueError) as exc:
+        raise ToolError(str(exc)) from exc
+
+
+@tool("subscribe_filings",
+      "The same selection as find_filings, pointed forwards: when a matching filing "
+      "appears, it is ingested. The interval and the hour are yours. There is one "
+      "subscription per corpus -- a table has exactly one producer, so this sets the "
+      "selection rather than starting a second poll, and `forms` is a list so one "
+      "subscription covers both of the forms that can be ingested. Call "
+      "list_subscriptions afterwards: a schedule nothing reads is worse than no "
+      "schedule, and that tool is the only thing that can tell you which you have.",
+      {"type": "object",
+       "properties": {
+           "companies": {"type": "array", "items": {"type": "string"},
+                         "description": "tickers or CIKs"},
+           "forms": {"type": "array", "items": {"type": "string"}, "default": ["10-K"],
+                     "description": "10-K and 10-Q. A subscription lands rows, so it is "
+                                    "refused for a form nothing can parse"},
+           "from": {"type": "string", "description": "earliest period to accept"},
+           "to": {"type": "string", "description": "latest period to accept"},
+           "every": {"type": "string", "enum": ["daily", "monthly"], "default": "daily"},
+           "hour": {"type": "integer", "default": 6,
+                    "description": "hour of the day, 0-23, UTC"},
+           "years": {"type": "integer", "default": 1,
+                     "description": "how far back each pass looks, per form. A forward "
+                                    "subscription wants a small number"},
+       },
+       "required": ["companies"]},
+      writes=True,
+      scope="full")
+def _subscribe_filings(s: Session, args: dict) -> Any:
+    from qanat.filings import FilingsError, subscribe
+
+    companies = args.get("companies")
+    if not companies:
+        raise ToolError("'companies' is required: a list of tickers or CIKs. "
+                        "Call tools/list to see this tool's arguments.")
+    try:
+        out = subscribe(
+            s.project, s.root, [str(c) for c in companies],
+            forms=args.get("forms") or args.get("form") or "10-K",
+            frm=args.get("from"), to=args.get("to"),
+            every=str(args.get("every") or "daily"),
+            hour=int(args.get("hour") if args.get("hour") is not None else 6),
+            years=int(args.get("years") or 1),
+        )
+    except (FilingsError, ValueError) as exc:
+        raise ToolError(str(exc)) from exc
+    s.reload()
+    return out
+
+
+@tool("list_subscriptions",
+      "What is subscribed, each one's last run and next due time, and whether anything is "
+      "running them at all. The last part is the point: over stdio nothing is, because this "
+      "server is your client's child and a clock started here would die with the "
+      "conversation. Say so rather than saying 'updating daily'.",
+      {"type": "object", "properties": {}, "required": []},
+      scope="research")
+def _list_subscriptions(s: Session, args: dict) -> Any:
+    from qanat.filings import subscriptions
+
+    return subscriptions(s.store, s.project, s.sched)
+
+
+@tool("unsubscribe_filings",
+      "Stop a subscription. The documents it already landed stay in the corpus -- those are "
+      "data, not wiring.",
+      {"type": "object", "properties": {"id": {"type": "string"}}, "required": ["id"]},
+      writes=True,
+      scope="full")
+def _unsubscribe_filings(s: Session, args: dict) -> Any:
+    from qanat.filings import FilingsError, unsubscribe
+
+    try:
+        out = unsubscribe(s.project, s.root, _need(args, "id"))
+    except FilingsError as exc:
+        raise ToolError(str(exc)) from exc
+    s.reload()
+    return out
+
+
+
 @tool("list_runs", "Recent job runs, with status and row counts.",
       {"properties": {"limit": {"type": "integer", "default": 30}}},
       scope="full")
@@ -500,7 +891,7 @@ def _list_runs(s: Session, args: dict) -> Any:
           "options": {"type": "object"},
       }, "required": ["id", "to", "script"]},
       writes=True,
-      scope="full")
+      scope="authoring")
 def _save_step(s: Session, args: dict) -> Any:
     from qanat.editor import EditorError, save_step
 
@@ -520,7 +911,7 @@ def _save_step(s: Session, args: dict) -> Any:
 
 @tool("remove_step", "Delete a step from the project file. The script on disk is left alone.",
       {"properties": {"id": {"type": "string"}}, "required": ["id"]}, writes=True,
-      scope="full")
+      scope="authoring")
 def _remove_step(s: Session, args: dict) -> Any:
     from qanat.editor import EditorError, delete_step
 
@@ -580,7 +971,7 @@ def _save_universe(s: Session, args: dict) -> Any:
                       "mode": {"type": "string", "enum": ["append", "replace"]},
                       "schedule": {"type": "string"}, "options": {"type": "object"}},
        "required": ["id", "to", "connector"]}, writes=True,
-      scope="full")
+      scope="authoring")
 def _save_source(s: Session, args: dict) -> Any:
     from qanat.editor import EditorError, save_source
 
@@ -647,7 +1038,7 @@ def _text(body: str, error: bool = False) -> dict:
     return {"content": [{"type": "text", "text": body}], "isError": error}
 
 
-def serve_stdio(project_path: str | None = None, scope: str = "full") -> int:
+def serve_stdio(project_path: str | None = None, scope: str = DEFAULT_SCOPE) -> int:
     """Speak MCP on stdin/stdout until the client goes away."""
     from qanat.store import set_actor
 
@@ -696,5 +1087,5 @@ def serve_stdio(project_path: str | None = None, scope: str = "full") -> int:
     return 0
 
 
-__all__ = ["PROTOCOL", "SCOPES", "TOOLS", "ScopeError", "Session", "ToolError",
-           "rank", "serve_stdio", "tools_for"]
+__all__ = ["DEFAULT_SCOPE", "PROTOCOL", "SCOPES", "TOOLS", "ScopeError", "Session",
+           "ToolError", "rank", "serve_stdio", "tools_for"]

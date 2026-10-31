@@ -8,9 +8,15 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from qanat.models import Project, Source, Step, Universe
+from qanat.models import Metric, Project, Source, Step, Universe
 from qanat.project import validate
-from qanat.project_io import remove_step, save_project, upsert_source, upsert_step
+from qanat.project_io import (
+    remove_source,
+    remove_step,
+    save_project,
+    upsert_source,
+    upsert_step,
+)
 
 
 class EditorError(Exception):
@@ -130,5 +136,38 @@ def save_universe(project: Project, root: Path, raw: dict) -> list[str]:
 
 def delete_step(project: Project, root: Path, step_id: str) -> list[str]:
     return _edit(project, root, lambda d: remove_step(d, step_id))
+
+
+def save_metric(project: Project, root: Path, metric: Metric) -> list[str]:
+    """Add a definition, or replace the one at the same id and version.
+
+    Matched on both halves, because a bumped version is a new definition stored
+    beside the old rather than over it. Written in version order so the file
+    reads the way the history ran.
+    """
+    def change(d: Project) -> None:
+        kept = [m for m in d.metrics
+                if not (m.id == metric.id and m.version == metric.version)]
+        d.metrics = sorted([*kept, metric], key=lambda m: (m.id, m.version))
+    return _edit(project, root, change)
+
+
+def delete_metric(project: Project, root: Path, mid: str,
+                  version: int | None = None) -> list[str]:
+    """Drop a definition, or one version of it. `version` None means all of them."""
+    def change(d: Project) -> None:
+        d.metrics = [m for m in d.metrics
+                     if m.id != mid or (version is not None and m.version != int(version))]
+    return _edit(project, root, change)
+
+
+def delete_source(project: Project, root: Path, source_id: str) -> list[str]:
+    """Stop a source. The rows it landed stay -- they are data, not wiring."""
+    if not any(s.id == source_id for s in project.sources):
+        raise EditorError(
+            f"no source '{source_id}'. Sources: "
+            f"{', '.join(s.id for s in project.sources) or '(none)'}"
+        )
+    return _edit(project, root, lambda d: remove_source(d, source_id))
 
 

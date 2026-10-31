@@ -1,13 +1,38 @@
-"""qanat -- the command line.
+"""qanat -- the command line. Four verbs, and each one is here for a reason.
 
     qanat init [dir]     scaffold a project that runs green with no keys
     qanat check          hold the pipeline against the stage contract
-    qanat ls             stages, tables, jobs
-    qanat graph          the pipeline as a picture, in the terminal
-    qanat run [job]      one pass, or one job
-    qanat screen         which companies passed, on a date or over a window
-    qanat mcp            serve the same tools to an agent, over stdio or --http, at one of three scopes
-    qanat serve          run the scheduler, and serve this project over MCP
+    qanat mcp            serve this project to an agent, over stdio or --http
+    qanat schedule       run the clock, and serve nothing
+
+**This is reached by an agent, so most of what was here was the wrong door.**
+`ls`, `graph`, `plan`, `run`, `screen` and `prune` were a person's way into a
+thing whose caller is a program, and each one was a second implementation of a
+question a tool already answers -- a second place the behaviour could quietly
+differ. They are gone, each named below beside what replaced it:
+
+    ls        list_tables, list_steps, describe_table -- it was those three in one dump
+    graph     nothing. A terminal picture for a person, and its own markers
+              disagreed with its legend
+    plan      the `plan` tool
+    prune     the `plan` tool's `prune` flag. The one irreversible verb does not
+              belong at the top level, and folding it in means you see the list
+              from the same call that acts on it
+    run       the `run` tool
+    screen    the `screen` tool
+
+**What stays, stays because there is nothing to ask.** `init` runs before a
+project exists. `mcp` is the transport. `check` is deliberate: somebody
+connecting for the first time has to be able to tell a broken project from a
+broken server, and a tool cannot answer that when the tool is what is broken.
+
+**And the clock and the server are two commands, not one with a flag.** They
+used to be one process -- scheduler and MCP server together, with
+`--no-schedule` to turn the clock off and no way at all to run the clock alone.
+That is backwards for the two deployments that exist: a recorder wants a clock
+and no server, and a hosted reader wants a server over a store somebody else
+fills. `qanat schedule` is the clock; `qanat mcp --http` is the server;
+`qanat mcp --http --schedule` is both, for one machine doing both jobs.
 """
 
 from __future__ import annotations
@@ -18,7 +43,7 @@ import sys
 from pathlib import Path
 
 from qanat import __version__
-from qanat.mcp import SCOPES  # the three scope names, for --scope's choices
+from qanat.mcp import DEFAULT_SCOPE, SCOPES  # for --scope's choices
 
 _TTY = sys.stdout.isatty()
 G, R_, Y, B, D, X = (
@@ -38,6 +63,63 @@ def _load(args):
     return load(getattr(args, "project", None))
 
 
+#: What each removed command was replaced by. `qanat <name>` prints this rather
+#: than dying in argparse, because somebody has these in a script.
+#:
+#: **`graph` is named as having none**, which is the honest entry: it drew a
+#: picture for a person out of a thing whose caller is a program, and its own
+#: markers disagreed with its legend -- `○ 4 rows` for a table `ls` drew as `●`.
+MOVED = {
+    "ls": "the list_tables, list_steps and describe_table tools. `ls` was those "
+          "three in one dump",
+    "graph": "nothing. It drew the pipeline for a person to look at, and this is "
+             "reached by an agent",
+    "plan": "the `plan` tool",
+    "prune": "the `plan` tool's `prune` flag, so you see the orphans from the same "
+             "call that drops them",
+    "run": "the `run` tool",
+    "screen": "the `screen` tool",
+    "serve": "`qanat mcp --http --schedule` for both, or `qanat schedule` for the "
+             "clock alone and `qanat mcp --http` for the server alone",
+}
+
+
+#: Global options that take a value, so their value is not mistaken for the verb.
+#: `qanat -p ./proj graph` puts a path in front of the command, and reading the
+#: first non-flag word would have read the path.
+_TAKES_VALUE = frozenset({"-p", "--project"})
+
+
+def _verb(argv: list[str]) -> str | None:
+    """The subcommand in an argv, skipping the global options and their values."""
+    i = 0
+    while i < len(argv):
+        arg = argv[i]
+        if arg in _TAKES_VALUE:
+            i += 2
+            continue
+        if arg.startswith("-"):          # a flag, or --project=X
+            i += 1
+            continue
+        return arg
+    return None
+
+
+def _say_it_moved(argv: list[str]) -> int | None:
+    """If the verb is a command that went, say where. Otherwise None.
+
+    Checked before argparse rather than registered as a hidden subparser: a
+    subparser with `help=SUPPRESS` still appears in the choices line, and the
+    point of the trim is that `--help` lists four verbs.
+    """
+    word = _verb(argv)
+    if word not in MOVED:
+        return None
+    print(f"qanat {word} is gone. Use {MOVED[word]}.", file=sys.stderr)
+    print("`qanat mcp` serves the tools; see docs/agents.md.", file=sys.stderr)
+    return 2
+
+
 # ------------------------------------------------------------------------ init
 def cmd_init(args) -> int:
     from qanat.scaffold import write_project
@@ -53,8 +135,12 @@ def cmd_init(args) -> int:
         print(f"  {c('+', G)} {p.relative_to(target)}")
 
     if not args.demo:
-        where = "" if target == Path.cwd() else f"cd {args.directory} && "
-        print(f"\n{where}qanat run && qanat serve")
+        print()
+        if target != Path.cwd():
+            print(f"  cd {args.directory}")
+        print("  qanat check                # hold it against the contract")
+        print("  qanat schedule --run-now   # fetch and parse, then keep a clock")
+        print("  qanat mcp                  # hand it to an agent\n")
         return 0
 
     print(f"\n{c('fetching and parsing', D)}")
@@ -113,257 +199,16 @@ def cmd_check(args) -> int:
     return 1
 
 
-# ------------------------------------------------------------------------ plan
-def cmd_plan(args) -> int:
-    from qanat.plan import plan
-    from qanat.project import validate
-    from qanat.store import Store
+# -------------------------------------------------------------- open a project
+def _opened(args):
+    """Load, hold against the contract, repair a half-finished screen, report drift.
 
-    project, root = _load(args)
-    rep = validate(project, root)
-    for e in rep.errors:
-        print(f"  {c('error', R_)} {e}")
-    if not rep.ok:
-        print(c("\nthe file is not legal yet, so there is nothing to compare.", R_))
-        return 1
-
-    store = Store(project.store_url(root))
-    pl = plan(project, root, store)
-    print(f"\n  {c('qanat plan', B)}  {D}{project.name}{X}\n")
-
-    if pl.first_run:
-        print(f"  {D}nothing has been applied yet, so everything below is new{X}\n")
-
-    for ch in pl.adds:
-        print(f"  {c('+', G)} {ch.target:<24} {D}{ch.note}{X}")
-    for ch in pl.updates:
-        print(f"  {c('~', Y)} {ch.target:<24} {D}{ch.details[0] if ch.details else ''}{X}")
-        for line in ch.details[1:]:
-            print(f"    {' ' * 25}{D}{line}{X}")
-    for ch in pl.removes:
-        print(f"  {c('-', R_)} {ch.target:<24} {D}{ch.note}{X}")
-    for ch in pl.creates:
-        print(f"  {c('+', G)} {ch.target:<24} {D}will be created, {ch.note}{X}")
-    for ch in pl.orphans:
-        print(f"  {c('-', R_)} {ch.target:<24} {D}orphan: {ch.note}{X}")
-
-    if pl.empty:
-        print(f"  {c('no changes', G)} {D}· the database matches the file{X}")
-    else:
-        parts = []
-        for n, word in [(len(pl.adds), "to add"), (len(pl.updates), "changed"),
-                        (len(pl.removes), "removed"), (len(pl.creates), "to create"),
-                        (len(pl.orphans), "orphan")]:
-            if n:
-                parts.append(f"{n} {word}")
-        print(f"\n  {', '.join(parts)}, {pl.unchanged} unchanged")
-        if pl.orphans:
-            print(f"  {D}qanat prune  removes the orphan table(s){X}")
-    print()
-    if args.exit_code and not pl.empty:
-        return 2
-    return 0
-
-
-# ----------------------------------------------------------------------- prune
-def cmd_prune(args) -> int:
-    from qanat.plan import plan
-    from qanat.store import Store
-
-    project, root = _load(args)
-    store = Store(project.store_url(root))
-    pl = plan(project, root, store)
-    if not pl.orphans and not pl.removes:
-        print(c("nothing to prune", G))
-        return 0
-
-    print()
-    for ch in [*pl.orphans, *pl.removes]:
-        print(f"  {c('-', R_)} {ch.target:<24} {D}{ch.note}{X}")
-    print()
-
-    if not args.yes:
-        if not sys.stdin.isatty():
-            print(c("refusing to drop tables without --yes", R_))
-            return 1
-        n = len(pl.orphans)
-        if input(f"  drop {n} table(s)? this cannot be undone [y/N] ").strip().lower() not in ("y", "yes"):
-            print("  nothing dropped")
-            return 0
-
-    for ch in pl.orphans:
-        rows = store.drop(ch.target)
-        store.event("warn", "prune", f"dropped {ch.target} ({rows:,} rows)")
-        print(f"  {c('dropped', Y)} {ch.target} {D}({rows:,} rows){X}")
-    if pl.removes:
-        store.forget_state([ch.target for ch in pl.removes])
-        print(f"  {c('forgot', Y)}  {', '.join(ch.target for ch in pl.removes)} "
-              f"{D}(no longer in the file){X}")
-    store.close()
-    print()
-    return 0
-
-
-# -------------------------------------------------------------------------- ls
-def cmd_ls(args) -> int:
-    from qanat.project import validate
-    from qanat.store import Store
-
-    project, root = _load(args)
-    validate(project, root)
-    store = Store(project.store_url(root))
-    producers = project.producers()
-
-    print(f"\n{c(project.name, B)}  {D}{root}{X}\n")
-    for lay in project.stages:
-        tables = [t for t in project.tables() if t.startswith(f"{lay.id}.")]
-        print(f"  {c(lay.id, B)} {D}· {lay.kind}{X}  {D}{lay.description}{X}")
-        for ref in tables:
-            info = store.table_info(ref)
-            rows = f"{info.rows:,} rows" if info else "not written yet"
-            mark = c("●", G) if info else c("○", Y)
-            print(f"    {mark} {ref.partition('.')[2]:<22} {rows:>16}  "
-                  f"{D}from {producers.get(ref, '?')}{X}")
-        if not tables:
-            print(f"    {D}(empty){X}")
-    print()
-    for j in project.jobs:
-        kind = "source" if hasattr(j, "connector") else "step"
-        what = getattr(j, "connector", None) or getattr(j, "script", "")
-        print(f"  {c(j.id, B):<28} {kind:<7} {D}{what:<24} {j.schedule or 'manual'}{X}")
-    print()
-    store.close()
-    return 0
-
-
-# ----------------------------------------------------------------------- graph
-def cmd_graph(args) -> int:
-    """The pipeline on a character grid.
-
-    It reads `build_graph` rather than the file, so an arrow here is the arrow the
-    `lineage` tool reports, and a row count is a count(*) either way.
+    Shared by the two long-running commands, because both of them have to do all
+    four before they are any use, and doing three of them is a process that looks
+    healthy and is not.
     """
-    import shutil
-
-    from qanat.graph import build_graph, glyphs_for, ink_for, render
-    from qanat.project import validate
-    from qanat.store import Store
-
-    project, root = _load(args)
-    rep = validate(project, root)
-    if not rep.ok:
-        # Still worth drawing: a picture of a project that does not hold is how
-        # you see *where* it does not hold. But say so, and say it on stderr, so
-        # the drawing itself still pipes clean.
-        print(c(f"the contract does not hold ({len(rep.errors)} errors). "
-                f"`qanat check` to see why -- drawing it anyway.", Y), file=sys.stderr)
-
-    if args.width is None:
-        width = shutil.get_terminal_size().columns if _TTY else 0
-    else:
-        width = args.width
-
-    store = Store(project.store_url(root))
-    try:
-        graph = build_graph(store, project, root, None)
-    finally:
-        store.close()
-
-    print(render(
-        graph, root,
-        ink=ink_for(args.color, sys.stdout),
-        g=glyphs_for(sys.stdout, args.ascii),
-        width=width or None,
-        labels=not args.no_labels,
-    ))
-    return 0 if rep.ok else 1
-
-
-# ------------------------------------------------------------------------- run
-def cmd_run(args) -> int:
-    from qanat.project import validate
-    from qanat.runner import run_all, run_job
-    from qanat.store import Store
-
-    project, root = _load(args)
-    rep = validate(project, root)
-    if not rep.ok and not args.force:
-        print(c("the contract does not hold. `qanat check` to see why, or --force.", R_))
-        return 1
-
-    store = Store(project.store_url(root))
-    _repair_after_crash(store, project, root)
-    as_of, seed = getattr(args, "as_of", None), getattr(args, "seed", None)
-    if as_of:
-        store.open_pit(as_of, project.time_columns)
-    try:
-        results = (
-            [run_job(store, project, root, args.job, as_of=as_of, seed=seed)]
-            if args.job
-            else run_all(store, project, root, as_of=as_of, seed=seed, sources=not as_of)
-        )
-    finally:
-        if as_of:
-            store.close_pit()
-
-    print()
-    for r in results:
-        mark = c("ok ", G) if r.ok else c("fail", R_)
-        detail = f"{r.rows:,} rows -> {', '.join(r.targets)}" if r.ok else (r.error or "")
-        print(f"  {mark} {r.job_id:<22} {detail}")
-    failed = [r for r in results if not r.ok]
-    print()
-    print(c(f"{len(results) - len(failed)}/{len(results)} ok", G if not failed else Y))
-    store.close()
-    return 1 if failed else 0
-
-
-# ---------------------------------------------------------------------- screen
-def cmd_screen(args) -> int:
-    """Who passed, on a date or across a window."""
-    import json as _json
-
-    from qanat.screen import ScreenError, parse_filters, screen
-    from qanat.store import Store
-
-    project, root = _load(args)
-    store = Store(project.store_url(root))
-    try:
-        raw = _json.loads(args.filter) if args.filter else []
-        filters = parse_filters(raw)
-        out = screen(store, project, filters, as_of=args.as_of,
-                     frm=getattr(args, "frm", None), to=args.to, every=args.every)
-    except ScreenError as exc:
-        print(c(f"ScreenError: {exc}", R_))
-        return 1
-    finally:
-        store.close()
-
-    if args.json:
-        print(_json.dumps(out, indent=2, default=str))
-        return 0
-
-    for count in out["counts"]:
-        hits = [r for r in out["rows"] if r["as_of"] == count["as_of"] and r["passed"]]
-        print(f"\n{c(str(count['as_of'])[:10], B)}  "
-              f"{count['passed']} of {count['evaluated']} passed"
-              + (f", {count['dropped']} could not be evaluated" if count["dropped"] else ""))
-        for r in hits:
-            fwd = r.get("forward_return")
-            tail = f"   {fwd * 100:+.1f}% to {r.get('next_priced_on')}" if fwd is not None else ""
-            print(f"  {c('·', D)} {r['subject']}{tail}")
-    return 0
-
-
-# ----------------------------------------------------------------------- serve
-def cmd_serve(args) -> int:
-    import uvicorn
-
-    from qanat.mcp_http import create_app
     from qanat.plan import plan as plan_project
     from qanat.project import validate
-    from qanat.runtime import AppState
-    from qanat.scheduler import Scheduler
     from qanat.store import Store
 
     project, root = _load(args)
@@ -371,51 +216,54 @@ def cmd_serve(args) -> int:
     for e in rep.errors:
         print(f"  {c('error', R_)} {e}")
     if not rep.ok and not args.force:
-        print(c("refusing to serve a pipeline that breaks the contract. --force to override.", R_))
-        return 1
+        print(c("refusing to run a pipeline that breaks the contract. --force to override.",
+                R_))
+        return None
 
     store = Store(project.store_url(root))
     _repair_after_crash(store, project, root)
-    pl = plan_project(project, root, store)
-    for ch in pl.changes:
-        print(f"  {c('drift', Y)} {ch.target} · {ch.note or (ch.details[0] if ch.details else '')}")
-    sched = None if args.no_schedule else Scheduler(store, project, root, workers=args.workers)
+    for ch in plan_project(project, root, store).changes:
+        print(f"  {c('drift', Y)} {ch.target} · "
+              f"{ch.note or (ch.details[0] if ch.details else '')}")
+    return project, root, store
 
-    state = AppState(store=store, project=project, root=root, sched=sched)
-    # Binding to an address on purpose means meaning to be reached at it, so that
-    # name is allowed. A wildcard bind names nothing, and never arrives in `Host`
-    # anyway -- serving under a real hostname stays a deliberate setting.
-    named = [] if args.host in ("0.0.0.0", "::", "") else [args.host]
-    token = args.token or os.environ.get("QANAT_MCP_TOKEN") or None
-    loopback = args.host in ("127.0.0.1", "::1", "localhost")
-    if not loopback and not token:
-        print(c(f"refusing to serve {args.host} with no token. Pass --token or set "
-                f"QANAT_MCP_TOKEN.", R_))
-        return 2
-    app = create_app(None, args.scope, token=token, allow_hosts=named, state=state)
-    if sched:
-        sched.start()
-        if args.run_now:
-            # one full pass in dependency order -- firing every job at once would
-            # only make the downstream steps fail on a table that is not there yet
-            import threading
 
-            from qanat.runner import run_all
+# -------------------------------------------------------------------- schedule
+def cmd_schedule(args) -> int:
+    """The clock, and nothing served.
 
-            threading.Thread(
-                target=run_all, args=(store, project, root), daemon=True
-            ).start()
+    This is what CI or systemd invokes, and it is deliberately not what a person
+    types. It used to be unreachable: the only command that started a scheduler
+    served an MCP server alongside it, so a recorder that wanted a clock and no
+    open port had nothing to run.
+    """
+    from qanat.scheduler import Scheduler, sleep_forever
 
+    opened = _opened(args)
+    if opened is None:
+        return 1
+    project, root, store = opened
+
+    sched = Scheduler(store, project, root, workers=args.workers)
     print(f"\n  {c('qanat', B)} {D}v{__version__}{X}  {project.name}")
-    print(f"  mcp      {c(f'http://{args.host}:{args.port}/mcp', B)} "
-          f"{D}scope {args.scope}{X}")
+    print(f"  schedule {c(f'{len(sched._jobs)} job(s) on a clock', B)} "
+          f"{D}· nothing is served from this process{X}")
     print(f"  store    {D}{project.store_url(root)}{X}\n")
-    sys.stdout.flush()  # uvicorn blocks next, and a piped stdout would never flush
+    sys.stdout.flush()
+
+    sched.start()
+    if args.run_now:
+        # One full pass in dependency order. Firing every job at once would only
+        # make the downstream steps fail on a table that is not there yet.
+        import threading
+
+        from qanat.runner import run_all
+
+        threading.Thread(target=run_all, args=(store, project, root), daemon=True).start()
     try:
-        uvicorn.run(app, host=args.host, port=args.port, log_level=args.log_level)
+        sleep_forever()
     finally:
-        if sched:
-            sched.stop()
+        sched.stop()
         store.close()
     return 0
 
@@ -444,20 +292,88 @@ def _repair_after_crash(store, project, root) -> None:
 
 # ------------------------------------------------------------------------- mcp
 def cmd_mcp(args) -> int:
+    """Serve this project to an agent. A clock only if one is asked for.
+
+    `--schedule` is what `serve` used to be, and it is a flag here rather than a
+    command of its own because the server is the thing being started and the
+    clock is a property of this process. Without it, nothing in this process
+    reads a cron line -- which `list_subscriptions` reports rather than hides.
+    """
     if getattr(args, "read_only", False):
         print("qanat mcp: --read-only is gone. It split 33 tools into 23 and 10, which is "
               "too blunt to be a promise. Use --scope data to read tables, or --scope "
               "research to add screens. See docs/agents.md.", file=sys.stderr)
         return 2
-    if args.http:
+
+    if not args.http:
+        if args.schedule:
+            print("qanat mcp: --schedule needs --http. Over stdio this server is your "
+                  "client's child, so a clock started here dies with the conversation. "
+                  "Run `qanat schedule` beside it instead.", file=sys.stderr)
+            return 2
+        from qanat.mcp import serve_stdio
+
+        return serve_stdio(getattr(args, "project", None), scope=args.scope)
+
+    if not args.schedule:
         from qanat.mcp_http import serve_http
 
         return serve_http(getattr(args, "project", None), scope=args.scope,
                           host=args.host, port=args.port, token=args.token)
 
-    from qanat.mcp import serve_stdio
+    return _serve_with_clock(args)
 
-    return serve_stdio(getattr(args, "project", None), scope=args.scope)
+
+def _serve_with_clock(args) -> int:
+    """MCP over HTTP with a scheduler in the same process.
+
+    One machine doing both jobs. The store is opened once and handed to both, so
+    there is one writer rather than two processes contending for it.
+    """
+    import uvicorn
+
+    from qanat.mcp_http import create_app
+    from qanat.runtime import AppState
+    from qanat.scheduler import Scheduler
+
+    opened = _opened(args)
+    if opened is None:
+        return 1
+    project, root, store = opened
+
+    # Binding to an address on purpose means meaning to be reached at it, so
+    # that name is allowed. A wildcard bind names nothing, and never arrives in
+    # `Host` anyway -- serving under a real hostname stays a deliberate setting.
+    named = [] if args.host in ("0.0.0.0", "::", "") else [args.host]
+    token = args.token or os.environ.get("QANAT_MCP_TOKEN") or None
+    if args.host not in ("127.0.0.1", "::1", "localhost") and not token:
+        print(c(f"refusing to serve {args.host} with no token. Pass --token or set "
+                f"QANAT_MCP_TOKEN.", R_))
+        return 2
+
+    sched = Scheduler(store, project, root, workers=args.workers)
+    state = AppState(store=store, project=project, root=root, sched=sched)
+    app = create_app(None, args.scope, token=token, allow_hosts=named, state=state)
+    sched.start()
+    if args.run_now:
+        import threading
+
+        from qanat.runner import run_all
+
+        threading.Thread(target=run_all, args=(store, project, root), daemon=True).start()
+
+    print(f"\n  {c('qanat', B)} {D}v{__version__}{X}  {project.name}")
+    print(f"  mcp      {c(f'http://{args.host}:{args.port}/mcp', B)} "
+          f"{D}scope {args.scope}{X}")
+    print(f"  schedule {D}{len(sched._jobs)} job(s) on a clock, in this process{X}")
+    print(f"  store    {D}{project.store_url(root)}{X}\n")
+    sys.stdout.flush()  # uvicorn blocks next, and a piped stdout would never flush
+    try:
+        uvicorn.run(app, host=args.host, port=args.port, log_level=args.log_level)
+    finally:
+        sched.stop()
+        store.close()
+    return 0
 
 
 # ------------------------------------------------------------------------ main
@@ -483,78 +399,45 @@ def build_parser() -> argparse.ArgumentParser:
     ch = sub.add_parser("check", help="hold the pipeline against the stage contract")
     ch.set_defaults(func=cmd_check)
 
-    pl = sub.add_parser("plan", help="what would change if this file were applied")
-    pl.add_argument("--exit-code", action="store_true", help="exit 2 when there are changes")
-    pl.set_defaults(func=cmd_plan)
-
-    pr = sub.add_parser("prune", help="drop tables nothing produces any more")
-    pr.add_argument("--yes", action="store_true", help="do not ask")
-    pr.set_defaults(func=cmd_prune)
-
-    ls = sub.add_parser("ls", help="stages, tables, jobs")
-    ls.set_defaults(func=cmd_ls)
-
-    gr = sub.add_parser("graph", help="the pipeline as a picture, in the terminal")
-    gr.add_argument("--color", choices=("auto", "always", "never"), default="auto",
-                    help="colour the stages (default: when stdout is a terminal)")
-    gr.add_argument("--ascii", action="store_true", help="draw with - | + instead of box rules")
-    gr.add_argument("--no-labels", action="store_true", dest="no_labels",
-                    help="leave the step off each arrow, and draw narrower")
-    gr.add_argument("--width", type=int,
-                    help="fit to this many columns. 0 is unlimited (the default when piped)")
-    gr.set_defaults(func=cmd_graph)
-
-
-    r = sub.add_parser("run", help="one pass over the whole graph, or one job")
-    r.add_argument("job", nargs="?")
-    r.add_argument("--as-of", dest="as_of", help="screen one pass as of this timestamp")
-    r.add_argument("--seed", type=int, help="pin every generator for this pass")
-    r.add_argument("--force", action="store_true", help="run even if the contract fails")
-    r.set_defaults(func=cmd_run)
-
-    sc = sub.add_parser("screen", help="which companies passed, on a date or over a window")
-    sc.add_argument("--filter", help='clauses as JSON: \'[{"metric":"pe","op":"<","value":20}]\'')
-    sc.add_argument("--as-of", dest="as_of", help="one date")
-    sc.add_argument("--from", dest="frm", help="start of a window")
-    sc.add_argument("--to", help="end of a window")
-    sc.add_argument("--every", default="1y", help="the gap between dates in a window")
-    sc.add_argument("--json", action="store_true", help="the whole result, as JSON")
-    sc.set_defaults(func=cmd_screen)
-
-
-    mc = sub.add_parser("mcp", help="serve this project to an agent over MCP (stdio)")
-    mc.add_argument("--scope", choices=list(SCOPES), default="full",
-                    help="which tools to offer: data reads tables, research adds screens, "
-                         "full adds authoring and ingest (default: full)")
+    mc = sub.add_parser("mcp", help="serve this project to an agent, over stdio or --http")
+    mc.add_argument("--scope", choices=list(SCOPES), default=DEFAULT_SCOPE,
+                    help="which tools to offer: data reads tables, research adds screens "
+                         "and coverage, full adds ingest and metric definitions, authoring "
+                         f"adds the pipeline itself (default: {DEFAULT_SCOPE})")
     mc.add_argument("--http", action="store_true",
                     help="serve MCP over HTTP instead of stdio, for a client that is not "
                          "on this machine")
+    mc.add_argument("--schedule", action="store_true",
+                    help="with --http: also run the clock in this process. Without it "
+                         "nothing here reads a cron line")
     mc.add_argument("--host", default="127.0.0.1", help="with --http (default: 127.0.0.1)")
     mc.add_argument("--port", type=int, default=8421, help="with --http (default: 8421)")
     mc.add_argument("--token", help="with --http: the bearer token a caller must send. "
                                     "Required to bind anything but loopback. Also "
                                     "QANAT_MCP_TOKEN")
+    mc.add_argument("--workers", type=int, default=4, help="with --schedule")
+    mc.add_argument("--run-now", action="store_true",
+                    help="with --schedule: fire every job once at startup")
+    mc.add_argument("--log-level", default="warning")
+    mc.add_argument("--force", action="store_true",
+                    help="with --schedule: run even if the contract fails")
     # Removed, and kept only so it can say what replaced it rather than die in argparse.
     mc.add_argument("--read-only", action="store_true", help=argparse.SUPPRESS)
     mc.set_defaults(func=cmd_mcp)
 
-    s = sub.add_parser("serve", help="run the scheduler, and serve this project over MCP")
-    s.add_argument("--host", default="127.0.0.1")
-    s.add_argument("--port", type=int, default=8421)
-    s.add_argument("--workers", type=int, default=4)
-    s.add_argument("--no-schedule", action="store_true", help="serve MCP, run nothing")
-    s.add_argument("--scope", choices=list(SCOPES), default="full",
-                   help="which tools to offer over MCP (default: full)")
-    s.add_argument("--token", help="the bearer token a caller must send. Required to bind "
-                                   "anything but loopback. Also QANAT_MCP_TOKEN")
-    s.add_argument("--run-now", action="store_true", help="fire every job once at startup")
-    s.add_argument("--log-level", default="warning")
-    s.add_argument("--force", action="store_true")
-    s.set_defaults(func=cmd_serve)
+    sc = sub.add_parser("schedule", help="run the clock, and serve nothing")
+    sc.add_argument("--workers", type=int, default=4)
+    sc.add_argument("--run-now", action="store_true", help="fire every job once at startup")
+    sc.add_argument("--force", action="store_true", help="run even if the contract fails")
+    sc.set_defaults(func=cmd_schedule)
+
     return p
 
 
 def main(argv: list[str] | None = None) -> int:
+    moved = _say_it_moved(list(argv if argv is not None else sys.argv[1:]))
+    if moved is not None:
+        return moved
     args = build_parser().parse_args(argv)
     try:
         return args.func(args)

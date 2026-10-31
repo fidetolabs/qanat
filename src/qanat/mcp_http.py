@@ -9,8 +9,9 @@ the same `_dispatch`, the same tools, and the same scopes.
 Three things are deliberately fixed here rather than left to the caller.
 
 **The scope is pinned at startup.** A caller that names its own scope has no
-scope at all, and D-20260929-04 makes each one a published contract. The flag
-that starts the server decides; nothing in a request can widen it.
+scope at all, and each scope is a published contract -- adding a tool to `data`
+changes what somebody has already built against. The flag that starts the
+server decides; nothing in a request can widen it.
 
 **One process serves one project.** Every session on this server shares a
 single store behind a lock. That is a real limit, not a simplification: serving
@@ -135,7 +136,7 @@ def create_app(
 ):
     """A FastAPI app that answers MCP on one endpoint.
 
-    `state` is how `qanat serve` hands over a store it has already opened, along
+    `state` is how a served process hands over a store it has already opened, along
     with the scheduler running against it. Without it this opens the project
     itself, which is the plain `qanat mcp --http` case.
     """
@@ -153,6 +154,8 @@ def create_app(
         session.path = str(state.root)
         session.project, session.root = state.project, state.root
         session._store = state.store
+        # So a tool can say whether a clock is attached rather than assume one.
+        session.state = state
     else:
         session = Session(project_path)
         _ = session.store  # open now, so a busy database is reported at startup

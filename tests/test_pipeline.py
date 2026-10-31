@@ -330,10 +330,18 @@ def test_the_docker_entrypoint_only_calls_flags_that_exist(tmp_path: Path):
     used = set(re.findall(r"--[a-z-]+", ep))
 
     known = set()
-    for cmd in ("init", "serve"):
+    for cmd in ("init", "mcp", "schedule"):
         out = subprocess.run(["uv", "run", "qanat", cmd, "--help"],
                              capture_output=True, text=True, timeout=120, check=True).stdout
         known |= set(re.findall(r"--[a-z-]+", out))
 
     unknown = used - known
     assert not unknown, f"entrypoint.sh uses flags qanat does not have: {sorted(unknown)}"
+
+    # And the verb, not only the flags. `qanat serve` was deleted and the
+    # entrypoint went on calling it, which is a container that builds and then
+    # exits 2 on startup.
+    from qanat.cli import MOVED
+
+    for verb in re.findall(r"^\s*(?:exec\s+)?qanat\s+([a-z-]+)", ep, re.MULTILINE):
+        assert verb not in MOVED, f"entrypoint.sh calls `qanat {verb}`, which is gone"

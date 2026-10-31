@@ -1,7 +1,7 @@
 """What one running process holds: the store, the project, and the scheduler.
 
 It lives on its own rather than inside a transport, because more than one thing
-needs it: `qanat serve` builds it, the scheduler runs against it, and the
+needs it: `qanat mcp --http --schedule` builds it, the scheduler runs against it, and the
 unattended pass in `research.py` reads it.
 """
 

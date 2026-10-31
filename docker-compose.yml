@@ -11,7 +11,7 @@ services:
       # the network, a domain -- means naming that here, comma separated.
       QANAT_ALLOWED_HOSTS: ${QANAT_ALLOWED_HOSTS:-}
       # Required, and the container will not start without it: binding 0.0.0.0
-      # names no host, so `qanat serve` refuses it unless a caller has to prove
+      # names no host, so the server refuses it unless a caller has to prove
       # who it is. Set it in the environment or a .env file beside this one.
       QANAT_MCP_TOKEN: ${QANAT_MCP_TOKEN:?set QANAT_MCP_TOKEN to serve MCP off loopback}
       # A directory, so the tables are parquet: the container writes while

@@ -38,7 +38,7 @@ one person's. A clause is where the two meet.
 the graph once per as-of date, and it meant the same thing as screening over a
 window. One of them had to go, and the product is named after the other.
 
-Three more words belong to `qanat plan`:
+Three more words belong to the `plan` tool:
 
 | Word | What it is |
 | --- | --- |

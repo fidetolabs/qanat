@@ -95,7 +95,23 @@ def test_nothing_is_averaged_across_dates(tmp_path):
         out = screen(store, project, parse_filters(
             [{"metric": "px", "op": ">", "value": 0}]),
             frm="2024-02-01", to="2024-06-01", every="30d")
-        assert set(out) == {"rows", "counts", "applied"}
+        assert set(out) <= {"rows", "counts", "applied", "execution", "notes"}
         assert len(out["counts"]) > 1, "this is a window, so there is more than one date"
+
+        # Every number in the answer belongs to one date. `values` is that
+        # subject on that date; `execution` is metadata about the call and
+        # carries no number read off more than one date.
+        dates = [c["as_of"] for c in out["counts"]]
+        assert out["execution"]["dates"] == dates
+        assert len(set(dates)) == len(dates), "a date is not visited twice"
+        for row in out["rows"]:
+            assert set(row["values"]) == {"px"}
+            assert isinstance(row["values"]["px"], (float, type(None)))
+        # And the same screen twice is still the same answer, `execution`
+        # included -- which is only true because nothing in it is a wall clock.
+        again = screen(store, project, parse_filters(
+            [{"metric": "px", "op": ">", "value": 0}]),
+            frm="2024-02-01", to="2024-06-01", every="30d")
+        assert again == out
     finally:
         store.close()

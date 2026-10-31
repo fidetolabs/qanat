@@ -108,19 +108,44 @@ def test_every_box_in_a_column_starts_at_the_same_place(tmp_path: Path):
 
 def test_colour_is_the_stage_and_nothing_else():
     g = a_graph(
-        [("raw", "raw"), ("weights", "weights")],
-        [("raw.a", "land", 1, "ok"), ("weights.w", "sorter", 1, "ok")],
-        [("raw.a", "weights.w", "sorter")],
+        [("raw", "raw"), ("second", "whatever-i-called-it")],
+        [("raw.a", "land", 1, "ok"), ("second.w", "sorter", 1, "ok")],
+        [("raw.a", "second.w", "sorter")],
     )
     m = model(g)
-    from qanat.graph import STAGE_INK, _place
+    from qanat.graph import RAW_INK, _place
     _place(m)
 
     lit = "\n".join(draw(m, UNICODE, Ink("true")))
-    assert STAGE_INK["raw"].lstrip("#") not in lit           # written as rgb, not as hex
+    assert RAW_INK.lstrip("#") not in lit           # written as rgb, not as hex
     assert "38;2;162;230;93" in lit, "the raw stage keeps its green"
-    assert "38;2;232;192;105" in lit, "the weights stage keeps its gold"
+    assert "38;2;127;196;180" in lit, "the stage after it takes the first cycle colour"
     assert "\033" not in "\n".join(draw(m, UNICODE, Ink("off")))
+
+
+def test_a_stage_whose_kind_is_not_a_known_word_still_gets_a_colour():
+    """Colour follows order, because a stage's kind is a name the user chose.
+
+    It was a lookup against five fixed kinds, and those are gone -- so the
+    starter project's own `normalized` stage drew in FAINT and never reached the
+    legend. Order is in the file; a keyword may not be.
+    """
+    from qanat.graph import FAINT, _place, legend
+
+    g = a_graph(
+        [("raw", "raw"), ("normalized", "normalized")],
+        [("raw.documents", "filings", 40, "ok"), ("normalized.facts", "parse", 43104, "ok")],
+        [("raw.documents", "normalized.facts", "parse")],
+    )
+    m = model(g)
+    _place(m)
+
+    assert m.inks["normalized"] != FAINT
+    assert m.nodes["normalized.facts"].ink == m.inks["normalized"]
+
+    lit = "\n".join(draw(m, UNICODE, Ink("true")) + legend(m, UNICODE, Ink("true")))
+    assert "38;2;127;196;180" in lit, "the normalized stage is drawn, not greyed out"
+    assert "normalized" in plain(lit), "and the legend names the stages the project has"
 
 
 def test_it_gives_up_the_step_names_before_it_overflows_the_terminal():
@@ -138,15 +163,37 @@ def test_it_gives_up_the_step_names_before_it_overflows_the_terminal():
     assert max(len(x) for x in narrow.splitlines() if "·" not in x and "/" not in x) <= 40
 
 
-def test_the_command_runs(tmp_path: Path, capsys):
+def test_the_command_is_gone_and_says_so(tmp_path: Path, capsys):
+    """`qanat graph` drew a picture for a person out of a thing whose caller is
+    a program, and its own markers disagreed with its legend: `○ 4 rows` for a
+    table `ls` drew as `●`. It is the one removed command with no replacement,
+    and the message says that rather than pointing somewhere."""
+    from qanat.cli import MOVED, main
+
+    assert main(["-p", str(tmp_path), "graph"]) == 2
+    assert "nothing" in MOVED["graph"]
+
+
+def test_the_drawing_still_renders_from_the_read_model(tmp_path: Path):
+    """The module stays, and this is what holds it honest.
+
+    Nothing in the shipped surface reaches it now that the command is gone.
+    Keeping the test means that if anything points at it again -- a status
+    page, a `check --picture` -- it still draws the graph it is handed.
+    """
     from conftest import write_demo_project as write_project
 
-    from qanat.cli import main
+    from qanat.graph import UNICODE, Ink, build_graph, render
+    from qanat.project import load
+    from qanat.store import Store
 
     write_project(tmp_path, "demo")
-    assert main(["-p", str(tmp_path), "graph", "--color", "never"]) == 0
-    out = capsys.readouterr().out
-    assert "normalize" in out and "\033" not in out
-
-    assert main(["-p", str(tmp_path), "graph", "--color", "never", "--ascii"]) == 0
-    assert "╭" not in capsys.readouterr().out
+    project, root = load(tmp_path)
+    store = Store(project.store_url(root))
+    try:
+        out = plain(render(build_graph(store, project, root, None), root,
+                           ink=Ink("off"), g=UNICODE, labels=True))
+    finally:
+        store.close()
+    assert "normalize" in out
+    assert "\033" not in out

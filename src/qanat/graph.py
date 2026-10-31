@@ -35,12 +35,22 @@ if TYPE_CHECKING:
 
 # ---------------------------------------------------------------- the key
 #: the stage a table belongs to, which is the only thing its colour says.
-STAGE_INK = {
-    "raw": "#a2e65d",
-    "features": "#7fc4b4",
-    "weights": "#e8c069",
-    "pnl": "#c2b6d8",
-}
+#:
+#: `raw` is pinned, because it is the one kind the platform acts on. Every stage
+#: after it takes the next colour in the cycle, by its position in the file.
+#:
+#: This used to be a dict keyed on the stage's `kind`, holding the five fixed
+#: kinds -- `raw`, `normalized`, `features`, `weights`, `pnl`. Those are gone and
+#: a kind is now a name you choose, so the lookup missed: the starter project's
+#: own `normalized` stage drew in FAINT and never reached the legend, because the
+#: name it chose was not a key. **Order is in the file. A keyword may not be.**
+RAW_INK = "#a2e65d"
+STAGE_CYCLE = ("#7fc4b4", "#e8c069", "#c2b6d8")
+
+
+def stage_ink(kind: str, nth: int) -> str:
+    """A stage's colour: `raw` pinned, anything else by its place in the file."""
+    return RAW_INK if kind == "raw" else STAGE_CYCLE[nth % len(STAGE_CYCLE)]
 #: what the job that writes a table did the last time it ran
 STATE_INK = {
     "ok": "#8fce6a",
@@ -241,7 +251,8 @@ class Node:
     key: str
     name: str = ""
     stage: str = ""
-    kind: str = "features"
+    kind: str = ""
+    ink: str = FAINT
     state: str = "idle"
     rows: int = 0
     stale: bool = False
@@ -270,6 +281,8 @@ class Model:
     cols: list[list[Node]]
     edges: list[tuple[str, str]]
     groups: list[tuple[str, str, int, int]] = field(default_factory=list)  # id, kind, col0, col1
+    #: stage id -> the ink it is drawn in, so a group label and its boxes agree
+    inks: dict[str, str] = field(default_factory=dict)
 
 
 def _ago(ts: str | None) -> str:
@@ -307,13 +320,22 @@ def model(g: dict[str, Any]) -> Model:
     stages = g.get("stages", [])
     order = {s["id"]: i for i, s in enumerate(stages)}
 
+    # One colour per stage, assigned by order rather than by name.
+    inks: dict[str, str] = {}
+    nth = 0
+    for s in stages:
+        inks[s["id"]] = stage_ink(s.get("kind") or "", nth)
+        if (s.get("kind") or "") != "raw":
+            nth += 1
+
     nodes: dict[str, Node] = {}
     for i, t in enumerate(g.get("tables", [])):
         nodes[t["ref"]] = Node(
             key=t["ref"],
             name=t["name"],
             stage=t["stage"],
-            kind=t.get("stage_kind") or "features",
+            kind=t.get("stage_kind") or "",
+            ink=inks.get(t["stage"], FAINT),
             state=t.get("status") or "idle",
             rows=int(t.get("rows") or 0),
             stale=bool(t.get("stale")),
@@ -382,7 +404,7 @@ def model(g: dict[str, Any]) -> Model:
             free = next((c for c in range(len(cols)) if c not in taken and not cols[c]), None)
             if free is not None:
                 groups.append((s["id"], s["kind"], free, free))
-    return Model(nodes, cols, routed, groups)
+    return Model(nodes, cols, routed, groups, inks)
 
 
 # ----------------------------------------------------------------- layout
@@ -476,7 +498,7 @@ def _size(m: Model, g: Glyphs, labels: bool, maxbox: int) -> dict[str, Any]:
 
 
 def _box(cv: Canvas, n: Node, ink: Ink, g: Glyphs) -> None:
-    edge = ink.of(STAGE_INK.get(n.kind, FAINT))
+    edge = ink.of(n.ink)
     y = n.y + HEAD
     name = _clip(n.name, n.w - 5, g)
     top = g.tl + g.h + " " + name + " "
@@ -508,10 +530,10 @@ def draw_on(m: Model, g: Glyphs, ink: Ink, *, labels: bool = True, maxbox: int =
     for gid, kind, c0, c1 in m.groups:
         x0 = INDENT + sum(box["colw"][:c0]) + sum(box["gw"][:c0])
         x1 = INDENT + sum(box["colw"][: c1 + 1]) + sum(box["gw"][:c1]) - 1
-        style = ink.of(STAGE_INK.get(kind, FAINT))
-        cv.put(x0, 0, gid, style)
+        hue = m.inks.get(gid, FAINT)
+        cv.put(x0, 0, gid, ink.of(hue))
         if x1 > x0 + len(gid):
-            cv.hline(x0 + len(gid) + 1, x1, 0, ink.of(STAGE_INK.get(kind, FAINT), dim=True))
+            cv.hline(x0 + len(gid) + 1, x1, 0, ink.of(hue, dim=True))
 
     for n in m.nodes.values():
         if n.dummy:
@@ -551,9 +573,8 @@ def legend(m: Model, g: Glyphs, ink: Ink) -> list[str]:
     out = []
     if ink.on:
         stages = "   ".join(
-            f"{ink.of(STAGE_INK[k])}{g.swatch} {k}\033[0m"
-            for k in ("raw", "features", "weights", "pnl")
-            if any(n.kind == k for n in m.nodes.values() if not n.dummy)
+            f"{ink.of(m.inks.get(gid, FAINT))}{g.swatch} {gid}\033[0m"
+            for gid, _, c0, _ in sorted(m.groups, key=lambda t: t[2])
         )
         out.append(f"{' ' * INDENT}{stages}")
 
@@ -622,7 +643,7 @@ def _plain(s: str) -> str:
 # --------------------------------------------------------------------- read model
 #
 # The shape of the pipeline as data: stages, tables, jobs and the edges between
-# them. `qanat graph` draws it and the `lineage` tool answers out of it, so it
+# them. The `lineage` tool answers out of it, so it
 # lives here, next to the thing that draws it.
 
 def _plain(v: Any) -> Any:
@@ -684,7 +705,7 @@ def build_graph(
         tables.append({
             "ref": ref,
             "stage": stage_id,
-            "stage_kind": lay.kind if lay else "features",
+            "stage_kind": lay.kind if lay else "",
             "name": ref.partition(".")[2],
             "producer": owner,
             "producer_kind": by_id.get(owner, {}).get("kind"),
@@ -704,7 +725,7 @@ def build_graph(
         tables.append({
             "ref": ch.target,
             "stage": stage_id,
-            "stage_kind": lay.kind if lay else "features",
+            "stage_kind": lay.kind if lay else "",
             "name": ch.target.partition(".")[2],
             "producer": None,
             "producer_kind": None,

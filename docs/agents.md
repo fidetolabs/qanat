@@ -1,24 +1,34 @@
 # Notes on the agent surface
 
 The README covers adding qanat to an MCP client. These are the parts that only matter once you are
-using them. There are 23 tools at `full`, 15 at `research` and 12 at `data`.
+using them. There are 33 tools at `authoring`, 28 at `full`, 20 at `research` and 14 at `data`.
 
 ## The agent's surface is wider than the CLI's
 
-Four tools share a name with a command and do the same thing: `check`, `plan`, `run` and
-`screen`. Everything else differs, deliberately.
+One tool shares a name with a command and does the same thing: `check`. `plan`, `run` and
+`screen` used to share one too, and those commands were removed — a second door onto one question
+is a second place the behaviour can quietly differ, and the caller here is a program.
 
-An agent navigates where a person reads. `qanat ls` prints stages, tables and jobs in one dump;
+An agent navigates where a person reads. `qanat ls` printed stages, tables and jobs in one dump;
 an agent gets `list_tables`, `list_steps` and `describe_table` separately, and `describe_table`
-plus `sample_table` to look inside one.
+plus `sample_table` to look inside one. **`ls` is gone, and so are `graph`, `plan`, `prune`, `run`
+and `screen`** — each was a second door onto a question a tool already answers, and a second door
+is a second place the behaviour can quietly differ. Running one prints where it went.
 
 Going the other way, `save_step`, `save_source` and `save_universe` have no CLI at
 all. You author a step in your editor; an agent authors one through the API.
 
 Four commands have no tool. `init` and `prune` because an agent works inside a project that
-already exists and does not drop tables; `serve` because starting a scheduler is not something an
-agent should do mid-question; `mcp` because it is the transport; `ls` because it is three tools
-here.
+already exists and does not drop tables; `mcp` because it is the transport; `ls` because it is
+three tools here; and `serve` because of process lifetime, not authority.
+
+**A clock cannot live in a stdio server, and that is a fact rather than a rule.** Over stdio
+this server is your client's child, so a thread it started would die with the conversation —
+there is nothing for a `start_scheduler` tool to start that would still be there. Under
+`qanat serve` the process already outlives the request and already holds a scheduler. So
+instead of a tool that starts one, `list_subscriptions` reports whether one is attached: over
+stdio the honest sentence is *"this will run when the recorder runs, and nothing is running
+here"*, not *"updating daily"*.
 
 ## Nothing here judges a result
 
@@ -34,9 +44,9 @@ Removed in 0.4.0: `record_trial`, `list_trials`, `read_bar`, `set_bar`, `compare
 Removed in 0.5.0: `backtest`, `backtest_conditions`, `list_backtests`, `report`, `period` — the
 package no longer prices a basket, so there is no run to report on. The
 first four were a trial ledger and a significance bar, which only mean something if the product
-certifies indicators. It does not. The arithmetic is in the fdtl-kb record, `O-20261018-04`: at
-fourteen annual rebalances the significance bar lands at an IC of 0.069 and a real indicator is
-0.02 to 0.06, so the test fails on a true effect at any history length that is available.
+certifies indicators. It does not. And the arithmetic says the bar could not do that job anyway:
+at fourteen annual rebalances it lands at an IC of 0.069, a real indicator is 0.02 to 0.06, so the
+test fails on a true effect at any history length that is available.
 
 `weights` went because nothing in the product simulates holding a position any more, and `compare`
 because comparing two runs needed one summary number per run and there is no longer one.
@@ -84,19 +94,33 @@ tool that returns a confident wrong offset is worse than one that admits it gues
 
 ## `--scope`
 
-Three scopes, nested. Each one contains the one before it, and `full` is the default.
+Four scopes, nested. Each one contains the one before it, and **`full` is the default — not the
+widest one.**
 
 ```bash
-qanat mcp --scope data       # 12 tools
-qanat mcp --scope research   # 15 tools
-qanat mcp                    # 23 tools
+qanat mcp --scope data         # 14 tools
+qanat mcp --scope research     # 20 tools
+qanat mcp                      # 28 tools
+qanat mcp --scope authoring    # 33 tools
 ```
 
 | scope | adds | tools |
 | --- | --- | --- |
-| `data` | read the tables, and read the documents | `list_tables` `describe_table` `sample_table` `profile_table` `lineage` `stale_tables` `list_metrics` `list_sections` `read_section` `search_documents` `read_facts` `check_number` |
-| `research` | read the graph, and screen | `list_steps` `read_step` `screen` |
-| `full` | author, ingest, schedule | `check` `plan` `run` `list_runs` `save_step` `remove_step` `save_source` `save_universe` |
+| `data` | read the tables, list and read companies, read the documents | `list_tables` `describe_table` `sample_table` `profile_table` `lineage` `stale_tables` `list_metrics` `list_companies` `read_company` `list_sections` `read_section` `search_documents` `read_facts` `check_number` |
+| `research` | read the graph, find filings, screen a universe | `list_steps` `read_step` `screen` `coverage` `find_filings` `list_subscriptions` |
+| `full` | run it, and ingest | `check` `plan` `run` `list_runs` `ingest_filings` `subscribe_filings` `unsubscribe_filings` `save_universe` |
+| `authoring` | define metrics, and rewire the pipeline | `define_metric` `remove_metric` `save_step` `remove_step` `save_source` |
+
+**Why `authoring` is above the default.** The pipeline from a filing to a metric is the same in
+every project, so nobody screening filings needs the tools that change it — and carrying them means
+an agent can change it by accident. Defining a metric sits there too, for a different reason: a
+formula is the same number for every reader of a given Qanat, so there is no private definition and
+the owner of one is whoever runs the deployment.
+
+**`lineage` and `stale_tables` stay in `data`, and they look like they should not.** Both only
+mean something to a caller who may change the pipeline. But each scope is a published contract, and
+taking a tool out of `data` breaks what somebody has already built against it worse than adding one
+would. Moving them is a separate decision, not a cleanup.
 
 **It is one server and one service layer.** The scope decides which tools are listed, nothing
 else. Three separate servers would drift apart, and the CLI and the MCP server answering the same
@@ -132,7 +156,8 @@ child process, and the client is somewhere else entirely.
 
 ```bash
 qanat mcp --http --port 8421 --scope research --token "$QANAT_MCP_TOKEN"
-qanat serve    --port 8421 --scope research --token "$QANAT_MCP_TOKEN"   # plus the scheduler
+qanat mcp --http --schedule --port 8421 --token "$QANAT_MCP_TOKEN"   # plus the clock
+qanat schedule --run-now                                            # the clock, serving nothing
 ```
 
 This is MCP's Streamable HTTP transport on `/mcp`. `POST` carries JSON-RPC and gets JSON back.
@@ -151,16 +176,25 @@ the name of the scope it needs instead of pretending not to exist.
 store behind a lock. Two projects means two processes. Many tenants means a process and a store
 each. This is the real limit on how far the HTTP transport goes today.
 
-**`qanat serve` is this server with a clock.** It opens the store, starts the scheduler, and
+**`--schedule` is this server with a clock.** It opens the store, starts the scheduler, and
 mounts the same endpoint, so one process holds the store and everything reaches the project
 through it. That includes the unattended falsification pass, which used to be handed a dozen curl
 endpoints and is now given `--scope research` and the tools that go with it. The scope is what
 stops the pass editing the strategy it is meant to be attacking; it used to be a sentence in a
 prompt.
 
+**The clock and the server are separable, and that is the point of the flag.** They used to be
+one command with `--no-schedule` to turn the clock off, and no way at all to run the clock alone
+— backwards for the two deployments that exist. A recorder wants a clock and no open port:
+`qanat schedule`. A hosted reader wants a server over a store something else fills:
+`qanat mcp --http`. One machine doing both jobs asks for both.
+
+**`list_subscriptions` reports which one you have.** Over stdio nothing in the process reads a
+cron line, so it says so rather than saying "updating daily".
+
 **Who may connect.** It binds to 127.0.0.1 and refuses any other address without `--token` or
 `QANAT_MCP_TOKEN`, because binding somewhere reachable and then answering anybody is not a default
-worth having. The `Host` and `Origin` checks are the ones `qanat serve` uses, and they are here
+worth having. The `Host` and `Origin` checks are the same either way, and they are here
 for the same reason: binding to loopback does not stop a page you are visiting from pointing its
 own domain at 127.0.0.1 and calling this server as if it were same-origin.
 

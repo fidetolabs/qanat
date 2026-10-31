@@ -65,6 +65,63 @@ steps:
     script: steps/parse_facts.py
     options:
       reads: raw.documents
+
+# ------------------------------------------------------------------ the corpus --
+# Which tables hold the documents and the numbers pulled out of them. The
+# reading tools need to know where to look, and the platform does not name
+# layers -- so the project says. Without this they are simply not offered.
+corpus:
+  documents: raw.documents
+  facts: normalized.facts
+
+# ----------------------------------------------------------------- the metrics --
+# A formula with a name and a version. Shared: `net income / revenue` is
+# arithmetic, so it is the same number for every caller. The threshold you
+# compare it against is the judgement, and that is yours -- it travels with the
+# screen call and is never stored here.
+#
+# `origin: shipped` marks this as the **starter set**: one formula, so the
+# product's own verb works on the day you install, and deliberately not a
+# metric library. Call `define_metric` to write your own beside it; yours is
+# labelled `defined` and does not join this set by being stored next to it.
+#
+# **The version is yours to bump.** An answer somebody kept points at a
+# version, so a changed formula is written as a new version beside the old one
+# and both still resolve.
+metrics:
+  - id: net_margin
+    origin: shipped
+    version: 1
+    unit: ratio
+    description: >
+      net income over revenue, for the most recent full year each filer has
+      reported as of the date being screened. Filers do not agree on a revenue
+      tag -- NVIDIA uses Revenues, Apple uses the contract tag -- so both are
+      accepted and the contract one wins when a filer tags both.
+    sql: |
+      WITH annual AS (
+        SELECT subject, concept, value, as_of, period_end
+        FROM normalized__facts
+        WHERE dims = '{}' AND NOT is_instant
+          AND date_diff('day', period_start, period_end) BETWEEN 350 AND 380
+          AND as_of <= :as_of
+      ), ni AS (
+        SELECT subject, value, row_number() OVER (PARTITION BY subject
+                 ORDER BY as_of DESC, period_end DESC) AS rn
+        FROM annual WHERE concept = 'us-gaap:NetIncomeLoss'
+      ), rev AS (
+        SELECT subject, value, row_number() OVER (PARTITION BY subject
+                 ORDER BY as_of DESC, period_end DESC,
+                 CASE concept
+                   WHEN 'us-gaap:RevenueFromContractWithCustomerExcludingAssessedTax' THEN 0
+                   ELSE 1 END) AS rn
+        FROM annual WHERE concept IN (
+          'us-gaap:RevenueFromContractWithCustomerExcludingAssessedTax',
+          'us-gaap:Revenues')
+      )
+      SELECT ni.subject AS subject, ni.value / NULLIF(rev.value, 0) AS value
+      FROM ni JOIN rev ON rev.subject = ni.subject AND rev.rn = 1
+      WHERE ni.rn = 1
 """
 
 PARSE_FACTS_PY = '''\
@@ -136,9 +193,8 @@ read out of it.
     export SEC_USER_AGENT="your name you@example.com"
 
     qanat check      # does the pipeline obey the stage contract?
-    qanat run        # poll every source, run every step, once
     qanat mcp        # serve this project to your agent
-    qanat serve      # run the scheduler on a clock
+    qanat schedule   # run every job on its clock, serving nothing
 
 The SEC needs no account and no API key, only a contact address so it can tell
 who is making the requests. Filings are cached under `data/documents`, so only

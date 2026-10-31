@@ -19,6 +19,8 @@ examples/sec-10k/data/
 # Local IDE / agent config (machine-specific)
 .claude/
 .cursor/
+# Agent notes that point at the private planning repo. Not for a public mirror.
+CLAUDE.local.md
 
 # Demo video tooling (not part of the product)
 videos/

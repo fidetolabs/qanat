@@ -9,7 +9,7 @@ from typing import Any
 
 import yaml
 
-from qanat.models import Project, Source, Stage, Step
+from qanat.models import Metric, Project, Source, Stage, Step
 
 
 def dump_project(project: Project) -> dict[str, Any]:
@@ -30,14 +30,27 @@ def dump_project(project: Project) -> dict[str, Any]:
         data["sources"] = [_dump_source(s) for s in project.sources]
     if project.steps:
         data["steps"] = [_dump_step(st) for st in project.steps]
+    if project.metrics:
+        data["metrics"] = [_dump_metric(m) for m in project.metrics]
     if project.retention:
         data["retention"] = dict(project.retention)
     if project.time_columns:
         data["time_columns"] = dict(project.time_columns)
     if project.job_timeout:
         data["job_timeout"] = project.job_timeout
-        # Anything the model holds has to be written back, or saving one step
-        # quietly deletes the rest of the file.
+    if project.returns is not None:
+        data["returns"] = project.returns.model_dump()
+    if project.corpus is not None:
+        data["corpus"] = project.corpus.model_dump()
+    # Anything the model holds has to be written back, or saving one step quietly
+    # deletes the rest of the file. That comment was here and three fields were
+    # missing from the dict under it: `metrics`, `returns` and `corpus`. The
+    # round-tripper deletes any key the new dict does not carry, so one
+    # `save_step` on a filings project removed every metric definition, the
+    # price table a screen reads and the three tables the reading tools read --
+    # and the dump then matched the file it had just emptied, so the safety
+    # check passed. `test_every_field_the_model_holds_is_written_back` is what
+    # stops the next field being added to the model and not to this function.
     return data
 
 
@@ -77,6 +90,21 @@ def _dump_step(st: Step) -> dict[str, Any]:
         row["timeout"] = st.timeout
     if st.options:
         row["options"] = st.options
+    return row
+
+
+def _dump_metric(m: Metric) -> dict[str, Any]:
+    row: dict[str, Any] = {"id": m.id, "version": m.version}
+    if m.unit:
+        row["unit"] = m.unit
+    if m.description:
+        row["description"] = m.description
+    row["sql"] = m.sql
+    # Where the definition came from: shipped with the product, or written by a
+    # caller. Only written when it is not the default, so an older file that
+    # says nothing keeps saying nothing.
+    if m.origin != "defined":
+        row["origin"] = m.origin
     return row
 
 

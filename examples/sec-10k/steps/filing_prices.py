@@ -1,8 +1,8 @@
 """One close per filing: the price on the day the numbers became public.
 
-A filing has a date. A market does not trade every day. So the rule, from
-`filings-dataset/spec.md`, is the close on `published_at`, or the last trading
-day before it when the filing landed on a weekend or a holiday.
+A filing has a date. A market does not trade every day. So the rule is the
+close on `published_at`, or the last trading day before it when the filing
+landed on a weekend or a holiday.
 
 **Which of those two happened is stored, not inferred later.** A reader who
 finds a price dated three days before the filing cannot tell whether the market

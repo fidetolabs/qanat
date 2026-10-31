@@ -37,6 +37,9 @@ from pydantic import (
 #: names. This was an enum of five until the five described one workflow.
 StageKind = str
 Connector = Literal["rest", "sql", "csv", "sec", "yfinance"]
+#: Where a metric definition came from. Shipped with the product, or written
+#: here by whoever runs this Qanat.
+MetricOrigin = Literal["shipped", "defined"]
 WriteMode = Literal["append", "replace"]
 
 _NAME = r"^[a-z][a-z0-9_]*$"
@@ -202,6 +205,11 @@ class Metric(Base):
     version: int = 1
     unit: str = ""
     description: str = ""
+    #: Where this definition came from. `shipped` is the starter set that comes
+    #: with the product; `defined` is one somebody wrote here. A caller's own
+    #: definition does not join the shipped set by being stored next to it, and
+    #: a reader asking which it has is asking a real question.
+    origin: MetricOrigin = "defined"
 
     @field_validator("version")
     @classmethod
@@ -266,8 +274,28 @@ class Project(Base):
     def universe(self, bid: str) -> Universe | None:
         return next((x for x in self.universes if x.id == bid), None)
 
-    def metric(self, mid: str) -> Metric | None:
-        return next((x for x in self.metrics if x.id == mid), None)
+    def metric(self, mid: str, version: int | None = None) -> Metric | None:
+        """One definition. The newest version unless a version is named.
+
+        **Every version stays resolvable, and that is the point of the field.**
+        An answer somebody kept points at a definition version, so a formula
+        bumped to N+1 must not change what version N meant. Asking without a
+        version gets the current one, which is what a fresh screen wants.
+        """
+        these = [x for x in self.metrics if x.id == mid]
+        if not these:
+            return None
+        if version is not None:
+            return next((x for x in these if x.version == version), None)
+        return max(these, key=lambda x: x.version)
+
+    def metric_versions(self, mid: str) -> list[int]:
+        """Every version of one definition, oldest first."""
+        return sorted(x.version for x in self.metrics if x.id == mid)
+
+    def metric_ids(self) -> list[str]:
+        """Each definition once, in the order the file declares them."""
+        return list(dict.fromkeys(x.id for x in self.metrics))
 
     @property
     def jobs(self) -> list[Source | Step]:
