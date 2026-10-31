@@ -533,10 +533,33 @@ class Store:
         return cur
 
     # ---- meta ----------------------------------------------------------------
+    @property
+    def _meta_home(self) -> str:
+        """Where the metadata tables are *created*, qualified.
+
+        **Creating them bare put them in the wrong database.** A parquet store's
+        own connection is `:memory:`, and the search path is `memory.main` then
+        `meta.main` -- data first, because a bare table name means a data table.
+        So `CREATE TABLE IF NOT EXISTS _qanat_runs` resolved to the front of that
+        path and built the run log, the event log and the applied state **in
+        memory**, in a file-backed store, where they were lost on every close.
+
+        What that cost, on a parquet store only: `list_runs` came back empty
+        after a restart, a subscription's last run read as never, and `plan`
+        found no applied state -- so every job looked like it had never run and
+        every pass reported the whole project as new.
+
+        Reading was always right. The bare names in every query fall through
+        the search path to `meta.main` once nothing shadows them in memory, so
+        only the creation had to move.
+        """
+        return "meta.main." if (self.kind == "parquet" and self._meta_open) else ""
+
     def _ensure_meta(self) -> None:
         with self._lock:
+            where = self._meta_home
             self.con.execute(f"""
-                CREATE TABLE IF NOT EXISTS {RUNS} (
+                CREATE TABLE IF NOT EXISTS {where}{RUNS} (
                     run_id     BIGINT PRIMARY KEY,
                     job_id     VARCHAR,
                     kind       VARCHAR,
@@ -548,7 +571,7 @@ class Store:
                     error      VARCHAR
                 )""")
             self.con.execute(f"""
-                CREATE TABLE IF NOT EXISTS {EVENTS} (
+                CREATE TABLE IF NOT EXISTS {where}{EVENTS} (
                     ts     TIMESTAMP,
                     level  VARCHAR,
                     job_id VARCHAR,
@@ -560,10 +583,10 @@ class Store:
             # Rows written before this existed read as NULL, and stay
             # unattributed rather than being guessed at.
             self.con.execute(
-                f"ALTER TABLE {EVENTS} ADD COLUMN IF NOT EXISTS actor VARCHAR"
+                f"ALTER TABLE {where}{EVENTS} ADD COLUMN IF NOT EXISTS actor VARCHAR"
             )
             self.con.execute(f"""
-                CREATE TABLE IF NOT EXISTS {STATE} (
+                CREATE TABLE IF NOT EXISTS {where}{STATE} (
                     job_id     VARCHAR PRIMARY KEY,
                     digest     VARCHAR,
                     spec       VARCHAR,
@@ -592,21 +615,21 @@ class Store:
         self.interrupted_screen: str | None = None
         with self._lock:
             row = self.con.execute(
-                f"SELECT spec FROM {STATE} WHERE job_id IN (?, ?) ORDER BY job_id LIMIT 1",
+                f"SELECT spec FROM {self._meta_home}{STATE} WHERE job_id IN (?, ?) ORDER BY job_id LIMIT 1",
                 [self._SCREEN_MARK, self._SCREEN_MARK_WAS],
             ).fetchone()
             stranded = self.con.execute(
-                f"SELECT count(*) FROM {RUNS} WHERE status = 'running'"
+                f"SELECT count(*) FROM {self._meta_home}{RUNS} WHERE status = 'running'"
             ).fetchone()[0]
             if stranded:
                 self.con.execute(
-                    f"UPDATE {RUNS} SET status = 'interrupted', ended_at = now()::TIMESTAMP, "
+                    f"UPDATE {self._meta_home}{RUNS} SET status = 'interrupted', ended_at = now()::TIMESTAMP, "
                     "error = 'the process ended before this run did' WHERE status = 'running'"
                 )
             if row is None:
                 return
             self.con.execute(f'DROP SCHEMA IF EXISTS "{PIT}" CASCADE')
-            self.con.execute(f"DELETE FROM {STATE} WHERE job_id IN (?, ?)",
+            self.con.execute(f"DELETE FROM {self._meta_home}{STATE} WHERE job_id IN (?, ?)",
                              [self._SCREEN_MARK, self._SCREEN_MARK_WAS])
             self.interrupted_screen = str(row[0])
             self.event("warn", "store", (
@@ -618,16 +641,16 @@ class Store:
     def screen_open(self, as_of: str) -> None:
         self._meta()
         with self._lock:
-            self.con.execute(f"DELETE FROM {STATE} WHERE job_id = ?", [self._SCREEN_MARK])
+            self.con.execute(f"DELETE FROM {self._meta_home}{STATE} WHERE job_id = ?", [self._SCREEN_MARK])
             self.con.execute(
-                f"INSERT INTO {STATE} VALUES (?, 'screen', ?, now()::TIMESTAMP)",
+                f"INSERT INTO {self._meta_home}{STATE} VALUES (?, 'screen', ?, now()::TIMESTAMP)",
                 [self._SCREEN_MARK, str(as_of)],
             )
 
     def screen_closed(self) -> None:
         self._meta()
         with self._lock:
-            self.con.execute(f"DELETE FROM {STATE} WHERE job_id = ?", [self._SCREEN_MARK])
+            self.con.execute(f"DELETE FROM {self._meta_home}{STATE} WHERE job_id = ?", [self._SCREEN_MARK])
 
     # ---- writing -------------------------------------------------------------
     def write(self, ref: str, df: pd.DataFrame, mode: str = "replace",
@@ -1048,7 +1071,7 @@ class Store:
                 self.con.execute(f'DROP SCHEMA IF EXISTS "{PIT}" CASCADE')
             except Exception as exc:  # noqa: BLE001 -- a leftover view schema is harmless
                 self.con.execute(
-                    f"INSERT INTO {EVENTS} VALUES (now()::TIMESTAMP, 'warn', 'screen', ?)",
+                    f"INSERT INTO {self._meta_home}{EVENTS} VALUES (now()::TIMESTAMP, 'warn', 'screen', ?)",
                     [f"could not drop the as-of views: {exc}"],
                 )
         self.as_of = None
@@ -1141,7 +1164,7 @@ class Store:
     def load_state(self) -> dict[str, dict[str, str]]:
         self._meta()
         with self._lock:
-            rows = self.con.execute(f"SELECT job_id, digest, spec FROM {STATE}").fetchall()
+            rows = self.con.execute(f"SELECT job_id, digest, spec FROM {self._meta_home}{STATE}").fetchall()
         skip = {self._SCREEN_MARK, self._SCREEN_MARK_WAS}
         return {j: {"digest": d, "spec": s} for j, d, s in rows if j not in skip}
 
@@ -1149,23 +1172,23 @@ class Store:
         """Record one job as applied. Called when that job actually succeeds."""
         self._meta()
         with self._lock:
-            self.con.execute(f"DELETE FROM {STATE} WHERE job_id = ?", [job_id])
-            self.con.execute(f"INSERT INTO {STATE} VALUES (?, ?, ?, now()::TIMESTAMP)", [job_id, digest, spec])
+            self.con.execute(f"DELETE FROM {self._meta_home}{STATE} WHERE job_id = ?", [job_id])
+            self.con.execute(f"INSERT INTO {self._meta_home}{STATE} VALUES (?, ?, ?, now()::TIMESTAMP)", [job_id, digest, spec])
 
     def forget_state(self, job_ids: list[str]) -> None:
         self._meta()
         with self._lock:
             for job_id in job_ids:
-                self.con.execute(f"DELETE FROM {STATE} WHERE job_id = ?", [job_id])
+                self.con.execute(f"DELETE FROM {self._meta_home}{STATE} WHERE job_id = ?", [job_id])
 
     def save_state(self, entries: dict[str, tuple[str, str]]) -> None:
         """entries: job_id -> (digest, spec json). Replaces the whole snapshot."""
         self._meta()
         with self._lock:
-            self.con.execute(f"DELETE FROM {STATE}")
+            self.con.execute(f"DELETE FROM {self._meta_home}{STATE}")
             for job_id, (digest, spec) in entries.items():
                 self.con.execute(
-                    f"INSERT INTO {STATE} VALUES (?, ?, ?, now()::TIMESTAMP)", [job_id, digest, spec]
+                    f"INSERT INTO {self._meta_home}{STATE} VALUES (?, ?, ?, now()::TIMESTAMP)", [job_id, digest, spec]
                 )
 
     def table_info(self, ref: str) -> TableInfo | None:
@@ -1188,7 +1211,7 @@ class Store:
         last = None
         if self.kind != "parquet" or self._meta_open:
             last = r.execute(
-                f"SELECT max(ended_at) FROM {RUNS} WHERE targets LIKE ? AND status = 'ok'",
+                f"SELECT max(ended_at) FROM {self._meta_home}{RUNS} WHERE targets LIKE ? AND status = 'ok'",
                 [f"%{ref}%"],
             ).fetchone()[0]
         stage, _, tname = ref.partition(".")
@@ -1261,7 +1284,7 @@ class Store:
         run_id = time.time_ns() // 1000
         with self._lock:
             self.con.execute(
-                f"INSERT INTO {RUNS} VALUES (?, ?, ?, now()::TIMESTAMP, NULL, 'running', 0, ?, NULL)",
+                f"INSERT INTO {self._meta_home}{RUNS} VALUES (?, ?, ?, now()::TIMESTAMP, NULL, 'running', 0, ?, NULL)",
                 [run_id, job_id, kind, ",".join(targets)],
             )
         return run_id
@@ -1270,7 +1293,7 @@ class Store:
         self._meta()
         with self._lock:
             self.con.execute(
-                f"UPDATE {RUNS} SET ended_at = now()::TIMESTAMP, status = ?, rows_out = ?, error = ? "
+                f"UPDATE {self._meta_home}{RUNS} SET ended_at = now()::TIMESTAMP, status = ?, rows_out = ?, error = ? "
                 "WHERE run_id = ?",
                 [status, rows, error, run_id],
             )
@@ -1284,7 +1307,7 @@ class Store:
         """
         self._meta()
         df = self.rcon.execute(f"""
-            SELECT ts, level, message, actor FROM {EVENTS}
+            SELECT ts, level, message, actor FROM {self._meta_home}{EVENTS}
             WHERE job_id = 'bar' ORDER BY ts DESC LIMIT {int(limit)}
         """).df()
         return _records(df)
@@ -1295,7 +1318,7 @@ class Store:
             # Named columns, not positional: `actor` was added to this table after
             # the fact, and a bare VALUES list would put the message in it.
             self.con.execute(
-                f"INSERT INTO {EVENTS} (ts, level, job_id, message, actor) "
+                f"INSERT INTO {self._meta_home}{EVENTS} (ts, level, job_id, message, actor) "
                 f"VALUES (now()::TIMESTAMP, ?, ?, ?, ?)",
                 [level, job_id, message, current_actor()],
             )
@@ -1303,15 +1326,15 @@ class Store:
     def recent_runs(self, limit: int = 50) -> list[dict[str, Any]]:
         self._meta()
         df = self.rcon.execute(
-            f"SELECT * FROM {RUNS} ORDER BY started_at DESC LIMIT {int(limit)}"
+            f"SELECT * FROM {self._meta_home}{RUNS} ORDER BY started_at DESC LIMIT {int(limit)}"
         ).df()
         return _records(df)
 
     def last_run_by_job(self) -> dict[str, dict[str, Any]]:
         self._meta()
         df = self.rcon.execute(f"""
-                SELECT r.* FROM {RUNS} r
-                JOIN (SELECT job_id, max(started_at) AS s FROM {RUNS} GROUP BY job_id) m
+                SELECT r.* FROM {self._meta_home}{RUNS} r
+                JOIN (SELECT job_id, max(started_at) AS s FROM {self._meta_home}{RUNS} GROUP BY job_id) m
                   ON r.job_id = m.job_id AND r.started_at = m.s
         """).df()
         return {r["job_id"]: r for r in _records(df)}
@@ -1319,7 +1342,7 @@ class Store:
     def recent_events(self, limit: int = 200) -> list[dict[str, Any]]:
         self._meta()
         df = self.rcon.execute(
-            f"SELECT * FROM {EVENTS} ORDER BY ts DESC LIMIT {int(limit)}"
+            f"SELECT * FROM {self._meta_home}{EVENTS} ORDER BY ts DESC LIMIT {int(limit)}"
         ).df()
         return _records(df)
 

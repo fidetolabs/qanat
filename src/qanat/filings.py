@@ -409,8 +409,14 @@ def subscriptions(
             "every": every_of(src.schedule),
             "last_run": None if was is None else {
                 "started_at": str(was.get("started_at")),
+                "ended_at": None if was.get("ended_at") is None
+                            else str(was.get("ended_at")),
                 "status": was.get("status"),
-                "rows": was.get("rows"),
+                # `rows_out` is what the runs table calls it. Reading `rows`
+                # reported None on every pass that had in fact landed rows --
+                # which is the one thing this tool exists to report honestly.
+                "rows": None if was.get("rows_out") is None
+                        else int(was["rows_out"]),
                 "error": was.get("error"),
             },
             "next_due": due,

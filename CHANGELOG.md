@@ -290,6 +290,41 @@ written back. Three fields were missing from the dict under it.
 `test_every_field_the_model_holds_is_written_back` walks the model rather than a
 list, so the next field added to one and not the other fails a test.
 
+### Fixed: a parquet store lost its run log, its event log and its applied state
+
+On every close. Found while taking the measurement for a subscription's last
+run, which reported `None` on a pass that had just landed four rows.
+
+A parquet store's own connection is `:memory:` and its search path is
+`memory.main` then `meta.main` — data first, because a bare table name means a
+data table. So `CREATE TABLE IF NOT EXISTS _qanat_runs` resolved to the front of
+that path and built the three metadata tables **in memory**, in a file-backed
+store. `meta.duckdb` was created, attached, and left empty.
+
+What it cost, on a parquet store only:
+
+- `list_runs` came back empty after a restart
+- a subscription's last run read as never having happened
+- the event log was gone, so nothing could say the project had changed underneath
+- **`plan` found no applied state, so every job looked like it had never run** and
+  every pass reported the whole project as new
+
+The duckdb-file store was always right, which is why nothing caught it: the
+tables land in the file there, and the suite writes and reads inside one process
+on both store kinds. The equivalence claim — one shape at both doors — did not
+hold here, and now a test asserts it directly on each kind.
+
+Reading was never the problem. The bare names in every query fall through the
+search path once nothing shadows them in memory; only the creation had to move.
+Every metadata query now carries its database with it rather than trusting a
+search path, because the reader connection pins its own and is cached per thread.
+
+### Fixed: `list_subscriptions` reported no rows for a pass that landed rows
+
+It read `rows` and the runs table calls the column `rows_out`, so every pass
+came back `None` — in the one tool whose whole job is saying honestly what has
+and has not happened.
+
 ### Fixed: `check` warned that nothing read the facts table
 
 The never-read warning counted only steps as readers. A metric is a query rather

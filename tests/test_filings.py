@@ -748,3 +748,30 @@ def test_no_sec_request_goes_out_of_find_filings_without_a_contact(project, monk
     with pytest.raises(ValueError, match="no contact"):
         filings.find(store, p, ["AAPL"])
     assert asked == [], "a client was opened before the contact was checked"
+
+
+def test_a_subscriptions_last_run_reports_the_rows_it_landed(written, edgar, monkeypatch):
+    """It read `rows` and the runs table calls it `rows_out`, so every pass that
+    had landed rows reported None -- in the one tool whose whole job is saying
+    honestly what has and has not happened."""
+    from qanat.runner import run_source
+    from qanat.sources import sec
+
+    p, store, root = written
+    filings.subscribe(p, root, ["AAPL"], forms=["10-K"], frm="2025-01-01")
+    monkeypatch.setattr(sec.Throttle, "wait", lambda self: None)
+    result = run_source(store, p, root, p.sources[0])
+    assert result.rows > 0
+
+    mine = filings.subscriptions(store, p)["subscriptions"][0]
+    assert mine["last_run"]["status"] == "ok"
+    assert mine["last_run"]["rows"] == result.rows, "the rows it actually landed"
+    assert mine["last_run"]["ended_at"], "and when it finished"
+
+
+def test_a_subscription_that_has_never_run_says_so(written, edgar):
+    p, store, root = written
+    filings.subscribe(p, root, ["AAPL"], forms=["10-K"])
+    mine = filings.subscriptions(store, p)["subscriptions"][0]
+    assert mine["last_run"] is None
+    assert mine["next_due"], "and still says when it is due"

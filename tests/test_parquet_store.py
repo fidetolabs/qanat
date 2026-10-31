@@ -349,3 +349,58 @@ def test_appending_to_a_table_that_is_not_there_yet_creates_it(store: Store):
     assert len(store.read("raw.fresh")) == 3
     store.write("raw.fresh", rows(2, start=500), mode="append", key=["sym"])
     assert len(store.read("raw.fresh")) == 5
+
+
+# --------------------------------------------------- the log outlives the process
+@pytest.mark.parametrize("url", ["dir", "file"])
+def test_the_run_log_survives_a_close_on_either_store(tmp_path: Path, url: str):
+    """One shape everywhere, and this is where it was not.
+
+    A parquet store's own connection is `:memory:`, and its search path is
+    `memory.main` then `meta.main` -- data first, because a bare name means a
+    data table. So `CREATE TABLE IF NOT EXISTS _qanat_runs` resolved to the
+    front of that path and built the run log, the event log and the applied
+    state **in memory**, in a file-backed store.
+
+    What it cost, on the parquet store only: `list_runs` came back empty after
+    a restart, a subscription's last run read as never, and `plan` found no
+    applied state -- so every job looked like it had never run and every pass
+    reported the whole project as new. The duckdb-file store was always right,
+    which is why nothing caught it: the suite writes and reads in one process.
+    """
+    target = str(tmp_path / "data") if url == "dir" else str(tmp_path / "q.duckdb")
+
+    s = Store(target)
+    run = s.start_run("land", "source", ["raw.a"])
+    s.end_run(run, "ok", 42)
+    s.set_state("land", "digest-1", '{"spec": 1}')
+    s.event("ok", "land", "landed 42 rows")
+    s.close()
+
+    again = Store(target)
+    try:
+        runs = again.recent_runs(5)
+        assert [r["job_id"] for r in runs] == ["land"]
+        assert runs[0]["status"] == "ok"
+        assert runs[0]["rows_out"] == 42
+        assert again.load_state() == {"land": {"digest": "digest-1",
+                                               "spec": '{"spec": 1}'}}
+        assert [e["message"] for e in again.recent_events(5)] == ["landed 42 rows"]
+        # And the reader connection sees it too, which is the one a tool uses.
+        assert again.last_run_by_job()["land"]["rows_out"] == 42
+    finally:
+        again.close()
+
+
+def test_the_metadata_tables_are_not_built_in_memory(tmp_path: Path):
+    """The shape of the bug, held directly: nothing named `_qanat_*` may live
+    in the in-memory database of a file-backed store."""
+    s = Store(str(tmp_path / "data"))
+    try:
+        s.start_run("land", "source", ["raw.a"])      # forces the catalogue open
+        where = s.con.execute(
+            "SELECT DISTINCT database_name FROM duckdb_tables() "
+            "WHERE table_name LIKE '_qanat%'").fetchall()
+        assert where == [("meta",)], f"metadata lives in {where}"
+    finally:
+        s.close()
