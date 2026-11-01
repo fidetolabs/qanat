@@ -63,6 +63,8 @@ underneath. The same count passes both ways. Worth doing for anything touching `
 
 ## Architecture
 
+**[docs/flows.md](docs/flows.md) says why each tool exists** — every one traced to something a caller does, with the candidates that did not ship and the flow each was missing. Read it before adding a tool.
+
 **[docs/dataflow.md](docs/dataflow.md) walks the whole path first** — EDGAR to a tool call, six
 stations, with every count read out of `examples/sec-10k` rather than estimated. Read it before the
 table below if you want to know why the pieces are arranged this way rather than only where they are.

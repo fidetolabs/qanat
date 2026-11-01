@@ -541,7 +541,7 @@ def test_list_steps_reads_the_cron_line_the_tool_wrote(written, edgar):
 
     session = Session(str(root))
     try:
-        listed = next(x for x in TOOLS if x["name"] == "list_steps")["handler"](session, {})
+        listed = next(x for x in TOOLS if x["name"] == "list_pipeline")["handler"](session, {})
         mine = next(s for s in listed["ingestion"] if s["id"] == out["definition"])
         # The cadences are joined on, not read off the definition -- there may be
         # several, which is why this is a list.

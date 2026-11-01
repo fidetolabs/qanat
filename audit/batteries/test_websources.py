@@ -14,14 +14,14 @@ skips rather than fails -- a broken third party is not a broken qanat.
 
 import pytest
 
-from qanat.models import Source
-from qanat.sources import fetch
+from qanat.connectors import fetch
+from qanat.models import IngestionJobDefinition
 
 pytestmark = pytest.mark.network
 
 
 def _fetch(tmp_path, **cfg):
-    src = Source.model_validate({"id": "probe", "to": ["raw.probe"], "connector": "rest",
+    src = IngestionJobDefinition.model_validate({"id": "probe", "to": ["raw.probe"], "connector": "rest",
                                  **cfg})
     try:
         return fetch(src, tmp_path)
@@ -109,6 +109,6 @@ def test_a_zero_padded_ticker_survives_a_csv_over_http(tmp_path):
     """Not a live feed -- a local file, because the point is the connector's
     options, and KRX codes are the case that made this matter."""
     (tmp_path / "k.csv").write_text("date,symbol,close\n2024-01-01,005930,71000\n")
-    src = Source.model_validate({"id": "k", "to": ["raw.k"], "connector": "csv",
+    src = IngestionJobDefinition.model_validate({"id": "k", "to": ["raw.k"], "connector": "csv",
                                  "options": {"path": "./k.csv", "dtype": {"symbol": "str"}}})
     assert list(fetch(src, tmp_path)["symbol"]) == ["005930"]

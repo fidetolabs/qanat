@@ -237,6 +237,8 @@ def _grep(pattern: str, *paths: str) -> list[str]:
         and "`step`" not in line and "`steps:`" not in line
         and "`source`" not in line and "`sources:`" not in line
         and "`qanat plan`" not in line
+        # "open source" is the licence, not the config declaration
+        and "open-source" not in line and "open source" not in line
     ]
 
 
@@ -247,7 +249,7 @@ def test_the_word_step_is_gone_from_the_engine():
     # The tool names carrying the word are T-08's to choose from a flow, so they
     # are named here rather than silently passed over.
     hits = [h for h in hits if not any(
-        name in h for name in ("list_steps", "save_step", "read_step", "remove_step"))]
+        name in h for name in ("list_pipeline", "define_transform", "read_script", "remove_transform"))]
     assert not hits, "\n".join(hits)
 
 
@@ -267,7 +269,7 @@ def test_the_word_source_survives_only_as_row_provenance():
         # the paragraph in each module that explains why the word went
         and "qanat/sources" not in h and "was `qanat/sources/`" not in h
         # as above: `save_source` is renamed from a flow, in T-08
-        and "save_source" not in h
+        and "define_ingestion" not in h
     ]
     assert not hits, "\n".join(hits)
 

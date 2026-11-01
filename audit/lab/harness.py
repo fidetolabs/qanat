@@ -1,8 +1,8 @@
 """Build a whole qanat project from nothing, run it, and read what it saw.
 
-Everything here goes through the ordinary user path -- write a `qanat.yaml`, point
-a source at a file, run the graph, replay it. No internal shortcuts, because a
-shortcut is exactly where a real user's problem would hide.
+Everything here goes through the ordinary user path -- write the project files,
+point an ingestion job at a file, run the graph, replay it. No internal
+shortcuts, because a shortcut is exactly where a real user's problem would hide.
 
     from lab import data, harness
 
@@ -51,7 +51,13 @@ def run(ctx):
 
 
 def project_yaml(name: str, *, extra_steps: str = "",
-                 step_script: str = "steps/sorter.py", **_ignored) -> str:
+                 step_script: str = "transforms/sorter.py", **_ignored) -> str:
+    """One blob, which `build` then splits into the files a project has.
+
+    The split is `qanat.yaml` against what the tools write, and a harness that
+    spelled it out in every call would be describing the file layout rather than
+    the project. `qanat migrate` is the one thing that knows the layout.
+    """
     lines = [
         f"project: {name}",
         "store: ./data/q.duckdb",
@@ -60,12 +66,12 @@ def project_yaml(name: str, *, extra_steps: str = "",
         "stages:",
         "  - {id: raw, kind: raw}",
         "  - {id: normalized, kind: normalized}",
-        "sources:",
-        "  - {id: bars, to: [raw.bars], connector: csv, key: [symbol, ts],",
+        "ingestion_job_definitions:",
+        "  - {id: bars, to: [raw.bars], connector: csv, key: [symbol, date],",
         "     options: {path: ./seed/bars.csv}}",
-        "steps:",
+        "transform_job_definitions:",
         "  - {id: normalize, from: [raw.bars], to: [normalized.prices],",
-        "     script: steps/normalize.sql}",
+        "     script: transforms/normalize.sql}",
         "  - id: sorter_h",
         "    from: [normalized.prices]",
         "    to: [normalized.probe]",
@@ -100,20 +106,26 @@ def build(where: Path, name: str, bars: pd.DataFrame, step_src: str,
           **kw) -> Path:
     """A complete project on disk. `where` should be a tmp_path -- nothing here is
     meant to be kept, and a generated project committed to the repo is exhaust."""
+    from qanat.migrate import apply_migration, plan_migration
+
     root = Path(where) / name
     if root.exists():
         shutil.rmtree(root)
-    (root / "steps").mkdir(parents=True)
+    (root / "transforms").mkdir(parents=True)
     (root / "seed").mkdir()
     (root / "universes").mkdir()
     bars.to_csv(root / "seed/bars.csv", index=False)
     syms = symbols if symbols is not None else sorted(bars["symbol"].unique())
     pd.DataFrame({"symbol": syms}).to_csv(root / "universes/u.csv", index=False)
-    (root / "steps/normalize.sql").write_text(NORMALIZE)
-    (root / "steps/sorter.py").write_text(step_src)
+    (root / "transforms/normalize.sql").write_text(NORMALIZE)
+    (root / "transforms/sorter.py").write_text(step_src)
     for fname, body in (files or {}).items():
-        (root / "steps" / fname).write_text(body)
+        (root / "transforms" / fname).write_text(body)
     (root / "qanat.yaml").write_text(project_yaml(name, **kw))
+    migration = plan_migration(root)
+    if migration.needed:
+        apply_migration(migration)
+        (root / "qanat.yaml.before-the-job-model").unlink(missing_ok=True)
     return root
 
 
@@ -142,6 +154,6 @@ def at(store, project, root, as_of: str):
 
     store.open_pit(as_of, project.time_columns)
     try:
-        return run_all(store, project, root, as_of=as_of, sources=False)
+        return run_all(store, project, root, as_of=as_of, ingest=False)
     finally:
         store.close_pit()

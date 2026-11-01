@@ -5,6 +5,21 @@ For how a filing becomes a number an agent can read, see [dataflow.md](dataflow.
 The README covers adding qanat to an MCP client. These are the parts that only matter once you are
 using them. There are 33 tools at `authoring`, 28 at `full`, 20 at `research` and 14 at `data`.
 
+## Why each tool is here
+
+**[flows.md](flows.md) traces every one of them to something a caller does**, and
+that is the only reason any of them is here. The data model went from two objects
+to eight in 0.11.0 and this surface did not move, because **having an entity is
+not a reason to have a tool over it** — a mirror of the model would be about
+thirty-two tools, generated from the shape of the schema rather than from
+anything a caller needs.
+
+A new tool answers four questions before it exists: does it need Qanat's data or
+engine at all, which flow is it for, which scope may see it, and is it the same
+flow at both doors. A test holds the first three: no tool name contains `job`,
+`definition`, `schedule` or `execution`, every tool appears in `flows.md`, and
+the count at each scope may not grow.
+
 ## The agent's surface is wider than the CLI's
 
 One tool shares a name with a command and does the same thing: `check`. `plan`, `run` and
@@ -12,12 +27,12 @@ One tool shares a name with a command and does the same thing: `check`. `plan`, 
 is a second place the behaviour can quietly differ, and the caller here is a program.
 
 An agent navigates where a person reads. `qanat ls` printed stages, tables and jobs in one dump;
-an agent gets `list_tables`, `list_steps` and `describe_table` separately, and `describe_table`
+an agent gets `list_tables`, `list_pipeline` and `describe_table` separately, and `describe_table`
 plus `sample_table` to look inside one. **`ls` is gone, and so are `graph`, `plan`, `prune`, `run`
 and `screen`** — each was a second door onto a question a tool already answers, and a second door
 is a second place the behaviour can quietly differ. Running one prints where it went.
 
-Going the other way, `save_step`, `save_source` and `save_universe` have no CLI at
+Going the other way, `define_transform`, `define_ingestion` and `define_universe` have no CLI at
 all. You author a transform in your editor; an agent authors one through the API.
 
 Four commands have no tool. `init` and `prune` because an agent works inside a project that
@@ -65,7 +80,7 @@ real panel -- five hundred names by ten years is a million rows moved so somebod
 are five hundred names. `profile_table` is aggregates: fill rate, distinct count, and the range
 each column spans. It costs a scan, and the answer is the same size whatever the table is.
 
-## `save_universe` exists because the error used to name a fix nobody had
+## `define_universe` exists because the error used to name a fix nobody had
 
 A transform that holds a basket holds itself to a universe, so the contract refuses a project that declares
 none. It used to say "add one to qanat.yaml" -- which an agent reaching this project over MCP
@@ -109,9 +124,9 @@ qanat mcp --scope authoring    # 33 tools
 | scope | adds | tools |
 | --- | --- | --- |
 | `data` | read the tables, list and read companies, read the documents | `list_tables` `describe_table` `sample_table` `profile_table` `lineage` `stale_tables` `list_metrics` `list_companies` `read_company` `list_sections` `read_section` `search_documents` `read_facts` `check_number` |
-| `research` | read the graph, find filings, screen a universe | `list_steps` `read_step` `screen` `coverage` `find_filings` `list_subscriptions` |
-| `full` | run it, and ingest | `check` `plan` `run` `list_runs` `ingest_filings` `subscribe_filings` `unsubscribe_filings` `save_universe` |
-| `authoring` | define metrics, and rewire the pipeline | `define_metric` `remove_metric` `save_step` `remove_step` `save_source` |
+| `research` | read the graph, find filings, screen a universe | `list_pipeline` `read_script` `screen` `coverage` `find_filings` `list_subscriptions` |
+| `full` | run it, and ingest | `check` `plan` `run` `list_history` `ingest_filings` `subscribe_filings` `unsubscribe_filings` `define_universe` |
+| `authoring` | define metrics, and rewire the pipeline | `define_metric` `remove_metric` `define_transform` `remove_transform` `define_ingestion` |
 
 **Why `authoring` is above the default.** The pipeline from a filing to a metric is the same in
 every project, so nobody screening filings needs the tools that change it — and carrying them means
@@ -207,7 +222,7 @@ sessions are open.
 
 A transform may read several tables, across any stage earlier than the one it writes -- a
 transform job definition is `n:m`,
-and the scaffold's own `portfolio` transform reads three at once. `save_step` takes the whole list, and
+and the scaffold's own `portfolio` transform reads three at once. `define_transform` takes the whole list, and
 it is the permission set as much as the dependency list: `ctx.read()` refuses anything not named
-there. `save_step` takes one primary table and `also_reads` for the
+there. `define_transform` takes one primary table and `also_reads` for the
 rest, because the shelf scripts rank on one price table and a later edit may not.

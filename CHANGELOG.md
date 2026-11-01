@@ -1,5 +1,190 @@
 # Changelog
 
+## 0.11.0 — 2026-11-01
+
+### A job is four objects, and the architecture file stops being machine-written
+
+**Breaking at every scope.** A project written for 0.10.x does not load; `qanat
+migrate <dir>` rewrites it and prints what it will do before it does it.
+
+#### The asymmetry this started from
+
+Somebody asked to subscribe one company to a daily poll, and it could not be
+answered without rewriting the selection of four. `sources:` was two objects
+wearing one name — the fetch recipe, and the declaration that a table has an
+owner — with `schedule:` welded on as a third. So the three edits a person thinks
+of as separate (*what to fetch*, *how often*, *which table*) were one edit, and
+the answer to "Microsoft daily, Apple weekly" was that it cannot.
+
+Four objects now, the same four for both kinds of job:
+
+| Object | Holds | Does not hold |
+| --- | --- | --- |
+| `ingestion_job_definition` | connector, selection, target table | any cadence |
+| `transform_job_definition` | from-tables, to-table, script | any cadence |
+| `job_schedule` | one definition id, one cron, enabled | any selection |
+| `job` | one definition, one exact datetime, where it came from | anything reusable |
+| `job_execution` | one attempt: started, ended, status, rows, error, attempt | the datetime it was for |
+
+A definition carrying a cadence is refused at load; so is a schedule carrying a
+selection. Several schedules may point at one definition, and a definition with
+none is ordinary — it runs when something asks.
+
+Two of the four already existed under other names: `_qanat_runs` was the
+execution layer and `_qanat_state` was definition versioning. Both are renamed in
+place when a store is opened, so an existing store keeps its history.
+
+**The job layer is the one that did not exist, and it is there for retries rather
+than backfills.** Three attempts at the 07:00 poll were three unrelated rows, so
+*"did the 07:00 poll succeed?"* had no object to ask. They are one `_qanat_job`
+and three `_qanat_job_execution` rows now, and the job reports succeeded if any
+attempt did.
+
+#### `source` and `step` are retired, and refused rather than aliased
+
+`source` meant four things: a declaration in the file, a module in the package,
+the `connector:` value, and a string on every row. Only the last was ever
+unambiguous and it is the only one that keeps the word. `step` named a position
+in a sequence and said nothing about a table going in and a table coming out,
+which is the only thing one does.
+
+An alias would leave both vocabularies in the record, which is the state this
+ends. `qanat migrate` is the one thing that reads the old spellings.
+
+- `src/qanat/sources/` is `src/qanat/connectors/`; a project's `steps/` directory
+  becomes `transforms/`
+- `Source` and `Step` are `IngestionJobDefinition` and `TransformJobDefinition`
+- `qanat migrate` is a fifth CLI verb, because it runs on a file that cannot be
+  loaded yet — no tool over MCP could reach it
+
+#### Every row names the execution that wrote it
+
+`check` refused two jobs writing one table, and its reason was that otherwise
+nothing can say which run made the rows in it. **Measured, that was already the
+situation**: a `raw.documents` row carried `source: "sec-edgar"` and a JSON blob
+of the SEC's keys, and no run id anywhere. Attribution was job-to-table, never
+row-to-execution — and `ingest_filings` wrote that same table without opening a
+job at all, so the corpus already held rows no execution could claim.
+
+One engine-owned column, resolving up the chain to the job, the definition and
+that definition's version. A job cannot write it: provenance a script can set is
+provenance a script can get wrong. A default read does not carry it, which is
+load-bearing rather than tidy — a `.sql` transform names a table bare, so without
+the `qanat_now` view it inherited its input's execution id and the engine stamped
+a second one beside it.
+
+`lineage` takes a `where` now and answers where those particular rows came from.
+Rows written before any of this come back counted under `unknown_rows`, which is
+not the same as none, and nothing is backfilled.
+
+With that in place the one-writer rule goes, because the reason it existed is
+answered. Two `subscribe_filings` calls with different selections leave two
+definitions feeding one table. What replaces the rule is weaker and is about the
+reader: two writers have to agree on what identifies a row.
+
+#### No job replaces provided rows
+
+**`qanat init` scaffolded `mode: replace` on its filings source.** With `replace`
+a run rewrites the table to only what the selection returned, so every filing
+ingested outside that list was deleted — silently, as the normal outcome of a job
+that reported ok. **A fresh project was one `run` away from losing filings nobody
+asked it to lose**, and the honest advice became to avoid the platform's main
+verb.
+
+- `mode: replace` is refused on an ingestion job, at load, with the fix in the
+  message
+- a key-matched append no longer replaces: a row identical to one already stored
+  is not stored twice, and one that differs is appended beside it
+- the `qanat_now` view returns the newest write per key, so a plain read returns
+  one row; the as-of views filter by the clock **first** and then pick, so a
+  value corrected last week does not vanish at a date before the correction
+- **the scheduler deletes nothing.** It applied every `retention:` policy once a
+  minute, which made removal a side effect of the clock running. The policy is
+  still real and `plan`'s `prune` flag applies it, after listing the rows
+
+#### `qanat.yaml` is yours, and nothing writes it
+
+`define_metric` loaded it, mutated the model and re-dumped the whole file.
+Measured on one project, that cost the note explaining why a row needs a
+publication date, the note naming which tables the reading tools open, the
+section spacing, the hand-wrapped SQL — and the project's own header. All of it
+survived only in `qanat.yaml.bak`.
+
+A project is four files:
+
+```
+qanat.yaml       project, store, stages, time_columns, corpus, returns, retention
+jobs.yaml        definitions and cadences
+metrics.yaml     the formulas
+universes.yaml   the baskets
+```
+
+No authoring verb has a write path to `qanat.yaml`, and a test holds that by
+reading the code — the failure mode is a verb that writes the file correctly on
+the path everybody tests and ruinously on one nobody does. The round-tripper
+stays but was never the answer: a key a tool *removed* has nowhere left to keep
+the note that sat above it.
+
+#### A metric is a transform definition
+
+Metric values are materialised into a metrics table by a transform `define_metric`
+writes, keyed on `(subject, date, metric, version)` so a corrected price adds a
+row rather than replacing the value somebody was shown. A screen resolves a
+clause against the stored value, taking the newest date at or before the one
+asked about.
+
+**A real metric has a date of its own.** A formula that takes the date as a
+*parameter* is a fact rescaled, not a series, and is not materialised: storing a
+value under a date it does not mean would be worse than computing it on the call.
+`define_metric` says which kind it stored.
+
+`transform_job_definition` gained a `key:`. Without one a transform rewrites its
+table, which is right — the output is a function of what is upstream. With one it
+appends and never replaces.
+
+#### The surface did not follow the model
+
+The model went from two objects to eight. A mirror of it would be about
+thirty-two tools, generated from the schema rather than from anything a caller
+needs. The count at each scope is unchanged: **14 at `data`, 20 at `research`, 28
+at `full`, 33 at `authoring`**.
+
+[docs/flows.md](docs/flows.md) traces every tool to something a caller does, and
+names the candidates that did not ship with the flow each was missing. **An
+entity is not a reason for a tool.**
+
+Six tools carried a retired word and are renamed from the flow, not from the
+object. **`research` is a published contract, so two of these are announced
+breaks.** Nothing answers to both names; the old one is refused and says the new
+one.
+
+| Was | Is | The flow |
+| --- | --- | --- |
+| `list_steps` | `list_pipeline` | what will run, in what order, and when |
+| `read_step` | `read_script` | show me the code one piece runs |
+| `list_runs` | `list_history` | what has been happening here |
+| `save_step` | `define_transform` | compute this table from those |
+| `save_source` | `define_ingestion` | fetch this from outside |
+| `save_universe` | `define_universe` | here is the basket |
+
+`define` rather than `save` for the reason `metrics.py` already gave: *save* says
+keep this for me, and there is no *me* here — a scope is a capability boundary
+and not an identity one.
+
+#### Migrating
+
+```sh
+qanat migrate .            # prints what it will do, writes nothing
+qanat migrate . --apply    # writes, keeping qanat.yaml.before-the-job-model
+```
+
+It renames the two keys, moves each `schedule:` into a `job_schedules:` row,
+turns `mode: replace` into `mode: append` and says why, renames `steps/` to
+`transforms/`, and splits the tool-written keys into their own files. A comment
+above a key that stays survives. One above a key that moved is in the backup —
+the round-tripper cannot carry a note from a key that is no longer there, and
+pretending otherwise would be worse than saying so.
+
 ## 0.10.2 — 2026-10-31
 
 ### The store stops leaving DuckDB results open, and cleanup stops lying

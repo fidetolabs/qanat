@@ -103,6 +103,37 @@ class Session:
 # ----------------------------------------------------------------------- tools
 TOOLS: list[dict[str, Any]] = []
 
+#: What each renamed tool is called now, and nothing answers to both.
+#:
+#: **Named rather than aliased.** An alias leaves both vocabularies on the
+#: surface, which is the state the rename exists to end -- and a caller holding
+#: the old name would keep working while every document, every message and every
+#: other caller said something else. One refusal, naming the new spelling, costs
+#: one call.
+#:
+#: Each new name came from a flow rather than from the object it writes:
+#:
+#:   list_steps    -> list_pipeline      "what will run, in what order, and when"
+#:   read_step     -> read_script        "show me the code one piece runs"
+#:   list_runs     -> list_history       "what has been happening here"
+#:   save_step     -> define_transform   "compute this table from those"
+#:   save_source   -> define_ingestion   "fetch this from outside"
+#:   save_universe -> define_universe    "here is the basket"
+#:
+#: `define` rather than `save` for the reason `metrics.py` already gives: *save*
+#: says keep this for me, and there is no *me* here -- a scope is a capability
+#: boundary and not an identity one, so this server cannot tell two callers
+#: apart. What it writes is a definition, which is what the field is called.
+MOVED: dict[str, str] = {
+    "list_steps": "list_pipeline",
+    "read_step": "read_script",
+    "list_runs": "list_history",
+    "save_step": "define_transform",
+    "remove_step": "remove_transform",
+    "save_source": "define_ingestion",
+    "save_universe": "define_universe",
+}
+
 #: The scopes, narrowest first. Each one contains the one before it, so a server
 #: started at `research` offers the `data` tools too. The order in this tuple *is*
 #: the nesting; nothing else encodes it.
@@ -274,7 +305,7 @@ def _lineage(s: Session, args: dict) -> Any:
             "reaches": reach}
 
 
-@tool("list_steps",
+@tool("list_pipeline",
       "Every definition in the graph -- ingestion and transform -- in dependency order, "
       "each with the cadences pointing at it. `stage` keeps only the transforms writing "
       "into one stage, which is how you find what produces a given table: there is no "
@@ -309,7 +340,7 @@ def _list_steps(s: Session, args: dict) -> Any:
     }
 
 
-@tool("read_step", "The script a transform runs.",
+@tool("read_script", "The script a transform runs.",
       {"properties": {"id": {"type": "string"}}, "required": ["id"]},
       scope="research")
 def _read_step(s: Session, args: dict) -> Any:
@@ -900,7 +931,7 @@ def _unsubscribe_filings(s: Session, args: dict) -> Any:
 
 
 
-@tool("list_runs",
+@tool("list_history",
       "Recent job executions, with status and row counts. Each one names the job it was "
       "an attempt at, and the attempt number -- so three rows under one job id are three "
       "tries at the same scheduled moment rather than three unrelated passes.",
@@ -928,7 +959,7 @@ def _cadence(s: Session, definition_id: str, cron: str) -> dict[str, Any]:
     return {"id": sid, "cron": cron}
 
 
-@tool("save_step",
+@tool("define_transform",
       "Add a transform, or replace one that exists. `script` is written to disk when "
       "`source` is given. `from` is a list and means it: a transform may read several "
       "tables, across any stage earlier than the one it writes. `schedule` writes a "
@@ -973,7 +1004,7 @@ def _save_step(s: Session, args: dict) -> Any:
     return out
 
 
-@tool("remove_step",
+@tool("remove_transform",
       "Delete a transform from the project file, and the cadences pointing at it. The "
       "script on disk is left alone.",
       {"properties": {"id": {"type": "string"}}, "required": ["id"]}, writes=True,
@@ -989,7 +1020,7 @@ def _remove_step(s: Session, args: dict) -> Any:
     return {"removed": args["id"], "warnings": written}
 
 
-@tool("save_universe",
+@tool("define_universe",
       "Add or replace a universe: the symbols a portfolio may hold. Pass `symbols` and the csv "
       "is written for you. A transform that holds a basket holds itself to one, so a project "
       "with "
@@ -1007,7 +1038,7 @@ def _remove_step(s: Session, args: dict) -> Any:
       writes=True,
       scope="full")
 def _save_universe(s: Session, args: dict) -> Any:
-    from qanat.editor import EditorError, save_universe
+    from qanat.editor import EditorError, define_universe
 
     uid = _need(args, "id")
     raw = {
@@ -1019,7 +1050,7 @@ def _save_universe(s: Session, args: dict) -> Any:
     if syms is not None:
         raw["symbols_list"] = [str(x).strip() for x in syms if str(x).strip()]
     try:
-        written = save_universe(s.project, s.root, raw)
+        written = define_universe(s.project, s.root, raw)
     except EditorError as exc:
         raise ToolError(str(exc)) from exc
     s.reload()
@@ -1031,7 +1062,7 @@ def _save_universe(s: Session, args: dict) -> Any:
                     "to the csv when you know them"}
 
 
-@tool("save_source",
+@tool("define_ingestion",
       "Add or replace an ingestion job: what to fetch, and the one table it lands in. "
       "`key` names the columns that identify one row -- a row that arrives again "
       "unchanged is not stored twice, and one that arrives changed is written beside "
@@ -1094,6 +1125,14 @@ def _dispatch(session: Session, msg: dict, tools: list[dict]) -> dict | None:
                 return _ok(mid, _text(
                     f"'{name}' is a tool in the '{above['scope']}' scope, and this server was "
                     f"started below it. Reconnect at --scope {above['scope']}.", error=True))
+            if name in MOVED:
+                return _ok(mid, _text(
+                    f"'{name}' is now '{MOVED[name]}'. It was named for the object it wrote, "
+                    f"and `source` and `step` are retired -- `source` meant four things and "
+                    f"`step` named a position in a sequence rather than the work. The new name "
+                    f"is what a caller does. Nothing answers to both: an alias would leave "
+                    f"both vocabularies on the surface, which is what the rename ends.",
+                    error=True))
             return _ok(mid, _text(
                 f"no tool called '{name}'. Available: {', '.join(t['name'] for t in tools)}",
                 error=True))

@@ -187,7 +187,7 @@ tools.** They are separate files because the two kinds do not mix: an authoring
 verb that re-dumped one file took every comment in it along with the change.
 
 ```yaml
-# jobs.yaml -- written by subscribe_filings, save_source, save_step
+# jobs.yaml -- written by subscribe_filings, define_ingestion, define_transform
 # What to fetch, and the one table it lands in. No cadence here.
 ingestion_job_definitions:
   - id: filings

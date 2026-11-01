@@ -52,9 +52,9 @@ def test_the_default_scope_is_not_the_widest_one():
     assert mcp.DEFAULT_SCOPE == "full"
     assert mcp.DEFAULT_SCOPE != mcp.SCOPES[-1]
     offered = {t["name"] for t in mcp.tools_for(mcp.DEFAULT_SCOPE)}
-    assert not offered & {"save_step", "remove_step", "save_source"}
+    assert not offered & {"define_transform", "remove_transform", "define_ingestion"}
     # And a caller who asks for the authoring scope still gets all three.
-    assert {"save_step", "remove_step", "save_source"} <= {
+    assert {"define_transform", "remove_transform", "define_ingestion"} <= {
         t["name"] for t in mcp.tools_for("authoring")}
 
 
@@ -90,16 +90,16 @@ def test_research_never_writes_the_project_file():
     # Anything that rewires the pipeline is authoring; running it is `full`.
     # A hosted caller may screen, and may not rewrite the project.
     by_scope = {t["name"]: t["scope"] for t in mcp.TOOLS}
-    assert by_scope["save_step"] == "authoring"
-    assert by_scope["save_source"] == "authoring"
-    assert by_scope["remove_step"] == "authoring"
+    assert by_scope["define_transform"] == "authoring"
+    assert by_scope["define_ingestion"] == "authoring"
+    assert by_scope["remove_transform"] == "authoring"
     assert by_scope["run"] == "full"
 
 
 def test_a_tool_above_the_scope_says_so_instead_of_denying_it_exists(tmp_path: Path):
     session = _session(tmp_path)
     reply = mcp._dispatch(session, {"jsonrpc": "2.0", "id": 9, "method": "tools/call",
-                                    "params": {"name": "save_step", "arguments": {}}},
+                                    "params": {"name": "define_transform", "arguments": {}}},
                           mcp.tools_for("data"))
     body = reply["result"]["content"][0]["text"]
     assert reply["result"]["isError"] is True
@@ -158,7 +158,7 @@ def test_discovery_needs_no_documentation(tmp_path: Path):
 def test_an_error_says_what_to_do_next(tmp_path: Path):
     session = _session(tmp_path)
     for name, args in (("describe_table", {"ref": "nope.nope"}),
-                       ("read_step", {"id": "nope"}),
+                       ("read_script", {"id": "nope"}),
                        ("screen", {"filters": [{"metric": "nope", "op": "<", "value": 1}]})):
         try:
             _call(session, name, args)
@@ -208,10 +208,10 @@ def test_list_steps_filters_by_stage(tmp_path: Path):
     assert validate(session.project, session.root).ok
     assert all(r.ok for r in run_all(session.store, session.project, session.root))
 
-    everything = _call(session, "list_steps")
+    everything = _call(session, "list_pipeline")
     assert everything["ingestion"], "unfiltered, the ingestion jobs come too"
 
-    only = _call(session, "list_steps", {"stage": "features"})
+    only = _call(session, "list_pipeline", {"stage": "features"})
     assert only["ingestion"] == [], "a stage filter is about transforms, so ingestion drops out"
     ids = {s["id"] for s in only["transforms"]}
     expected = {st.id for st in session.project.transform_job_definitions

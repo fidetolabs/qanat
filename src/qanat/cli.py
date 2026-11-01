@@ -12,7 +12,7 @@ thing whose caller is a program, and each one was a second implementation of a
 question a tool already answers -- a second place the behaviour could quietly
 differ. They are gone, each named below beside what replaced it:
 
-    ls        list_tables, list_steps, describe_table -- it was those three in one dump
+    ls        list_tables, list_pipeline, describe_table -- it was those three in one dump
     graph     nothing. A terminal picture for a person, and its own markers
               disagreed with its legend
     plan      the `plan` tool
@@ -74,7 +74,7 @@ def _load(args):
 #: picture for a person out of a thing whose caller is a program, and its own
 #: markers disagreed with its legend -- `○ 4 rows` for a table `ls` drew as `●`.
 MOVED = {
-    "ls": "the list_tables, list_steps and describe_table tools. `ls` was those "
+    "ls": "the list_tables, list_pipeline and describe_table tools. `ls` was those "
           "three in one dump",
     "graph": "nothing. It drew the pipeline for a person to look at, and this is "
              "reached by an agent",

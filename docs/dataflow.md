@@ -203,9 +203,9 @@ project does not hold at all is reported rather than dropped.
 | Scope | Tools | Adds |
 | --- | --- | --- |
 | `data` | 14 | reads the tables as they stood on a past date, lists the companies and reads one, reads the filings |
-| `research` | 20 | `list_steps`, `read_step`, `screen`, `coverage`, `find_filings`, `list_subscriptions` |
-| **`full`** *(default)* | 28 | `check`, `plan`, `run`, `list_runs`, `ingest_filings`, `subscribe_filings`, `unsubscribe_filings`, `save_universe` |
-| `authoring` | 33 | `define_metric`, `remove_metric`, `save_step`, `remove_step`, `save_source` |
+| `research` | 20 | `list_pipeline`, `read_script`, `screen`, `coverage`, `find_filings`, `list_subscriptions` |
+| **`full`** *(default)* | 28 | `check`, `plan`, `run`, `list_history`, `ingest_filings`, `subscribe_filings`, `unsubscribe_filings`, `define_universe` |
+| `authoring` | 33 | `define_metric`, `remove_metric`, `define_transform`, `remove_transform`, `define_ingestion` |
 
 **The nesting is the information.** A server started at `research` offers the `data` tools too, and
 nothing in a request can widen the scope the flag set at startup. The list is short because every
