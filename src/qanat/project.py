@@ -131,16 +131,36 @@ def validate(p: Project, root: Path) -> Report:
 
     writers = p.writers()
 
-    # One table, one writer. **Still here, and it is the thing row-level
-    # provenance replaces rather than something to relax first.** Its stated
-    # reason is that otherwise nothing can say which execution made the rows in
-    # a table -- so dropping it before every row carries that would leave the
-    # store unable to answer the question the rule was protecting.
+    # **Several definitions may write one table.** The rule that forbade it said
+    # why: otherwise nothing can say which execution made the rows in a table.
+    # Every row now carries that, so the rule is gone -- replaced by the thing it
+    # was standing in for rather than merely relaxed.
+    #
+    # What is left is weaker and is about the reader rather than the writer: the
+    # current row among two versions of one key is the newest write *for that
+    # key*, so two definitions writing one table have to agree on what a key is.
+    # Disagreeing, one of them would be correcting rows the other never claimed.
     for ref, who in sorted(writers.items()):
-        if len(who) > 1:
+        if len(who) < 2:
+            continue
+        keys = {
+            d.id: tuple(getattr(d, "key", []) or [])
+            for d in p.definitions if ref in d.writes
+        }
+        distinct = set(keys.values())
+        if len(distinct) > 1:
+            said = "; ".join(f"{k} says {list(v) or '(nothing)'}" for k, v in keys.items())
             r.errors.append(
-                f"'{ref}' is written by {' and '.join(sorted(who))}. One table has one "
-                "writer, or nothing can say which execution made the rows in it"
+                f"'{ref}' is written by {' and '.join(sorted(who))}, and they disagree "
+                f"about what identifies one row: {said}. A read returns the newest write "
+                f"per key, so two writers with two keys would each be correcting rows the "
+                f"other never claimed"
+            )
+        elif distinct == {()}:
+            r.warnings.append(
+                f"'{ref}' is written by {' and '.join(sorted(who))} and neither names a "
+                f"`key:`. Nothing says which of two rows for one subject is current, so "
+                f"a read returns both"
             )
 
     # ---- one id space ---------------------------------------------------------

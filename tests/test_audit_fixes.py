@@ -221,7 +221,7 @@ def test_g01_a_loop_between_steps_is_refused(tmp_path: Path):
     assert any("loop" in e for e in rep.errors), rep.errors
 
 
-def test_g02_one_table_has_one_producer(tmp_path: Path):
+def test_g02_two_writers_no_longer_need_one_producer(tmp_path: Path):
     """Two steps could write one weights table, and the book then counted one
     portfolio as two steps with identical net."""
     from qanat.project import validate
@@ -230,7 +230,11 @@ def test_g02_one_table_has_one_producer(tmp_path: Path):
         tmp_path, "  - {id: sorter_g, from: [f.prices], to: [weights.h], script: transforms/sorter.py}\n", {}
     )
     rep = validate(p, root)
-    assert any("one table has one writer" in e.lower() for e in rep.errors), rep.errors
+    # **The rule is gone**, and what replaced it is stronger: every row names
+    # the execution that wrote it, so the store can say which pass landed which
+    # row rather than inferring it from there being only one candidate. What is
+    # left is that two writers must agree on what identifies a row.
+    assert rep.ok or not any("one writer" in e for e in rep.errors), rep.errors
 
 
 def test_g04_a_var_with_no_option_behind_it_is_refused(tmp_path: Path):

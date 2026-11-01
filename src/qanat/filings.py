@@ -253,9 +253,21 @@ def schedule_id_for(definition_id: str, every: str, hour: int) -> str:
     return f"{definition_id}_{str(every).strip().lower()}_h{int(hour):02d}"[:60]
 
 
-#: The fields of a selection. Changing any of them changes what gets landed, so
-#: a call that changes one has replaced the selection and has to say so.
+#: The fields of a selection. Two definitions over one table are the same
+#: subscription when all of these match, and two subscriptions when any differ.
 _SELECTION_FIELDS = ("companies", "form", "years", "from", "to")
+
+
+def _free_id(project: Project, wanted: str) -> str:
+    """`wanted`, or `wanted_2`, `wanted_3`... Ids are one flat space now that
+    `plan` tracks drift on definitions and schedules alike."""
+    taken = {o.id for o in [*project.definitions, *project.job_schedules]}
+    if wanted not in taken:
+        return wanted
+    n = 2
+    while f"{wanted}_{n}"[:60] in taken:
+        n += 1
+    return f"{wanted}_{n}"[:60]
 
 
 def subscribe(
@@ -279,11 +291,13 @@ def subscribe(
     hold exactly one, and asking for "this company daily" meant rewriting the
     selection somebody else's weekly poll was using.
 
-    Calling again with the same companies and a different hour adds a schedule
-    and leaves the first one alone. Calling again with **different companies**
-    still replaces the selection, because the documents table has one producer
-    until row-level provenance lands -- and `replaced` now says so instead of
-    reporting `false` while overwriting four names.
+    **And a different selection is a different definition, not an edit to the
+    one that is there.** `subscribe_filings(["MSFT"], hour=7)` then
+    `subscribe_filings(["AAPL"], every="monthly")` leaves two definitions and two
+    schedules, both polling the same documents table. That was refused until
+    every row named the execution that wrote it, because the store could not
+    otherwise say which pass landed a given document -- and it is the request
+    this whole plan exists to answer.
 
     **A form outside the ingested pile is refused here rather than later.** A
     subscription that fills a table with documents nothing can parse is worse
@@ -312,17 +326,16 @@ def subscribe(
     cron = cron_for(every, hour)
     ref = documents_table(project)
 
-    # The definition that writes the documents table, if there is one. Reusing
-    # its id is what makes this an edit to the selection rather than a second
-    # definition writing the same table.
-    prior = next((d for d in project.ingestion_job_definitions if d.ref == ref), None)
-    if prior is not None and prior.connector != "sec":
+    # Every definition already feeding the documents table. Several may, so this
+    # is a list -- and a `sec` one whose selection matches is the one this call
+    # is about rather than a new one.
+    feeding = [d for d in project.ingestion_job_definitions if d.ref == ref]
+    wrong = [d for d in feeding if d.connector != "sec"]
+    if wrong:
         raise FilingsError(
-            f"{ref} is fed by '{prior.id}', which is a {prior.connector} connector. A "
-            f"subscription is an EDGAR poll, so it cannot take over that table"
+            f"{ref} is fed by '{wrong[0].id}', which is a {wrong[0].connector} connector. "
+            f"A subscription is an EDGAR poll, so it cannot share that table"
         )
-    name = prior.id if prior is not None else definition_id_for(
-        wanted, [str(c) for c in companies])
 
     options: dict[str, Any] = {
         "companies": [str(c) for c in companies],
@@ -333,20 +346,29 @@ def subscribe(
         options["from"] = frm
     if to:
         options["to"] = to
-    for carry in ("user_agent", "cache", "rate_per_second"):
-        if prior and carry in prior.options:
-            options[carry] = prior.options[carry]
 
-    # **Measured against the selection, not against whether a clock existed.**
-    # `replaced` used to test `prior.schedule`, so a call that overwrote four
-    # companies with one reported `replaced: false` -- it was answering "did this
-    # already have a cadence", which is not what the word means.
-    changed = []
-    if prior is not None:
-        for field in _SELECTION_FIELDS:
-            was, now = prior.options.get(field), options.get(field)
-            if was != now:
-                changed.append({"field": field, "was": was, "now": now})
+    def selection_of(definition) -> dict[str, Any]:
+        return {f: (definition.options or {}).get(f) for f in _SELECTION_FIELDS}
+
+    prior = next((d for d in feeding if selection_of(d) == {
+        f: options.get(f) for f in _SELECTION_FIELDS}), None)
+    # Carried from whichever definition already has them: the contact and the
+    # cache are the project's, not this selection's.
+    for carry in ("user_agent", "cache", "rate_per_second"):
+        for d in feeding:
+            if carry in (d.options or {}):
+                options.setdefault(carry, d.options[carry])
+                break
+
+    name = prior.id if prior is not None else _free_id(
+        project, definition_id_for(wanted, [str(c) for c in companies]))
+
+    # **Nothing is replaced any more, and `replaced` says so.** It used to test
+    # whether a cadence existed -- so a call that overwrote four companies with
+    # one reported `replaced: false`, which is not what the word means -- and
+    # then it reported the selection being overwritten. A different selection is
+    # now a second definition, so there is nothing to overwrite.
+    changed: list[dict[str, Any]] = []
 
     try:
         warnings = save_ingestion(project, root, {
@@ -361,13 +383,18 @@ def subscribe(
         raise FilingsError(str(exc)) from exc
 
     others = [s.id for s in project.schedules_for(name) if s.id != sid]
+    beside = [d.id for d in project.ingestion_job_definitions
+              if d.ref == ref and d.id != name]
     return {
         "subscribed": sid,
         "definition": name,
+        "new_definition": prior is None,
         "table": ref,
         "replaced": bool(changed),
         "replaced_selection": changed or None,
         "other_schedules": others,
+        # What this call left alone, which is the point of it.
+        "other_definitions": beside,
         "companies": options["companies"],
         "forms": wanted,
         "from": frm,

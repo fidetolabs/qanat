@@ -477,6 +477,7 @@ def a_written_project(root: Path) -> tuple[Project, Store]:
             options:
               companies: [AAPL]
               form: 10-K
+              years: 1
               user_agent: qanat tests nobody@example.com
               cache: ./data/documents
         corpus:
@@ -549,8 +550,9 @@ def test_list_steps_reads_the_cron_line_the_tool_wrote(written, edgar):
         session.close()
 
 
-def test_the_same_selection_is_the_same_subscription(written, edgar):
-    """Subscribing twice must not leave two of them running."""
+def test_the_same_selection_at_two_hours_is_one_definition_and_two_cadences(
+        written, edgar):
+    """Subscribing to the same thing twice must not leave two selections."""
     p, _store, root = written
     first = filings.subscribe(p, root, ["AAPL"], forms=["10-K"], hour=6)
     again = filings.subscribe(p, root, ["AAPL"], forms=["10-K"], hour=9)
@@ -558,8 +560,9 @@ def test_the_same_selection_is_the_same_subscription(written, edgar):
     # so it is a second schedule over the one definition rather than an edit to
     # the first -- which is the whole point of splitting them.
     assert first["definition"] == again["definition"] == "filings"
+    assert first["new_definition"] is False and again["new_definition"] is False
     assert first["subscribed"] != again["subscribed"]
-    assert len(p.ingestion_job_definitions) == 1, "a second poll on the same table is not allowed"
+    assert len(p.ingestion_job_definitions) == 1
     assert [s.cron for s in p.schedules_for("filings")] == ["0 6 * * *", "0 9 * * *"], \
         "the second call added a cadence instead of replacing the first"
 
@@ -664,24 +667,58 @@ def test_the_docs_no_longer_claim_a_scheduler_is_about_authority():
     assert "process lifetime" in doc
 
 
-def test_one_subscription_per_corpus_because_a_table_has_one_producer(written, edgar):
-    """Not a simplification -- the stage contract refuses the alternative.
-
-    Two sources writing one table means no run row can say which pass landed a
-    given document. So the subscription *is* the producer of the documents
-    table, and several forms ride in one selection rather than one per corpus.
-    """
+def test_a_different_selection_is_a_second_subscription(written, edgar):
+    """**The request that started the plan.** Two selections over one corpus were
+    refused because no run row could say which pass landed a given document --
+    and that is answered now: every row names the execution that wrote it, so
+    the rule it was standing in for is gone with it."""
     p, _store, root = written
     out = filings.subscribe(p, root, ["AAPL"], forms=["10-K", "10-Q"], hour=4)
-    assert out["definition"] == "filings", "it took over the existing definition"
+    assert out["new_definition"] is True
+    assert out["definition"] != "filings", "it did not take over the existing one"
+    assert out["other_definitions"] == ["filings"], "and said what it left alone"
     assert out["forms"] == ["10-K", "10-Q"]
-    assert len(p.ingestion_job_definitions) == 1
+    assert len(p.ingestion_job_definitions) == 2
 
     from qanat.connectors import sec
     from qanat.project import validate
 
-    assert validate(p, root).ok, "the project still holds against the contract"
-    assert sec.forms_of(p.ingestion_job_definitions[0]) == ["10-K", "10-Q"]
+    assert validate(p, root).ok, "two writers over one table pass check"
+    mine = p.definition(out["definition"])
+    assert sec.forms_of(mine) == ["10-K", "10-Q"]
+
+
+def test_microsoft_daily_and_apple_weekly(written, edgar):
+    """The sentence this plan was opened to answer, as a test."""
+    p, _store, root = written
+    msft = filings.subscribe(p, root, ["MSFT"], forms=["10-K"], hour=7)
+    aapl = filings.subscribe(p, root, ["AAPL"], forms=["10-K"], every="monthly", hour=3)
+
+    assert msft["definition"] != aapl["definition"]
+    both = {d.id: (d.options or {}).get("companies")
+            for d in p.ingestion_job_definitions}
+    assert ["MSFT"] in both.values() and ["AAPL"] in both.values()
+    assert p.schedule(msft["subscribed"]).cron == "0 7 * * *"
+    assert p.schedule(aapl["subscribed"]).cron == "0 3 1 * *"
+
+    from qanat.project import validate
+
+    assert validate(p, root).ok
+    listed = {r["id"]: r for r in filings.subscriptions(_store, p)["subscriptions"]}
+    assert msft["subscribed"] in listed and aapl["subscribed"] in listed
+
+
+def test_two_writers_must_agree_on_what_identifies_a_row(written, edgar):
+    """What is left of the one-writer rule, and it is about the reader: a read
+    returns the newest write per key, so two writers with two keys would each be
+    correcting rows the other never claimed."""
+    from qanat.editor import EditorError, save_ingestion
+
+    p, _store, root = written
+    with pytest.raises(EditorError, match="disagree about what identifies one row"):
+        save_ingestion(p, root, {
+            "id": "other", "to": ["raw.documents"], "connector": "sec",
+            "key": ["accession"], "options": {"companies": ["MSFT"], "form": "10-K"}})
 
 
 def test_a_subscription_over_two_forms_lands_both_and_labels_each_one(
@@ -691,10 +728,12 @@ def test_a_subscription_over_two_forms_lands_both_and_labels_each_one(
     from qanat.runner import run_ingestion
 
     p, store, root = written
-    filings.subscribe(p, root, ["AAPL"], forms=["10-K", "10-Q"],
-                      frm="2025-01-01", years=10)
+    out = filings.subscribe(p, root, ["AAPL"], forms=["10-K", "10-Q"],
+                            frm="2025-01-01", years=10)
     monkeypatch.setattr(sec.Throttle, "wait", lambda self: None)
-    assert run_ingestion(store, p, root, p.ingestion_job_definitions[0]).ok
+    # The definition this call wrote, not whichever happens to be first: a
+    # different selection is a second definition now.
+    assert run_ingestion(store, p, root, p.definition(out["definition"])).ok
 
     kinds = store.rows("raw.documents", columns="doc_type")["doc_type"].tolist()
     assert sorted(set(kinds)) == ["10-K", "10-Q"]
@@ -766,12 +805,13 @@ def test_a_subscriptions_last_run_reports_the_rows_it_landed(written, edgar, mon
     from qanat.runner import run_ingestion
 
     p, store, root = written
-    filings.subscribe(p, root, ["AAPL"], forms=["10-K"], frm="2025-01-01")
+    out = filings.subscribe(p, root, ["AAPL"], forms=["10-K"], frm="2025-01-01")
     monkeypatch.setattr(sec.Throttle, "wait", lambda self: None)
-    result = run_ingestion(store, p, root, p.ingestion_job_definitions[0])
+    result = run_ingestion(store, p, root, p.definition(out["definition"]))
     assert result.rows > 0
 
-    mine = filings.subscriptions(store, p)["subscriptions"][0]
+    mine = next(r for r in filings.subscriptions(store, p)["subscriptions"]
+                if r["id"] == out["subscribed"])
     assert mine["last_execution"]["status"] == "ok"
     assert mine["last_execution"]["rows"] == result.rows, "the rows it actually landed"
     assert mine["last_execution"]["ended_at"], "and when it finished"
