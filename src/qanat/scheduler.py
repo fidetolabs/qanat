@@ -3,6 +3,12 @@
 Deliberately small. The loop wakes once a second and runs whatever its cron line
 says is due. A job that is already running is never started twice.
 
+**It deletes nothing.** The loop used to apply every `retention:` policy once a
+minute, which made removal a side effect of the clock running -- a row that had
+been served went away with nothing asking for it and nothing saying so. Retention
+is still declared in the project and is still real; it is applied by the `plan`
+tool's `prune` flag, which lists what it will remove before it removes it.
+
 A step may also wait on a table instead of a clock. When a job succeeds having
 written rows, every step waiting on one of those tables runs, and when those
 finish the same thing happens again, on down the graph. A clock is a guess about
@@ -41,7 +47,6 @@ class Scheduler:
         self._deadline: dict[str, float] = {}
         self._lock = threading.Lock()
         self.next_at: dict[str, datetime] = {}
-        self._last_retention = 0.0
         #  Where the unattended pass reaches the project, and the state object it
         #  drives. Both are handed over by `serve`, which is the only caller that
         #  has an API to point at -- so a bare Scheduler simply never researches.
@@ -102,11 +107,6 @@ class Scheduler:
                     self.next_at[job.id] = croniter(job.schedule, now).get_next(datetime)
                     self.fire(job.id)
             self.reap()
-            if self.project.retention and time.time() - self._last_retention >= 60:
-                self._last_retention = time.time()
-                from qanat.retention import run_retention
-
-                run_retention(self.store, self.project)
             self._stop.wait(1.0)
 
     def limit(self, job_id: str) -> float | None:

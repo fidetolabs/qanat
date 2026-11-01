@@ -54,27 +54,22 @@ def run_source(store: Store, project: Project, root: Path, src: Source) -> RunRe
     run_id = store.start_run(src.id, "source", [src.ref])
     try:
         # What is the newest row this table already holds? An adapter that can
-        # fetch incrementally uses it to ask only for what came after. Only
-        # meaningful on an append: a replace is going to overwrite the table
-        # anyway, so a partial answer would throw away the history.
+        # fetch incrementally uses it to ask only for what came after.
         since = None
-        if src.mode == "append" and store.exists(src.ref):
+        if store.exists(src.ref):
             with contextlib.suppress(Exception):
                 since = store.max_time(src.ref, project.time_columns.get(src.ref))
         df = source_adapters.fetch(
             src, root, on_warn=lambda m: store.event("warn", src.id, m), since=since
         )
         if df is None or df.empty:
-            # In replace mode an empty answer has to clear the table. Returning here
-            # left the last poll's rows in place, and downstream they read as a fresh
-            # answer -- which is the exact thing `Store.write` documents and prevents,
-            # from a path that never reached it.
-            cleared = ""
-            if src.mode == "replace" and store.exists(src.ref):
-                store.write(src.ref, df if df is not None else pd.DataFrame(), mode="replace")
-                cleared = f" -- {src.ref} cleared"
+            # An empty answer leaves the table alone. It used to clear it in replace
+            # mode, which was correct for that mode and is the reason the mode is
+            # gone: the rows a source landed are the ones nothing else can rebuild,
+            # so a poll that returns nothing says "nothing new", never "there was
+            # nothing".
             _record_applied(store, root, src)
-            store.event("warn", src.id, f"source returned no rows{cleared}")
+            store.event("warn", src.id, "source returned no rows")
             store.end_run(run_id, "ok", 0)
             return RunResult(src.id, "ok", 0, targets=(src.ref,))
         rows = store.write(src.ref, df, mode=src.mode, key=src.key)

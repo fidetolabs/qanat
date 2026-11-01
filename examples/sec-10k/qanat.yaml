@@ -46,7 +46,6 @@ sources:
   - id: filings
     to: [raw.documents]
     connector: sec
-    mode: replace
     key: [id]
     options:
       # Two groups that are each internally comparable, which is what a relative

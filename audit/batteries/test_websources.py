@@ -22,7 +22,7 @@ pytestmark = pytest.mark.network
 
 def _fetch(tmp_path, **cfg):
     src = Source.model_validate({"id": "probe", "to": ["raw.probe"], "connector": "rest",
-                                 "mode": "replace", **cfg})
+                                 **cfg})
     try:
         return fetch(src, tmp_path)
     except Exception as exc:

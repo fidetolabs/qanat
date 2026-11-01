@@ -40,6 +40,11 @@ Connector = Literal["rest", "sql", "csv", "sec", "yfinance"]
 #: Where a metric definition came from. Shipped with the product, or written
 #: here by whoever runs this Qanat.
 MetricOrigin = Literal["shipped", "defined"]
+#: How a job lands its rows. `replace` is still how a derived table is rebuilt --
+#: it is a function of what is upstream of it, so rewriting it loses nothing. A
+#: source is the other case: its rows are the thing nothing else can rebuild, and
+#: `replace` there deletes every row outside the current selection as the normal
+#: outcome of a successful poll. `Source` refuses it; see `Source._no_replace`.
 WriteMode = Literal["append", "replace"]
 
 _NAME = r"^[a-z][a-z0-9_]*$"
@@ -103,6 +108,8 @@ class Source(Base):
     writes: list[str] = Field(validation_alias=AliasChoices("to", "writes"))
     connector: Connector
     schedule: str | None = None
+    #: Append, and only append. The field stays so a config that says `replace`
+    #: is refused by name rather than quietly meaning something else now.
     mode: WriteMode = "append"
     # Which columns identify one row. A feed that answers with the last seven days
     # every time is mostly repeats, and without a key an append keeps every copy.
@@ -118,6 +125,32 @@ class Source(Base):
         if len(v) != 1:
             raise ValueError("a source writes exactly one table")
         return _qualified(v)
+
+    @field_validator("mode")
+    @classmethod
+    def _no_replace(cls, v: str) -> str:
+        """A source may not replace what it already landed.
+
+        `replace` rewrites the table to **only what this poll returned**, so every
+        row landed outside the current selection is deleted -- silently, as the
+        normal outcome of a run that reports ok. `qanat init` scaffolded exactly
+        that, which put a fresh project one `run` away from losing filings nobody
+        asked it to lose.
+
+        Refused rather than corrected, because a config that says `replace` was
+        written expecting the table to be rewritten, and quietly appending instead
+        is a different pipeline than the one on the page.
+        """
+        if v == "replace":
+            raise ValueError(
+                "mode: replace is not allowed on a source. It rewrites the table to only "
+                "what this poll returned, so every row landed outside the current "
+                "selection is deleted by a run that reports ok. Use `mode: append` with "
+                "`key:` naming the columns that identify one row -- a row that arrives "
+                "again with the same values is not stored twice, and one that arrives with "
+                "a changed value is written beside the old one instead of over it"
+            )
+        return v
 
     @property
     def ref(self) -> str:

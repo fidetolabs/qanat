@@ -110,7 +110,7 @@ sources:
   - id: daily_prices
     to: [raw.daily_prices]
     connector: csv
-    mode: replace
+    key: [symbol, ts]
     schedule: "*/2 * * * *"
     options:
       path: ./seed/daily_prices.csv
@@ -119,7 +119,7 @@ sources:
   - id: news
     to: [raw.news]
     connector: csv
-    mode: replace
+    key: [symbol, ts]
     schedule: "*/5 * * * *"
     options:
       path: ./seed/news.csv

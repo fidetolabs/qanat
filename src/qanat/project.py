@@ -59,13 +59,29 @@ def find_project(start: str | os.PathLike[str] | None = None) -> Path:
 
 
 def load(path: str | os.PathLike[str] | None = None) -> tuple[Project, Path]:
-    """Return the parsed project and its root directory."""
+    """Return the parsed project and its root directory.
+
+    A field the model refuses comes back as a `ProjectError` naming the key and
+    saying what to write instead. Pydantic's own text is accurate and reads as a
+    stack of model internals -- and the refusals in `models.py` exist to be read
+    by whoever has to edit the file, so the message is what reaches them.
+    """
+    from pydantic import ValidationError
+
     f = Path(path).resolve() if path else find_project()
     if f.is_dir():
         f = f / "qanat.yaml"
     with f.open() as fh:
         raw = yaml.safe_load(fh) or {}
-    return Project.model_validate(raw), f.parent
+    try:
+        return Project.model_validate(raw), f.parent
+    except ValidationError as exc:
+        lines = []
+        for err in exc.errors():
+            where = ".".join(str(x) for x in err["loc"])
+            msg = err["msg"].removeprefix("Value error, ")
+            lines.append(f"{where}: {msg}" if where else msg)
+        raise ProjectError(f"{f.name} cannot be loaded.\n  " + "\n  ".join(lines)) from exc
 
 
 def validate(p: Project, root: Path) -> Report:
@@ -123,11 +139,12 @@ def validate(p: Project, root: Path) -> Report:
         seen_ids.add(s.id)
         if s.stage not in stage_ids:
             r.errors.append(f"source '{s.id}' writes to unknown stage '{s.stage}'")
-        if s.mode == "append" and not s.key and s.schedule:
+        if not s.key:
             r.warnings.append(
-                f"source '{s.id}' appends on a schedule with no `key:`, so every poll keeps a "
-                f"full copy of whatever the feed answers. Name the columns that identify one "
-                f"row, or set `mode: replace`"
+                f"source '{s.id}' has no `key:`, so every poll keeps a full copy of whatever "
+                f"the feed answers. Name the columns that identify one row -- a row that "
+                f"arrives again unchanged is then not stored twice, and one that arrives with "
+                f"a changed value is written beside the old one"
             )
 
     # ---- steps ----------------------------------------------------------------

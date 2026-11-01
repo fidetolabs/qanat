@@ -905,6 +905,15 @@ class Store:
         # at all now; see `_publish`.
         return len(df)
 
+    def count_older(self, ref: str, col: str, cutoff: Any) -> int:
+        """How many rows `prune_rows` would drop. Reads, and removes nothing."""
+        if not self.exists(ref):
+            return 0
+        with self._lock:
+            return int(self._scalar(
+                f'SELECT count(*) FROM {self._q(phys(ref))} '
+                f'WHERE CAST("{_ident(col)}" AS TIMESTAMP) < ?', [cutoff]) or 0)
+
     def prune_rows(self, ref: str, col: str, cutoff: Any) -> int:
         """Drop rows whose `col` is older than `cutoff`. Returns how many went.
 

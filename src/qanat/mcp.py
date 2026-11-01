@@ -326,19 +326,24 @@ def _check(s: Session, args: dict) -> Any:
 
 
 @tool("plan",
-      "What would change if the file were applied: adds, drift, orphans. With "
-      "`prune: true` it also drops the orphans -- the tables nothing in the file "
-      "produces any more. That is the one irreversible thing on this surface, so it "
-      "is a flag on the tool that already finds them rather than a verb of its own: "
-      "you see the list from the same call that would act on it.",
+      "What would change if the file were applied: adds, drift, orphans, and the rows "
+      "every `retention:` policy is now holding past its window. With `prune: true` it "
+      "acts -- it drops the orphan tables and applies those policies. **Removing is the "
+      "only irreversible thing on this surface, and nothing else here does it**: the "
+      "clock used to apply retention by itself once a minute, so a row that had been "
+      "served went away with nothing asking for it. It is a flag on the tool that "
+      "already finds them rather than a verb of its own, so you see the list from the "
+      "same call that would act on it.",
       {"properties": {
           "prune": {"type": "boolean", "default": False,
-                    "description": "drop the orphan tables. Cannot be undone"},
+                    "description": "drop the orphan tables and apply retention. "
+                                   "Cannot be undone"},
       }, "required": []},
       writes=True,
       scope="full")
 def _plan(s: Session, args: dict) -> Any:
     from qanat.plan import plan as plan_project
+    from qanat.retention import run_retention, would_remove
 
     pl = plan_project(s.project, s.root, s.store)
     out: dict[str, Any] = {
@@ -347,12 +352,20 @@ def _plan(s: Session, args: dict) -> Any:
                      "details": c.details} for c in pl.changes],
     }
     if not args.get("prune"):
+        notes = []
         if pl.orphans:
             out["prune_would_drop"] = [c.target for c in pl.orphans]
+            notes.append(f"{len(pl.orphans)} orphan table(s) nothing produces any more")
+        ageing = [r for r in would_remove(s.store, s.project) if r["rows"]]
+        if ageing:
+            out["retention_would_remove"] = ageing
+            notes.append(
+                f"{sum(r['rows'] for r in ageing):,} row(s) past a retention window, in "
+                f"{', '.join(r['table'] for r in ageing)}")
+        if notes:
             out["note"] = (
-                f"{len(pl.orphans)} orphan table(s) nothing produces any more. Call "
-                f"again with prune: true to drop them, which cannot be undone"
-            )
+                "; ".join(notes) + ". Call again with prune: true to act, "
+                "which cannot be undone")
         return out
 
     dropped = []
@@ -365,6 +378,7 @@ def _plan(s: Session, args: dict) -> Any:
         s.store.forget_state(forgotten)
     out["pruned"] = dropped
     out["forgotten"] = forgotten
+    out["retention_removed"] = {k: v for k, v in run_retention(s.store, s.project).items() if v}
     return out
 
 

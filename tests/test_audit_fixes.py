@@ -195,7 +195,7 @@ def _project(tmp_path: Path, steps: str, files: dict) -> tuple:
         "project: t\nstore: ./data/q.duckdb\n"
         "stages:\n  - {id: raw, kind: raw}\n  - {id: f, kind: features}\n"
         "  - {id: weights, kind: weights}\n"
-        "sources:\n  - {id: b, to: [raw.b], connector: csv, mode: replace, "
+        "sources:\n  - {id: b, to: [raw.b], connector: csv, key: [date, symbol], "
         "options: {path: ./seed/b.csv}}\n"
         "steps:\n"
         "  - {id: norm, from: [raw.b], to: [f.prices], script: steps/norm.sql}\n"

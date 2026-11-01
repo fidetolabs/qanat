@@ -41,11 +41,17 @@ time_columns:
 
 # ------------------------------------------------------------------ the sources --
 # Many sources may feed one stage; each writes its own table.
+#
+# `key:` names the columns that identify one row, and a source appends. A
+# filing that arrives again with the same values is not stored twice; one that
+# arrives with a changed value is written beside the old row rather than over
+# it. There is no `mode: replace` here -- it rewrote this table to only what
+# the selection returned, so every filing ingested outside that list was
+# deleted by a run that reported ok.
 sources:
   - id: filings
     to: [raw.documents]
     connector: sec          # swap for rest, sql or csv when you have a feed
-    mode: replace
     key: [id]
     options:
       companies: [AAPL, MSFT]

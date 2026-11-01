@@ -2,6 +2,7 @@
 
 from pathlib import Path
 
+import pytest
 from conftest import write_demo_project as write_project
 
 from qanat.project import load
@@ -345,3 +346,37 @@ def test_the_docker_entrypoint_only_calls_flags_that_exist(tmp_path: Path):
 
     for verb in re.findall(r"^\s*(?:exec\s+)?qanat\s+([a-z-]+)", ep, re.MULTILINE):
         assert verb not in MOVED, f"entrypoint.sh calls `qanat {verb}`, which is gone"
+
+
+# ---- no job replaces provided rows ------------------------------------------
+def test_a_source_declaring_mode_replace_is_refused_at_load(tmp_path: Path):
+    """`qanat init` scaffolded this. With `replace` a run rewrites the table to
+    only what the selection returned, so every row landed outside that list is
+    deleted as the normal outcome of a job that reports ok -- which made the
+    platform's main verb the thing you had to avoid to keep your data."""
+    from qanat.project import ProjectError, load
+
+    (tmp_path / "seed").mkdir()
+    (tmp_path / "seed/b.csv").write_text("ts,symbol,close\n2024-01-01,A,1.0\n")
+    (tmp_path / "qanat.yaml").write_text(
+        "project: t\nstore: ./data\n"
+        "stages:\n  - {id: raw, kind: raw}\n"
+        "sources:\n  - {id: b, to: [raw.b], connector: csv, mode: replace, "
+        "options: {path: ./seed/b.csv}}\n"
+    )
+    with pytest.raises(ProjectError) as exc:
+        load(tmp_path)
+    assert "mode: replace is not allowed on a source" in str(exc.value)
+    assert "mode: append" in str(exc.value), "the refusal has to name the fix"
+
+
+def test_the_scaffolded_project_cannot_lose_a_row_it_did_not_fetch(tmp_path: Path):
+    """The whole point of the default change: `run` is safe to call."""
+    from qanat.project import load
+    from qanat.scaffold import write_project as scaffold
+
+    scaffold(tmp_path / "demo", "demo")
+    project, _ = load(tmp_path / "demo")
+    src = next(s for s in project.sources if s.ref == "raw.documents")
+    assert src.mode == "append"
+    assert src.key, "an append with no key keeps a full copy of every poll"

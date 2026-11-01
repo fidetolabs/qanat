@@ -66,7 +66,7 @@ in [contract.md](contract.md). `normalized` in the starter project is a name, no
 | `schedule:` | source, step | a cron line |
 | `options:` | source, step | free configuration, passed through |
 | `universe:` | step | which universe it may hold |
-| `mode:` | source | `append` or `replace` |
+| `mode:` | source | `append`, and only that. `replace` is refused: it rewrites the table to what the last poll returned |
 | `kind:` | stage | `raw` for a landed stage; otherwise a name you choose |
 | `time_columns:` | project | which column on a table says when a row became public. The one line the point-in-time reads depend on |
 | `metrics:` | project | the formulas this project defines, each with a version |

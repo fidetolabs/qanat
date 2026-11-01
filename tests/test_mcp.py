@@ -1,5 +1,6 @@
 """The agent's door. Parity with the engine underneath is the thing being tested."""
 
+import inspect
 from pathlib import Path
 
 import pytest
@@ -313,15 +314,30 @@ def test_a_clock_over_stdio_is_refused_with_the_lifetime_reason(capsys):
     assert "qanat schedule" in said
 
 
-def test_retention_still_runs_on_the_schedulers_clock():
-    """It was checked and is live, so it is not on the deletion list."""
+def test_the_clock_deletes_nothing():
+    """Retention used to be applied by the scheduler loop once a minute, so a row
+    that had been served went away with nothing asking for it and nothing saying
+    so. The policy is still real; applying it is a verb a person runs."""
     import inspect
 
     from qanat.scheduler import Scheduler
 
     loop = inspect.getsource(Scheduler._loop)
-    assert "run_retention" in loop
-    assert "p.retention" in loop or "project.retention" in loop
+    assert "retention" not in loop
+    assert "prune" not in loop
+
+
+def test_retention_says_what_it_will_remove_before_the_flag_removes_it():
+    entry = next(t for t in mcp.TOOLS if t["name"] == "plan")
+    assert "retention" in entry["description"]
+    src = inspect.getsource(mcp._plan)
+    # the dry run answers on the path that does not act; the deletion is only
+    # reached past the flag
+    _, _, after = src.partition('if not args.get("prune")')
+    reported, _, acted = after.partition("return out")
+    assert "would_remove(" in reported
+    assert "run_retention(" not in reported
+    assert "run_retention(" in acted
 
 
 def test_lineage_and_stale_tables_are_still_in_data_unmoved():
