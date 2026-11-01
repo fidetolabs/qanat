@@ -113,6 +113,31 @@ _RENAMED = {"_qanat_runs": EXECUTIONS, "_qanat_state": VERSIONS}
 #: because DuckDB reserves that word for ASOF JOIN.
 PIT = "qanat_pit"
 
+#: Schema holding one view per table that keeps the engine's own columns out of
+#: a `SELECT *`. **Not tidiness.** A transform reading `SELECT * FROM
+#: raw__documents` would carry the upstream's execution id into its own output,
+#: and the engine would then stamp a second one -- two columns with one name.
+#: The physical table keeps the column; `lineage` is what reads it.
+NOW = "qanat_now"
+
+#: The execution that wrote a row. One column, set by the engine at write time.
+#:
+#: **It is what the one-writer-per-table rule was standing in for.** That rule's
+#: stated reason was that otherwise nothing can say which pass made the rows in
+#: a table -- and measured, that was already the situation: a `raw.documents` row
+#: carried `source: "sec-edgar"` and a JSON blob of the SEC's keys, and no run id
+#: anywhere. Attribution was job-to-table, never row-to-execution, and
+#: `ingest_filings` wrote that same table without opening a job at all.
+#:
+#: It resolves up the chain -- execution to job to definition to that
+#: definition's version -- so the row carries one narrow value rather than a copy
+#: of the whole provenance.
+EXEC_COL = "_qanat_execution"
+
+#: Columns the engine owns. A frame arriving with one of these in it is an error:
+#: a transform cannot set, forge or omit its own provenance.
+ENGINE_COLS = (EXEC_COL,)
+
 #: Who is causing work right now, recorded on every event.
 #:
 #: The event log carries it, because a project that changes while you are reading
@@ -125,8 +150,35 @@ PIT = "qanat_pit"
 ACTOR: contextvars.ContextVar[str] = contextvars.ContextVar("qanat_actor", default="you")
 
 
+#: Which execution is writing right now. A ContextVar for the same reason
+#: `ACTOR` is one: the scheduler runs jobs in worker threads, and each thread
+#: needs its own value instead of racing over one.
+EXECUTION: contextvars.ContextVar[int | None] = contextvars.ContextVar(
+    "qanat_execution", default=None)
+
+
 def current_actor() -> str:
     return ACTOR.get()
+
+
+def current_execution() -> int | None:
+    """The execution every write from here on is attributed to.
+
+    None outside a job. A row written then reads as unknown provenance rather
+    than being guessed at -- which is what rows written before this existed read
+    as, and they stay that way.
+    """
+    return EXECUTION.get()
+
+
+@contextlib.contextmanager
+def writing_as(execution_id: int | None):
+    """Attribute every write inside this block to one execution."""
+    token = EXECUTION.set(execution_id)
+    try:
+        yield
+    finally:
+        EXECUTION.reset(token)
 
 
 def set_actor(who: str) -> None:
@@ -307,6 +359,9 @@ class Store:
         self.home = self._scalar("SELECT current_schema()")
         self.as_of: str | None = None
         self._pit_overrides: dict[str, str] = {}
+        #: Physical names that have a `now` view over them. Held rather than
+        #: asked for, so a read never pays a catalogue query to find out.
+        self._now: set[str] = set()
         self._readers = threading.local()
         if self.kind == "parquet":
             # Needs `home`, so it waits until the connection is settled.
@@ -314,6 +369,8 @@ class Store:
         else:
             self._ensure_meta()
             self._recover()
+        self._build_now_views()
+        self.con.execute(f"SET search_path='{self._search_path()}'")
 
     def __str__(self) -> str:
         return f"{self.kind}: {self.label}"
@@ -525,6 +582,11 @@ class Store:
         parts = []
         if self.as_of is not None:
             parts.append(PIT)
+        # Then the `now` views, so a bare `stage__table` in a transform's SQL
+        # resolves to the one that hides the engine's columns. Writes are pinned
+        # to the home schema by `_q`, so this cannot move one.
+        if self._now:
+            parts.append(NOW)
         if self.kind == "parquet":
             parts.append("memory.main")
             if self._meta_open:
@@ -774,6 +836,30 @@ class Store:
                 [self._SCREEN_MARK])
 
     # ---- writing -------------------------------------------------------------
+    def _stamp(self, ref: str, df: pd.DataFrame) -> pd.DataFrame:
+        """Put the current execution on every row, and refuse a frame that set it.
+
+        **A transform cannot write this column.** Provenance a script can set is
+        provenance a script can get wrong, and a wrong answer about where a number
+        came from is worse than no answer. The refusal names the column rather
+        than dropping it silently, because a script that tried is a script whose
+        author believed something that is not true.
+        """
+        theirs = [c for c in ENGINE_COLS if c in df.columns]
+        if theirs:
+            raise ValueError(
+                f"{ref}: {', '.join(theirs)} is written by the engine, not by a job. "
+                f"It names the execution that wrote the row, so a job setting it would be "
+                f"attributing its own rows to whatever it chose. Drop the column"
+            )
+        if not len(df.columns):
+            return df
+        out = df.copy()
+        out[EXEC_COL] = current_execution()
+        # Nullable, because a row written outside a job has no execution and
+        # reads as unknown rather than as zero.
+        return out.astype({EXEC_COL: "Int64"})
+
     def write(self, ref: str, df: pd.DataFrame, mode: str = "replace",
               key: Sequence[str] | None = None) -> int:
         """Land a dataframe as a table. Returns the row count written.
@@ -785,6 +871,7 @@ class Store:
         """
         if df is None:
             return 0
+        df = self._stamp(ref, df)
         name = phys(ref)
         if not len(df.columns) or len(df) == 0:
             # A transform with nothing to say returns an empty frame. That is an answer,
@@ -884,6 +971,7 @@ class Store:
                     )
             finally:
                 self._release()
+                self._now_view(ref)
                 if self.as_of is not None:
                     self._shadow(ref)
         return len(df)
@@ -970,6 +1058,7 @@ class Store:
                         name, f"{kept} UNION ALL BY NAME SELECT {cols} FROM _incoming")
             finally:
                 self._release()
+                self._now_view(ref)
                 if self.as_of is not None:
                     self._shadow(ref)
         # What this job did, which is the rows it handed over -- never the table
@@ -1039,15 +1128,29 @@ class Store:
                 ))
 
     def sql_into(self, ref: str, select_sql: str) -> int:
+        """Land a SELECT as a table, stamped with the execution that ran it.
+
+        The stamp is wrapped around the query rather than asked of it, for the
+        same reason `write` refuses the column: a `.sql` transform does not get
+        to say where its rows came from.
+        """
         name = phys(ref)
+        execution = current_execution()
+        stamped = (
+            f"SELECT *, CAST({int(execution)} AS BIGINT) AS \"{EXEC_COL}\" "
+            f"FROM ({select_sql}) AS _out"
+            if execution is not None else
+            f"SELECT *, CAST(NULL AS BIGINT) AS \"{EXEC_COL}\" FROM ({select_sql}) AS _out"
+        )
         with self._lock:
             try:
                 if self.kind == "parquet":
-                    self._publish(name, select_sql)
+                    self._publish(name, stamped)
                     return self._rows(name)
-                self.con.execute(f'CREATE OR REPLACE TABLE {self._q(name)} AS ({select_sql})')
+                self.con.execute(f'CREATE OR REPLACE TABLE {self._q(name)} AS ({stamped})')
                 return int(self._scalar(f'SELECT count(*) FROM {self._q(name)}'))
             finally:
+                self._now_view(ref)
                 if self.as_of is not None:
                     self._shadow(ref)
 
@@ -1067,14 +1170,18 @@ class Store:
     def _readable(self, ref: str) -> str:
         """Where a *read* comes from.
 
-        While a screen is open that is the as-of view, not the table under it. The
-        pinning in `_q` exists so a write cannot be moved by `search_path`; applied
-        to reads it also meant `store.read()` reached around the clock, which is
-        the one thing the as-of views exist to prevent. Writes still use `_q`.
+        Three layers, outermost first. While a screen is open that is the as-of
+        view. Otherwise the `now` view, which keeps the engine's own columns out
+        of a `SELECT *`. Otherwise the table. The pinning in `_q` exists so a
+        write cannot be moved by `search_path`; applied to reads it also meant
+        `store.read()` reached around the clock, which is the one thing the as-of
+        views exist to prevent. Writes still use `_q`.
         """
         name = phys(ref)
         if self.as_of is not None and self._has_view(name):
             return f'"{PIT}"."{_ident(name)}"'
+        if name in self._now:
+            return f'"{NOW}"."{_ident(name)}"'
         return self._q(name)
 
     def _has_view(self, name: str) -> bool:
@@ -1084,6 +1191,56 @@ class Store:
                 [PIT, name]))
         except Exception:  # noqa: BLE001 -- no view catalogue: fall back to the table
             return False
+
+    # ---- the `now` views -----------------------------------------------------
+    def _engine_cols(self, name: str) -> list[str]:
+        """Which engine-owned columns this table actually carries.
+
+        A table written before the column existed carries none, and reads
+        straight through. Nothing is backfilled: no honest value exists for a row
+        whose execution was never recorded, and a guess there is worse than a
+        null that reports itself as unknown.
+        """
+        try:
+            have = {c for (c,) in self.con.execute(
+                "SELECT column_name FROM duckdb_columns() WHERE database_name = "
+                "current_catalog() AND schema_name = ? AND table_name = ?",
+                [self.home, name]).fetchall()}
+        except Exception:  # noqa: BLE001 -- no catalogue: assume none
+            return []
+        return [c for c in ENGINE_COLS if c in have]
+
+    def _now_view(self, ref: str) -> bool:
+        """(Re)build the `now` view over one table. True if it needs one."""
+        name = phys(ref)
+        mine = self._engine_cols(name)
+        if not mine:
+            self._now.discard(name)
+            return False
+        hidden = ", ".join(f'"{_ident(c)}"' for c in mine)
+        with contextlib.suppress(Exception):
+            self.con.execute(f'CREATE SCHEMA IF NOT EXISTS "{NOW}"')
+            self.con.execute(
+                f'CREATE OR REPLACE VIEW "{NOW}"."{_ident(name)}" AS '
+                f"SELECT * EXCLUDE ({hidden}) FROM {self._q(name)}"
+            )
+            first = not self._now
+            self._now.add(name)
+            # The first view puts this schema on the search path, and that is
+            # load-bearing rather than tidy: a `.sql` transform names a table
+            # bare, so without it the transform reads the physical table,
+            # inherits the upstream's execution column, and the engine's own
+            # stamp lands beside it as a second column with the same name --
+            # after which the rows report whichever one the reader found first.
+            if first:
+                self.con.execute(f"SET search_path='{self._search_path()}'")
+        return True
+
+    def _build_now_views(self) -> None:
+        """One pass at open, so a reader never pays for discovering these."""
+        self._now: set[str] = getattr(self, "_now", set())
+        for ref in self.all_tables():
+            self._now_view(ref)
 
     # ---- reading -------------------------------------------------------------
     def read(self, ref: str, limit: int | None = None, as_of: str | None = None) -> pd.DataFrame:
@@ -1178,15 +1335,22 @@ class Store:
         return shadowed
 
     def _shadow(self, ref: str) -> bool:
-        """(Re)build one as-of view. True if the table has a clock to filter on."""
+        """(Re)build one as-of view. True if the table has a clock to filter on.
+
+        Built over the `now` view when there is one, so a screened read gets the
+        same columns as an ordinary read -- otherwise a transform would see the
+        engine's own column under a screen and not outside one, which is the
+        worst of the three possibilities.
+        """
         col = self.time_column(ref, self._pit_overrides.get(ref))
         name = phys(ref)
+        under = (f'"{NOW}"."{_ident(name)}"' if name in self._now else self._q(name))
         if col is None:
             # no clock on this table: it is the same at every as-of
-            body = f"SELECT * FROM {self._q(name)}"
+            body = f"SELECT * FROM {under}"
         else:
             body = (
-                f'SELECT * FROM {self._q(name)} '
+                f'SELECT * FROM {under} '
                 f"WHERE {self._instant(ref, col)} <= CAST('{self.as_of}' AS TIMESTAMP)"
             )
         self.con.execute(f'CREATE OR REPLACE VIEW "{PIT}"."{name}" AS {body}')
@@ -1350,6 +1514,9 @@ class Store:
         ).fetchall()
         if not cols:
             return None
+        # The engine's own columns are not the table's shape. `describe_table`
+        # answers what a caller may read, and `lineage` is what reads this one.
+        cols = [(c, ty) for c, ty in cols if c not in ENGINE_COLS]
         rows = self._scalar(f'SELECT count(*) FROM {self._q(name)}', con=r)
         # When this table was last written is in the run log, and `table_info` is
         # on the read path -- `read()` reaches it through `time_column`. Opening
@@ -1453,9 +1620,17 @@ class Store:
 
     def start_execution(self, job_id: int, definition_id: str, kind: str,
                         targets: list[str]) -> int:
-        """One attempt at one job. `attempt` counts from 1, per job."""
+        """One attempt at one job. `attempt` counts from 1, per job.
+
+        **It also opens the attribution window**: every write from here until
+        `end_execution` carries this id. Set here rather than by each caller
+        because the runner has four exit paths and three of them are error paths
+        -- a caller that has to remember is a caller that will forget on the one
+        path nobody tests.
+        """
         self._meta()
         execution_id = time.time_ns() // 1000
+        EXECUTION.set(execution_id)
         with self._lock:
             attempt = int(self._scalar(
                 f"SELECT count(*) FROM {self._meta_home}{EXECUTIONS} WHERE job_id = ?",
@@ -1469,7 +1644,14 @@ class Store:
 
     def end_execution(self, execution_id: int, status: str, rows: int = 0,
                       error: str | None = None) -> None:
+        """Close one attempt, and the attribution window it opened.
+
+        Cleared here so a write that happens after the attempt is over is
+        attributed to nothing rather than to the last job that ran -- which is
+        the wrong answer, and the one a leftover value would give.
+        """
         self._meta()
+        EXECUTION.set(None)
         with self._lock:
             self.con.execute(
                 f"UPDATE {self._meta_home}{EXECUTIONS} SET ended_at = now()::TIMESTAMP, "
@@ -1504,6 +1686,55 @@ class Store:
             "status": "ok" if any(a["status"] == "ok" for a in attempts)
                       else (attempts[-1]["status"] if attempts else "running"),
             "attempts": attempts,
+        }
+
+    def provenance(self, ref: str, where: str = "", params: Sequence[Any] = (),
+                   limit: int = 20) -> dict[str, Any]:
+        """Which executions wrote the rows this filter matches, resolved up the chain.
+
+        **The question is "where did this number come from", and until now there
+        was nothing to ask it of.** Each execution resolves to its job, the
+        definition behind that job, and which version of the definition was
+        running -- four hops from a row to a reason.
+
+        Rows written before the column existed come back under `unknown`, counted
+        rather than hidden. A silent zero there would read as "nothing to say"
+        when the truth is "nobody recorded it".
+        """
+        name = phys(ref)
+        if not self.exists(ref) or EXEC_COL not in self._engine_cols(name):
+            return {"table": ref, "executions": [], "unknown_rows": 0,
+                    "note": "this table carries no provenance column: every row in it "
+                            "was written before the engine recorded one"}
+        clause = f" WHERE {where}" if where else ""
+        rows = self.rcon.execute(
+            f'SELECT "{EXEC_COL}" AS e, count(*) AS n FROM {self._q(name)}{clause} '
+            f'GROUP BY 1 ORDER BY n DESC', list(params)).fetchall()
+        unknown = sum(int(n) for e, n in rows if e is None)
+        out = []
+        for execution_id, n in [(e, n) for e, n in rows if e is not None][:int(limit)]:
+            found = self.execution(int(execution_id)) or {}
+            job = self.job(found["job_id"]) if found.get("job_id") is not None else None
+            version = self.definition_version(found.get("definition") or "")
+            out.append({
+                "rows": int(n),
+                "execution": int(execution_id),
+                "attempt": found.get("attempt"),
+                "status": found.get("status"),
+                "job": found.get("job_id"),
+                "scheduled_for": (job or {}).get("scheduled_for"),
+                "schedule": (job or {}).get("schedule"),
+                "definition": found.get("definition"),
+                "definition_version": (version or {}).get("version"),
+            })
+        return {
+            "table": ref,
+            "executions": out,
+            "unknown_rows": unknown,
+            "note": (
+                f"{unknown:,} row(s) name no execution -- written before the engine "
+                f"recorded one, which is unknown rather than none" if unknown else None
+            ),
         }
 
     def execution(self, execution_id: int) -> dict[str, Any] | None:

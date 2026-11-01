@@ -659,6 +659,18 @@ def find(
     }
 
 
+def _now():
+    """The instant a hand-triggered pass is *for*, which is now.
+
+    Its own job, every call. Two ad-hoc ingests are two jobs, because they are
+    two separate decisions by a person -- unlike two attempts at the 07:00 poll,
+    which are one.
+    """
+    from datetime import datetime, timezone
+
+    return datetime.now(timezone.utc).replace(tzinfo=None)
+
+
 # ------------------------------------------------------------------ ingest
 def ingest(
     store: Store,
@@ -792,16 +804,32 @@ def ingest(
                         "pile": pile(form)})
 
     landed = 0
+    job_id = execution_id = None
     if landing:
         df = pd.DataFrame(landing)
         for col in ("published_at", "period_end"):
             df[col] = pd.to_datetime(df[col], errors="coerce")
-        landed = store.write(ref, df, mode="append", key=["id"])
-        store.event("ok", "ingest_filings", f"landed {landed:,} rows in {ref}")
+        # **A hand-triggered ingest is a job with no schedule behind it**, not the
+        # absence of a job. It used to write rows and log an event while opening
+        # neither, which is exactly why its rows were the ones nothing could
+        # claim -- the documents table held rows no execution had written.
+        job_id = store.open_job(src.id, "ingestion", _now(), None)
+        execution_id = store.start_execution(job_id, src.id, "ingestion", [ref])
+        try:
+            landed = store.write(ref, df, mode="append", key=["id"])
+        except Exception as exc:
+            store.end_execution(execution_id, "failed", 0, f"{type(exc).__name__}: {exc}")
+            raise
+        store.end_execution(execution_id, "ok", landed)
+        store.event("ok", src.id, f"landed {landed:,} rows in {ref}")
 
     return {
         "table": ref,
         "landed": landed,
+        # What wrote them, so a caller that just landed rows can ask `lineage`
+        # about them without searching a log.
+        "job": job_id,
+        "execution": execution_id,
         "refused": sum(1 for r in out if not r["ingested"]),
         "filings": out,
         "next": (
