@@ -83,7 +83,7 @@ each column spans. It costs a scan, and the answer is the same size whatever the
 ## `define_universe` exists because the error used to name a fix nobody had
 
 A transform that holds a basket holds itself to a universe, so the contract refuses a project that declares
-none. It used to say "add one to qanat.yaml" -- which an agent reaching this project over MCP
+none. It used to say "add one by hand" -- which an agent reaching this project over MCP
 cannot do, because there was no universe mutation anywhere. Give this one an id and some symbols
 and it writes the csv.
 

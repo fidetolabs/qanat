@@ -73,7 +73,7 @@ much of each to hold, and that decision is yours.
 
 ## Two metrics, and why they are a warning
 
-`pe` and `net_margin` are defined in `qanat.yaml`, marked `origin: shipped` —
+`pe` and `net_margin` are defined in `metrics.yaml`, marked `origin: shipped` —
 they are the **starter set**, enough to screen with on the day you install and
 deliberately not a metric library. `define_metric` writes your own beside them,
 labelled `defined`. Both of these got two things wrong first time, and both

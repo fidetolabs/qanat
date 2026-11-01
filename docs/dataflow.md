@@ -151,11 +151,17 @@ can, while you are deciding what to try.
 
 ## 4 · Metric extraction
 
-A metric is a named, versioned SQL formula in `qanat.yaml` with `:as_of` in it, written by
-`define_metric` and run against the project before it is stored — so a syntax error or an unknown
-column comes back as the database's own message rather than as a definition that fails on somebody
-else's screen. A changed formula is a **new version beside the old one**, because an answer somebody
-kept points at a version; bumping is refused rather than guessed.
+A metric is a named, versioned SQL formula in `metrics.yaml`, written by `define_metric` and run
+against the project before it is stored — so a syntax error or an unknown column comes back as the
+database's own message rather than as a definition that fails on somebody else's screen. A changed
+formula is a **new version beside the old one**, because an answer somebody kept points at a
+version; bumping is refused rather than guessed.
+
+**A formula carrying a `date` of its own is a series**, and `define_metric` writes a transform
+definition that materialises it into the metrics table — one row per subject per date per metric
+per version, keyed so a corrected price adds a row rather than replacing the value somebody was
+shown. One with `:as_of` in it takes the date as a parameter instead, which is a fact rescaled
+rather than a series, so it is computed when a screen asks and nothing is stored.
 
 The formula is shared, because `price / diluted EPS` is arithmetic with no judgement in it. **The
 threshold next to it is an opinion and never lives here**, and nor does the filter it sits in. A

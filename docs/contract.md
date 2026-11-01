@@ -34,11 +34,17 @@ The period a number covers, and the day it became public. `time_columns` names t
 one per table, and a screen filters on it and nothing else. This is the product: without it
 a screen run "as of 2022" reads numbers nobody could have had in 2022.
 
-## 5. Every table that is read has a producer
+## 5. Every table that is read is written by something
 
 A transform that reads `normalized.facts` when nothing writes it fails at `qanat check` rather
 than at the next scheduled run. A `.sql` transform writes exactly one table, because one `SELECT`
 produces one result.
+
+**Several definitions may write one table.** The rule used to be one writer, and its stated
+reason was that otherwise nothing could say which run made the rows in it — so the rule went
+when every row started naming the execution that wrote it. What is left is about the reader:
+two writers have to agree on what identifies a row, because a read returns the newest write
+per key and two writers with two keys would each be correcting rows the other never claimed.
 
 ## What `check` warns about but allows
 
