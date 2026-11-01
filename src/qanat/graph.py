@@ -775,7 +775,7 @@ def build_graph(
         "jobs": jobs,
         "edges": [{"from": a, "to": b, "definition": d} for a, b, d in graph_edges(project)],
         # the order jobs actually run in. Reported rather than guessed at from the
-        # shape, so what a reader sees is the run and not a picture of it
+        # shape, so what a reader sees is the order and not a picture of it
         "run_order": [j.id for j in run_order(project)],
         "health": {
             "tables": len(tables),

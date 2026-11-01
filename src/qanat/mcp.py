@@ -428,9 +428,15 @@ def _plan(s: Session, args: dict) -> Any:
 
 
 # ---- run ---------------------------------------------------------------------
-@tool("run", "Run the graph once, or one job. With as_of, screen that single pass.",
-      {"properties": {"job": {"type": "string", "description": "one job id; omit for the whole graph"},
-                      "as_of": {"type": "string"}, "seed": {"type": "integer"}}},
+@tool("run",
+      "Run the graph once, or one definition. With as_of, screen that single pass. **What "
+      "you name is a definition, not a job**: a job is one definition for one exact moment "
+      "and this makes one, now. The result says which job and which execution it opened, so "
+      "the rows it landed can be traced without searching a log.",
+      {"properties": {
+          "definition": {"type": "string",
+                         "description": "one definition id; omit for the whole graph"},
+          "as_of": {"type": "string"}, "seed": {"type": "integer"}}},
       writes=True,
       scope="full")
 def _run(s: Session, args: dict) -> Any:
@@ -440,8 +446,8 @@ def _run(s: Session, args: dict) -> Any:
     if as_of:
         s.store.open_pit(as_of, s.project.time_columns)
     try:
-        if args.get("job"):
-            results = [run_definition(s.store, s.project, s.root, args["job"],
+        if args.get("definition"):
+            results = [run_definition(s.store, s.project, s.root, args["definition"],
                                       as_of=as_of, seed=seed)]
         else:
             results = run_all(s.store, s.project, s.root, as_of=as_of, seed=seed,

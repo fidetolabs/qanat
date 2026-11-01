@@ -83,7 +83,7 @@ class RunResult:
 def run_ingestion(store: Store, project: Project, root: Path,
                   src: IngestionJobDefinition, scheduled_for: Any = None,
                   schedule_id: str | None = None) -> RunResult:
-    job_id, run_id = _open(store, src, "ingestion", [src.ref], scheduled_for, schedule_id)
+    job_id, execution = _open(store, src, "ingestion", [src.ref], scheduled_for, schedule_id)
     try:
         # What is the newest row this table already holds? An adapter that can
         # fetch incrementally uses it to ask only for what came after.
@@ -102,26 +102,26 @@ def run_ingestion(store: Store, project: Project, root: Path,
             # nothing".
             _record_applied(store, root, src)
             store.event("warn", src.id, "the connector returned no rows")
-            store.end_execution(run_id, "ok", 0)
+            store.end_execution(execution, "ok", 0)
             return RunResult(src.id, "ok", 0, targets=(src.ref,),
-                             job_id=job_id, execution_id=run_id)
+                             job_id=job_id, execution_id=execution)
         rows = store.write(src.ref, df, mode=src.mode, key=src.key)
         _record_applied(store, root, src)
         store.event("ok", src.id, f"landed {rows:,} rows in {src.ref}")
-        store.end_execution(run_id, "ok", rows)
+        store.end_execution(execution, "ok", rows)
         return RunResult(src.id, "ok", rows, targets=(src.ref,),
-                         job_id=job_id, execution_id=run_id)
+                         job_id=job_id, execution_id=execution)
     except Exception as exc:  # noqa: BLE001 -- one failing job must not stop the loop
         msg = f"{type(exc).__name__}: {exc}"
         store.event("error", src.id, msg)
-        store.end_execution(run_id, "failed", 0, msg)
+        store.end_execution(execution, "failed", 0, msg)
         return RunResult(src.id, "failed", 0, msg, (src.ref,),
-                         job_id=job_id, execution_id=run_id)
+                         job_id=job_id, execution_id=execution)
     except BaseException as exc:
         # `sys.exit()` or Ctrl-C. Not an Exception, so it used to skip the close and
         # leave the row saying `running` for ever. Record it, then let it through.
         store.event("error", src.id, f"interrupted -- {type(exc).__name__}"[:400])
-        store.end_execution(run_id, "interrupted", 0, str(exc)[:2000])
+        store.end_execution(execution, "interrupted", 0, str(exc)[:2000])
         raise
 
 
@@ -255,7 +255,7 @@ def run_transform(
     scheduled_for: Any = None,
     schedule_id: str | None = None,
 ) -> RunResult:
-    job_id, run_id = _open(store, transform, "transform", list(transform.writes),
+    job_id, execution = _open(store, transform, "transform", list(transform.writes),
                            scheduled_for, schedule_id)
     ctx = Context(store, project, root, transform, as_of=as_of, universe=universe)
     script = root / transform.script
@@ -274,22 +274,22 @@ def run_transform(
             _check_lookahead(store, project, transform, as_of)
         _record_applied(store, root, transform)
         store.event("ok", transform.id, f"wrote {rows:,} rows to {', '.join(transform.writes)}")
-        store.end_execution(run_id, "ok", rows)
+        store.end_execution(execution, "ok", rows)
         return RunResult(transform.id, "ok", rows, targets=tuple(transform.writes),
-                         job_id=job_id, execution_id=run_id)
+                         job_id=job_id, execution_id=execution)
     except Exception as exc:  # noqa: BLE001
         msg = f"{type(exc).__name__}: {exc}"
         store.event("error", transform.id, msg.splitlines()[0][:400])
-        store.end_execution(run_id, "failed", 0, traceback.format_exc(limit=3)[:2000])
+        store.end_execution(execution, "failed", 0, traceback.format_exc(limit=3)[:2000])
         return RunResult(transform.id, "failed", 0, msg, tuple(transform.writes),
-                         job_id=job_id, execution_id=run_id)
+                         job_id=job_id, execution_id=execution)
     except BaseException as exc:
         # `sys.exit()` in a script, or Ctrl-C. These are not Exceptions, so they used
         # to sail past the close and leave the row saying `running` for ever, and
         # every later reader believed it. Record, then re-raise.
         msg = f"{type(exc).__name__}: {exc}"
         store.event("error", transform.id, f"interrupted -- {msg}"[:400])
-        store.end_execution(run_id, "interrupted", 0, msg[:2000])
+        store.end_execution(execution, "interrupted", 0, msg[:2000])
         raise
 
 
