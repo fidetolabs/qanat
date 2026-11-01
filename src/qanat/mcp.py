@@ -1044,7 +1044,7 @@ def _remove_step(s: Session, args: dict) -> Any:
       writes=True,
       scope="full")
 def _save_universe(s: Session, args: dict) -> Any:
-    from qanat.editor import EditorError, define_universe
+    from qanat.editor import EditorError, save_universe
 
     uid = _need(args, "id")
     raw = {
@@ -1056,7 +1056,7 @@ def _save_universe(s: Session, args: dict) -> Any:
     if syms is not None:
         raw["symbols_list"] = [str(x).strip() for x in syms if str(x).strip()]
     try:
-        written = define_universe(s.project, s.root, raw)
+        written = save_universe(s.project, s.root, raw)
     except EditorError as exc:
         raise ToolError(str(exc)) from exc
     s.reload()

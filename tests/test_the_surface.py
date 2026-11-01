@@ -123,3 +123,34 @@ def test_no_tool_exists_because_one_door_needs_it():
     said = " ".join(FLOWS.read_text().split()).lower()
     assert "door ①" in said and "door ②" in said
     assert "authors jobs by hand" in said, "the flow that is not one is named"
+
+
+def test_every_tool_can_actually_be_reached(tmp_path: Path):
+    """**Called with nothing, and the only acceptable complaint is the arguments.**
+
+    A tool whose handler cannot even be entered -- a stale import, a renamed
+    function it still calls by the old name -- answers with `ImportError` or
+    `NameError` rather than with a message about what it needs. Nothing else in
+    the suite catches that, because a test only covers the tools it happens to
+    call: `define_universe` shipped importing `define_universe` from the editor,
+    which is named `save_universe` there, and every test passed.
+    """
+    from conftest import write_demo_project as write_project
+
+    write_project(tmp_path, "demo")
+    session = mcp.Session(str(tmp_path))
+    broken = {}
+    try:
+        for entry in mcp.tools_for("authoring"):
+            out = mcp._dispatch(
+                session,
+                {"jsonrpc": "2.0", "id": 1, "method": "tools/call",
+                 "params": {"name": entry["name"], "arguments": {}}},
+                mcp.tools_for("authoring"))
+            said = out["result"]["content"][0]["text"]
+            if said.startswith(("ImportError", "NameError", "AttributeError",
+                                "ModuleNotFoundError")):
+                broken[entry["name"]] = said.splitlines()[0]
+    finally:
+        session.close()
+    assert not broken, broken
