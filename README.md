@@ -271,9 +271,9 @@ bumping a formula cannot change what your rule computes.
 
 **Because you keep the record, a screen hands you enough to keep one.** Each row
 carries `values` — the numbers the verdict was reached on, for the companies that
-failed as well as the ones that passed — and an `execution` block names the
+failed as well as the ones that passed — and an `inputs` block names the
 definition versions it actually read and the corpus range it ran over.
-`execution.id` is a digest of those inputs, so the same inputs give the same id
+`inputs.id` is a digest of those inputs, so the same inputs give the same id
 and a changed id means something underneath moved. An as-of date protects a
 replay from a filer restating their numbers; it does not protect it from a parser
 being fixed and the corpus reloaded, and that id is how you see the difference.

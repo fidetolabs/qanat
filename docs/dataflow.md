@@ -186,10 +186,10 @@ finished map.
 The caller owns the filter, the history and the results. That only works if a screen hands back
 enough to keep a record of, so it returns: the list, **the metric values the verdict was reached
 on** — for the companies that failed as well as the ones that passed — each company's own forward
-return, the count of how many could be evaluated, and an `execution` block naming the definition
+return, the count of how many could be evaluated, and an `inputs` block naming the definition
 versions it actually read and the corpus range it ran over.
 
-`execution.id` is a **digest of those inputs, not a random handle.** An as-of date protects a replay
+`inputs.id` is a **digest of those inputs, not a random handle.** An as-of date protects a replay
 from a filer restating their numbers; it does not protect it from a parser being fixed and the
 corpus reloaded. Same inputs, same id — so an id that moved means something underneath did, and a
 record that cannot tell those apart is not a record. There is no wall clock in it: the same screen

@@ -214,7 +214,7 @@ def test_nothing_is_added_up(store):
     out = screen(store, a_project(), parse_filters(
         [{"metric": "pe", "op": "<", "value": 100}]),
         frm="2022-01-01", to="2024-01-01", every="1y")
-    assert set(out) <= {"rows", "counts", "applied", "execution", "universe", "notes"}
+    assert set(out) <= {"rows", "counts", "applied", "inputs", "universe", "notes"}
     for c in out["counts"]:
         assert set(c) == {"as_of", "subjects", "evaluated", "dropped", "passed",
                           "nothing_evaluable"}
@@ -228,13 +228,13 @@ def test_nothing_is_added_up(store):
         for key in container
         for word in ("total", "mean", "avg", "cumulative", "curve", "sum", "since")
     )
-    # A row's values are that subject's, on that date. `execution` is metadata
+    # A row's values are that subject's, on that date. `inputs` is metadata
     # about the call and carries no number read off more than one date.
     wanted = {c["metric"] for f in out["applied"] for c in f["clauses"]}
     for r in out["rows"]:
         assert set(r["values"]) <= {m for m in wanted} | {
             f"{m}@{v}" for m in wanted for v in range(1, 10)}
-    assert set(out["execution"]) <= {
+    assert set(out["inputs"]) <= {
         "id", "as_of", "from", "to", "every", "metrics", "dates", "corpus",
         "universe", "note"}
 
@@ -436,7 +436,7 @@ def test_the_values_are_keyed_so_two_versions_of_one_metric_stay_apart(store):
     assert values["A"] == {"pe@1": 8.0, "pe@2": 80.0}
     assert values["B"] == {"pe@1": 9.0, "pe@2": 90.0}
     # And the record says both versions ran, which a mapping could not.
-    assert out["execution"]["metrics"] == [
+    assert out["inputs"]["metrics"] == [
         {"metric": "pe", "version": 1}, {"metric": "pe", "version": 2}]
 
 
@@ -470,7 +470,7 @@ def test_an_unpinned_clause_records_the_version_it_actually_read(store):
     clause = out["applied"][0]["clauses"][0]
     assert "metric_version" not in clause, "the caller pinned nothing"
     assert clause["metric_version_used"] == 4, "and this is what ran"
-    assert out["execution"]["metrics"] == [{"metric": "pe", "version": 4}]
+    assert out["inputs"]["metrics"] == [{"metric": "pe", "version": 4}]
 
 
 def test_a_pinned_clause_records_both_what_was_asked_and_what_ran(store):
@@ -482,20 +482,20 @@ def test_a_pinned_clause_records_both_what_was_asked_and_what_ran(store):
     assert clause["metric_version_used"] == 1
 
 
-def test_the_execution_id_is_a_digest_of_the_inputs_not_a_random_handle(store):
+def test_the_inputs_id_is_a_digest_of_them_and_not_a_random_handle(store):
     """So two runs of the same thing match, and a different id means something
     underneath moved -- which an as-of date cannot tell you about a reparse."""
     args = (store, a_project(), parse_filters([{"metric": "pe", "op": "lt", "value": 10}]))
     first = screen(*args, as_of="2023-06-01")
     again = screen(*args, as_of="2023-06-01")
-    assert first["execution"]["id"] == again["execution"]["id"]
+    assert first["inputs"]["id"] == again["inputs"]["id"]
 
     other_date = screen(*args, as_of="2022-06-01")
-    assert other_date["execution"]["id"] != first["execution"]["id"]
-    assert "digest" in first["execution"]["note"]
+    assert other_date["inputs"]["id"] != first["inputs"]["id"]
+    assert "digest" in first["inputs"]["note"]
 
 
-def test_the_execution_id_moves_when_the_definition_moves(store):
+def test_the_inputs_id_moves_when_the_definition_moves(store):
     """A filer restating is what as-of protects against. A parser being fixed
     and the corpus reloaded is not, and this is what shows it."""
     project = a_project()
@@ -508,16 +508,16 @@ def test_the_execution_id_moves_when_the_definition_moves(store):
                                 "(PARTITION BY subject ORDER BY as_of DESC) = 1")]
     after = screen(store, project, parse_filters(
         [{"metric": "pe", "op": "lt", "value": 10}]), as_of="2023-06-01")
-    assert after["execution"]["id"] != before["execution"]["id"]
-    assert after["execution"]["metrics"] == [{"metric": "pe", "version": 2}]
+    assert after["inputs"]["id"] != before["inputs"]["id"]
+    assert after["inputs"]["metrics"] == [{"metric": "pe", "version": 2}]
 
 
-def test_the_execution_block_records_the_corpus_range_it_ran_over(store):
+def test_the_inputs_block_records_the_corpus_range_it_ran_over(store):
     out = screen(store, a_project(), parse_filters(
         [{"metric": "pe", "op": "lt", "value": 10}]), as_of="2023-06-01")
-    assert out["execution"]["corpus"] == {"from": "2022-01-01", "to": "2024-01-01"}
-    assert out["execution"]["dates"] == ["2023-06-01"]
-    assert out["execution"]["as_of"] == "2023-06-01"
+    assert out["inputs"]["corpus"] == {"from": "2022-01-01", "to": "2024-01-01"}
+    assert out["inputs"]["dates"] == ["2023-06-01"]
+    assert out["inputs"]["as_of"] == "2023-06-01"
 
 
 def test_there_is_no_wall_clock_in_the_answer(store):
@@ -696,7 +696,7 @@ def test_a_list_with_no_dates_says_it_flatters_the_numbers(filers):
     assert any("flattered by the names that survived" in n for n in out["notes"])
 
 
-def test_the_universe_is_part_of_the_execution_id(filers):
+def test_the_universe_is_part_of_the_inputs_id(filers):
     """The same filter over a different list is a different answer."""
     args = (filers, a_corpus_project(),
             parse_filters([{"metric": "pe", "op": "lt", "value": 100}]))
@@ -704,10 +704,10 @@ def test_the_universe_is_part_of_the_execution_id(filers):
     one = screen(*args, as_of="2023-06-01", universe=["AYE"])
     none = screen(*args, as_of="2023-06-01")
 
-    assert both["execution"]["id"] != one["execution"]["id"]
-    assert both["execution"]["id"] != none["execution"]["id"]
-    assert none["execution"]["universe"] is None
-    assert both["execution"]["universe"]["subjects"] == ["A", "B"]
+    assert both["inputs"]["id"] != one["inputs"]["id"]
+    assert both["inputs"]["id"] != none["inputs"]["id"]
+    assert none["inputs"]["universe"] is None
+    assert both["inputs"]["universe"]["subjects"] == ["A", "B"]
     # And it is still reproducible.
     assert screen(*args, as_of="2023-06-01", universe=["AYE"]) == one
 
@@ -720,7 +720,7 @@ def test_a_universe_over_a_window_keeps_each_date_its_own(filers):
     assert dates == ["2022-06-01", "2023-06-01"]
     for c in out["counts"]:
         assert c["subjects"] == 2
-    assert out["execution"]["dates"] == dates
+    assert out["inputs"]["dates"] == dates
 
 
 def test_an_empty_universe_is_refused(store):

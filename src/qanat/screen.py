@@ -32,13 +32,13 @@ screening, factor research, thesis tracking -- and that coupling is worth
 avoiding.
 
 So the division is: **this platform owns the data, the definitions and the
-execution; the caller owns the filter, the history and the results.**
+running of them; the caller owns the filter, the history and the results.**
 
 **Which puts an obligation on this end, and it is the whole of what makes the
 split workable.** A caller that keeps its own history can only keep what it was
 given. So a screen returns the companies, **the metric values behind the
-verdict**, the definition versions it actually resolved, and an execution id --
-enough for the caller to store a record it can read back later without asking
+verdict**, the definition versions it actually resolved, and an id for the
+inputs -- enough to store a record it can read back later without asking
 again. Returning a bare pass/fail would make the caller re-query for the numbers
 it had just paid to compute.
 
@@ -154,7 +154,7 @@ class Filter:
 
         Name and version may both be absent. A clause somebody typed once and
         never saved has nothing to point at, and recording it as data rather
-        than as a pointer is the only way the run stays readable afterwards.
+        than as a pointer is the only way the answer stays readable afterwards.
 
         `resolved` carries the definition version each clause actually read.
         `metric_version` is what the caller pinned and may be absent;
@@ -299,7 +299,7 @@ def metric_values(store: Store, metric: Metric, as_of: str, project=None) -> pd.
 class Universe:
     """Which subjects a screen may return, and whether each name was checked.
 
-    **A universe is the caller's list and this platform's execution.** Which
+    **A universe is the caller's list and this platform's work to place.** Which
     companies somebody cares about is their business -- it is named on the
     client's side of the line, along with their filters and their history -- so
     this takes the list with the call and keeps none of it. **Placing those
@@ -600,7 +600,7 @@ def screen(
     | `rows`      | one row per subject per date, the verdict, and the values |
     | `counts`    | per date: how many could be evaluated, how many could not |
     | `applied`   | the filters as they ran, clauses and all |
-    | `execution` | the definition versions it read, and the corpus it read them from |
+    | `inputs`    | the definition versions it read, and the corpus it read them from |
 
     No average across dates, no comparison against the companies that failed,
     no score. A number that cannot be read off one date's list is not here.
@@ -761,8 +761,8 @@ def screen(
         "rows": rows,
         "counts": counts,
         "applied": [f.as_applied(resolved) for f in filters],
-        "execution": _execution(store, project, resolved, stops, as_of, frm, to, every,
-                                picked),
+        "inputs": _inputs(store, project, resolved, stops, as_of, frm, to, every,
+                          picked),
     }
     if picked is not None:
         out["universe"] = picked.as_applied()
@@ -771,23 +771,29 @@ def screen(
     return out
 
 
-def _execution(store: Store, project: Project, resolved: dict[str, int],
-               stops: list[str], as_of: str | None, frm: str | None,
-               to: str | None, every: str,
-               picked: Universe | None = None) -> dict[str, Any]:
-    """What this run was, in a form a caller can store and compare.
+def _inputs(store: Store, project: Project, resolved: dict[str, int],
+            stops: list[str], as_of: str | None, frm: str | None,
+            to: str | None, every: str,
+            picked: Universe | None = None) -> dict[str, Any]:
+    """What this answer rested on, in a form a caller can store and compare.
 
-    **`id` is a digest of the inputs, not a random handle**, and that is the
-    useful choice rather than the conventional one. Two runs of the same filter
-    over the same definitions and the same corpus share an id; a different id
-    means an input moved. **A record that cannot tell those apart is not a
-    record** -- an as-of date protects a replay from a filer restating their
-    numbers, and it does not protect it from a parser being fixed and the corpus
-    reloaded.
+    **`id` is a digest of these inputs, not a random handle**, and that is the
+    useful choice rather than the conventional one. Two screens of the same
+    filter over the same definitions and the same corpus share an id; a
+    different id means an input moved. **A record that cannot tell those apart
+    is not a record** -- an as-of date protects a replay from a filer restating
+    their numbers, and it does not protect it from a parser being fixed and the
+    corpus reloaded.
 
     There is no wall-clock timestamp in here on purpose. The same screen twice
     is the same answer, which is a claim this product makes and a test holds,
     and when a caller asked is the caller's own fact to record.
+
+    **It was called `execution` until 0.11.0, and the word had to move.** An
+    execution is one attempt at one job, which the job model names and the store
+    records; this is the inputs behind one answer, which is a different thing
+    entirely. Two meanings for one word is the state `source` was in, and the
+    reason it was retired.
     """
     # A list of pairs rather than a mapping, because a filter may read two
     # versions of one definition and `{"pe": 1, "pe": 3}` cannot say that.
@@ -798,8 +804,8 @@ def _execution(store: Store, project: Project, resolved: dict[str, int],
         "dates": list(stops),
         "every": every if not as_of else None,
         "corpus": {"from": have["from"], "to": have["to"]},
-        # The universe is part of what this run was, so it is part of the id:
-        # the same filter over a different list is a different answer.
+        # The universe is one of the inputs, so it is part of the id: the same
+        # filter over a different list is a different answer.
         "universe": None if picked is None else {
             "subjects": sorted({str(s) for s in picked.members["subject"]}),
             "point_in_time": picked.point_in_time,
@@ -815,9 +821,9 @@ def _execution(store: Store, project: Project, resolved: dict[str, int],
         **body,
         "note": (
             "`id` is a digest of the definitions, the dates and the corpus range this "
-            "ran over -- not a random handle. The same inputs give the same id, so an "
-            "id that changes means something underneath moved. Store it beside whatever "
-            "you keep: nothing here keeps it for you"
+            "answer rested on -- not a random handle. The same inputs give the same id, "
+            "so an id that changes means something underneath moved. Store it beside "
+            "whatever you keep: nothing here keeps it for you"
         ),
     }
 

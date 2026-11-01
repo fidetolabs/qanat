@@ -171,6 +171,13 @@ one.
 keep this for me, and there is no *me* here — a scope is a capability boundary
 and not an identity one.
 
+**And `screen`'s `execution` block is `inputs`.** The job model took `execution`
+for *one attempt at one job*, and `screen` was already using it for *the inputs
+behind one answer* — a digest of the definition versions, the dates and the
+corpus range. Two meanings for one word is the state `source` was in and the
+reason it was retired, so the newer claim yielded: `result["execution"]` is
+`result["inputs"]`, and `execution.id` is `inputs.id`.
+
 #### Migrating
 
 ```sh
