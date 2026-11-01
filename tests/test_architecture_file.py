@@ -155,3 +155,63 @@ def test_a_part_file_that_is_not_there_is_not_an_error(tmp_path: Path):
     save_project(project, root)
     assert not (root / "metrics.yaml").exists(), "nothing to write, so no file"
     assert (root / "jobs.yaml").is_file()
+
+
+# ---- a comment that moved says something false ------------------------------
+def test_a_block_between_two_keys_stays_with_the_key_it_introduces(tmp_path: Path):
+    """**Found by using the `check` project.** One `define_metric` appended a
+    generated transform to `jobs.yaml` and left the paragraph explaining
+    `job_schedules:` above it, where it now introduced the wrong thing.
+
+    ruamel stores a block between two keys on the *tail of the previous value*,
+    wherever that tail happens to end -- so a list that grows strands it inside
+    itself. It is stored against the key it introduces instead, which is where
+    it belonged all along and somewhere growing cannot reach.
+    """
+    import yaml as _yaml
+
+    from qanat.project_io import render_project
+
+    shapes = {
+        "ends in a list": "- id: a\n  key:\n  - one\n",
+        "ends in a nested map": "- id: a\n  options:\n    reads: x\n",
+        "ends in a scalar with an inline note": "- id: a\n  x: 1  # about a\n",
+    }
+    #: With and without the blank line. **A block before a sequence item arrives
+    #: with no blank line in front of it**, which is the shape the `check`
+    #: project produced -- and a split that looked for one missed it.
+    for gap in ("\n", ""):
+        for label, body in shapes.items():
+            path = tmp_path / f"{abs(hash(label + gap))}.yaml"
+            path.write_text(
+                f"things:\n{body}{gap}# introduces other\n#\n# and a second line\n"
+                f"other: 1\n")
+            data = _yaml.safe_load(path.read_text())
+            data["things"].append({"id": "c", "x": 3})
+
+            out = render_project(data, path)
+            where = f"{label} gap={gap!r}"
+            assert _yaml.safe_load(out) == data, where
+            before, _, after = out.partition("# introduces other")
+            assert "other: 1" in after, f"{where}: the block stopped introducing `other`"
+            assert "id: c" in before, f"{where}: the entry landed after the block"
+            assert "# and a second line" in after, f"{where}: the block lost a line"
+            assert "# \n" not in out, f"{where}: a blank line became an empty comment"
+
+
+def test_an_inline_note_stays_on_the_entry_it_annotates(tmp_path: Path):
+    """The other half of the split: a block is separated by a blank line, an
+    inline note is not, and only the block travels."""
+    import yaml as _yaml
+
+    from qanat.project_io import render_project
+
+    path = tmp_path / "p.yaml"
+    path.write_text(
+        "things:\n- id: a\n  x: 1  # about a\n\n# introduces other\nother: 1\n")
+    data = _yaml.safe_load(path.read_text())
+    data["things"].append({"id": "c", "x": 3})
+
+    out = render_project(data, path)
+    assert "x: 1  # about a" in out, "the note about `a` stayed on `a`"
+    assert out.index("# about a") < out.index("id: c")

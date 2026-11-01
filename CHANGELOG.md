@@ -178,6 +178,26 @@ corpus range. Two meanings for one word is the state `source` was in and the
 reason it was retired, so the newer claim yielded: `result["execution"]` is
 `result["inputs"]`, and `execution.id` is `inputs.id`.
 
+#### A comment between two keys stays with the key it introduces
+
+Found by using the project this plan was checked against. ruamel stores a block
+of comment on the **tail of the previous value**, wherever that tail happens to
+end -- so a list that grows strands it inside itself, above whatever was
+appended. One `define_metric` put the paragraph explaining `job_schedules:`
+above a generated transform, where it introduced the wrong thing.
+
+It is stored against the key it introduces now, which is where it belonged all
+along and somewhere a growing value cannot reach. The split between a node's own
+inline note and the block that follows it is the first newline, not the first
+blank line: a block preceding a sequence item arrives with no blank line in
+front of it, and a test that looked for one missed exactly the case that broke.
+
+A block at the end of a file still has nowhere to go and is dropped. There is no
+slot after a sequence that ruamel renders -- the one that looks like it is a
+*pre*-item comment and lands above the entry instead -- so the choice is between
+losing it and leaving it stranded, and a note that moved says something false
+rather than nothing. That is the edge "attempted, not promised" is about.
+
 #### Migrating
 
 ```sh

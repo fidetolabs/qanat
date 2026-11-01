@@ -206,8 +206,32 @@ def _merge(old: Any, new: Any) -> Any:
     if isinstance(new, dict) and hasattr(old, "keys"):
         for key in [k for k in old if k not in new]:
             del old[key]
-        for key, value in new.items():
-            old[key] = _merge(old[key], value) if key in old else value
+        order = list(new)
+        for i, (key, value) in enumerate(new.items()):
+            if key not in old:
+                old[key] = value
+                continue
+            # **A block of comment between two keys is the next key's, not the
+            # previous value's** -- but ruamel stores it on the tail of the
+            # previous value, wherever that tail happens to end. So a list that
+            # grows leaves the block stranded in the middle of itself, where it
+            # now introduces whatever was appended. Measured on the `check`
+            # project: one `define_metric` put the paragraph explaining
+            # `job_schedules:` above a generated transform. **A note that moved
+            # is worse than a note that went -- it says something false rather
+            # than nothing.**
+            after = next((k for k in order[i + 1:] if k in old), None)
+            block = _detach_tail_block(old[key]) if isinstance(value, list) else None
+            old[key] = _merge(old[key], value)
+            if block and after is not None:
+                _reintroduce(old, after, block)
+            # **A block with no following key is dropped.** It was at the end of
+            # the file, and there is no slot after a sequence that ruamel will
+            # render -- the one that looks like it (index 0 of the last item) is
+            # a *pre*-item comment and lands above the entry instead. So the
+            # choice is between losing it and leaving it stranded mid-list, and
+            # a note that moved says something false rather than nothing. This
+            # is the edge the "attempted, not promised" line is about.
         return old
 
     if isinstance(new, list) and isinstance(old, list):
@@ -222,11 +246,81 @@ def _merge(old: Any, new: Any) -> Any:
             prior = kept.get(item.get("id")) if isinstance(item, dict) else None
             out.append(_merge(prior, item) if prior is not None else item)
         # Mutate in place: a fresh list would drop the comments ruamel stores
-        # against the sequence itself, which is where a note above a definition lives.
+        # against the sequence itself, which is where a note above a definition
+        # lives.
         old[:] = out
         return old
 
     return new
+
+
+def _detach_tail_block(node) -> str | None:
+    """Take the comment block that follows a node off wherever ruamel put it.
+
+    Which is one of three places, depending on how the node happens to end: the
+    last key of a mapping (slot 2), the last index of a sequence (slot 0), or
+    the same again one level down. So this walks the tail rather than guessing.
+
+    The token holds whatever was emitted after the node's own content: an inline
+    note on the same line, a block of full-line comment, or both. **The split is
+    the first newline**, not the first blank line -- a block that precedes a
+    sequence item arrives with no blank line in front of it, which is exactly the
+    shape the `check` project produced and the shape a blank-line test missed.
+    What is before the newline is the node's own note and stays; what is after
+    is the block and is returned.
+    """
+    for _ in range(16):
+        ca = getattr(node, "ca", None)
+        if ca is None:
+            return None
+        if hasattr(node, "keys"):
+            keys = list(node.keys())
+            if not keys:
+                return None
+            at = keys[-1]
+        elif isinstance(node, list):
+            if not len(node):
+                return None
+            at = len(node) - 1
+        else:
+            return None
+        for i, token in enumerate(ca.items.get(at) or []):
+            value = getattr(token, "value", None)
+            if not value:
+                continue
+            mine, _, block = value.partition("\n")
+            if "#" not in block:
+                continue
+            token.value = (mine + "\n") if mine.strip() else ""
+            if not token.value:
+                ca.items[at][i] = None
+            return block
+        node = node[at]
+    return None
+
+
+def _reintroduce(parent, next_key, block: str) -> None:
+    """Put a block back as the pre-comment of the key that follows it.
+
+    **Which is where it belonged all along.** Stored against the key it
+    introduces, it cannot be stranded by the value above it growing -- and that
+    is the whole failure this replaces.
+    """
+    from ruamel.yaml.error import CommentMark
+    from ruamel.yaml.tokens import CommentToken
+
+    mark = CommentMark(0)
+    # One token per line, the way ruamel builds them, with a blank line in front
+    # so the block still reads as a block. An empty line inside it is a bare
+    # newline, not a `#` with nothing after it.
+    tokens = [CommentToken("\n", mark, None)]
+    for line in block.strip("\n").splitlines():
+        tokens.append(CommentToken(
+            "\n" if not line.strip() else
+            (line if line.lstrip().startswith("#") else "# " + line) + "\n",
+            mark, None))
+    slot = parent.ca.items.setdefault(next_key, [None, None, None, None])
+    slot[1] = (slot[1] or []) + tokens
 
 
 def render_project(data: dict[str, Any], path: Path) -> str:
