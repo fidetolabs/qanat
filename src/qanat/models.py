@@ -5,7 +5,6 @@ Nine words, and each one means exactly one thing:
     stage       an ordered stage that holds tables
     table       one dataset inside a stage, addressed `stage.table`
     connector   how an ingestion job reaches outside: rest, sql, csv, sec, yfinance
-    universe    the symbols a portfolio is allowed to hold
 
     ingestion_job_definition   what to fetch, and which table it lands in
     transform_job_definition   which tables go in, which come out, and the script
@@ -97,23 +96,6 @@ class Stage(Base):
     id: str = Field(pattern=_NAME)
     kind: StageKind = ""
     description: str = ""
-
-
-class Universe(Base):
-    """Which symbols a portfolio may hold.
-
-    `symbols` is a csv with a `symbol` column. If it also carries `from` and `to`
-    dates, membership is **point-in-time**: a symbol counts on date D when it had
-    joined by then and had not yet left. That is what stops a screen from returning
-    a name years before it listed, or from never holding one that was delisted --
-    the survivorship bias that makes a static list flatter every number built on it.
-
-    Blank `from` means "since always"; blank `to` means "still in".
-    """
-
-    id: str = Field(pattern=_NAME)
-    index: str = ""
-    symbols: str
 
 
 #: What a definition is refused for carrying, and the object that holds it
@@ -238,7 +220,6 @@ class TransformJobDefinition(Base):
     # when the data arrives; this is the arrival itself. Both may be set, and a
     # transform on neither runs when you ask for it.
     when: list[str] = Field(default_factory=list)
-    universe: str | None = None
     timeout: str | None = None
     options: dict[str, Any] = Field(default_factory=dict)
 
@@ -268,8 +249,7 @@ class TransformJobDefinition(Base):
 #: that could narrow the selection would put the two concerns back in one object
 #: from the other side.
 _SELECTION = ("companies", "forms", "form", "from", "to", "reads", "writes",
-              "connector", "script", "options", "years", "key", "mode",
-              "universe", "when")
+              "connector", "script", "options", "years", "key", "mode", "when")
 
 
 class JobSchedule(Base):
@@ -409,7 +389,6 @@ class Project(Base):
     name: str = Field(validation_alias=AliasChoices("project", "name"))
     store: str = "./data/qanat.duckdb"
     stages: list[Stage]
-    universes: list[Universe] = Field(default_factory=list)
     ingestion_job_definitions: list[IngestionJobDefinition] = Field(default_factory=list)
     transform_job_definitions: list[TransformJobDefinition] = Field(default_factory=list)
     #: Cadence, as rows. Several may point at one definition; a definition with
@@ -437,9 +416,6 @@ class Project(Base):
             if x.id == lid:
                 return i
         return -1
-
-    def universe(self, bid: str) -> Universe | None:
-        return next((x for x in self.universes if x.id == bid), None)
 
     def metric(self, mid: str, version: int | None = None) -> Metric | None:
         """One definition. The newest version unless a version is named.

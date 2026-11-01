@@ -61,7 +61,7 @@ def test_every_flow_names_a_tool_that_exists():
         "ingestion_job", "job_execution", "ingestion_job_definition",
         "transform_job_definition", "job_schedule", "ingestion_job_schedule",
         "data", "research", "full", "authoring", "universe", "me", "save",
-        "define",
+        "define", "from_universe", "time_columns", "job_timeout",
     }
     stray = sorted(n for n in named - have - not_tools if "_" in n)
     assert not stray, f"the flows name tools that do not exist: {stray}"
@@ -154,3 +154,56 @@ def test_every_tool_can_actually_be_reached(tmp_path: Path):
     finally:
         session.close()
     assert not broken, broken
+
+
+def test_no_tool_declares_an_argument_its_handler_ignores():
+    """**A declared argument nobody reads is a promise the surface does not keep**
+    -- and every tool definition is sent on every request, so it costs tokens on
+    every call to say nothing.
+
+    The other direction is worse: an argument a handler reads and the schema does
+    not advertise is a quiet alias, which is what `source` and `step` were
+    retired for. `subscribe_filings` read `forms` *or* `form`, and only the
+    plural was in the schema, so a caller using the singular worked while every
+    document said otherwise.
+    """
+    import inspect
+    import re as _re
+
+    mismatched = {}
+    for entry in mcp.TOOLS:
+        src = inspect.getsource(entry["handler"])
+        seen = set(_re.findall(r'args\.get\(\s*["\']([a-z_]+)["\']', src))
+        seen |= set(_re.findall(r'args\[\s*["\']([a-z_]+)["\']\s*\]', src))
+        seen |= set(_re.findall(r'_need\(\s*args\s*,\s*["\']([a-z_]+)["\']', src))
+        seen |= set(_re.findall(r'args\.pop\(\s*["\']([a-z_]+)["\']', src))
+        if "args.items()" in src:
+            continue            # passes the whole dict through, by design
+        declared = set(entry["inputSchema"]["properties"])
+        unread, undeclared = declared - seen, seen - declared
+        if unread or undeclared:
+            mismatched[entry["name"]] = {"declared but unread": sorted(unread),
+                                         "read but undeclared": sorted(undeclared)}
+    assert not mismatched, mismatched
+
+
+def test_a_universe_is_a_csv_and_nothing_in_the_project_names_one():
+    """It used to be both a file and a `universes:` key. The key was read by
+    `ctx.universe()` inside a transform -- a basket held by one stage of the
+    pipeline, which is the shape `weights` and `pnl` had, and they left in 0.5.0.
+    """
+    from qanat.context import Context
+    from qanat.models import Project, TransformJobDefinition
+
+    assert "universes" not in Project.model_fields
+    assert "universe" not in TransformJobDefinition.model_fields
+    assert not hasattr(Context, "universe"), "ctx.universe() was the only reader"
+
+    from qanat import models
+
+    assert not hasattr(models, "Universe"), "one class of that name, not two"
+
+    # And the half that is live: a connector resolves the csv by name.
+    from qanat.connectors.sec import universe_path
+
+    assert callable(universe_path)

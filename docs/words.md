@@ -7,7 +7,7 @@ Each word means exactly one thing, and there is no second word for it.
 | **stage** | One layer of the pipeline, holding tables. Order in `qanat.yaml` is order in the pipeline. |
 | **table** | One dataset inside a stage. Always addressed `stage.table` — never as two fields. |
 | **connector** | *How* an ingestion job reaches outside: `sec`, `yfinance`, `rest`, `sql`, `csv`. |
-| **universe** | The symbols a portfolio is allowed to hold. Point-in-time when its file carries `from` and `to`. |
+| **universe** | A csv of symbols, named by a connector's `from_universe`. Point-in-time when it carries `from` and `to`. **A file, not a key** — the `universes:` registry and `universe:` on a transform went with the stages that needed a basket. A screen takes its list with the call. |
 | **lineage** | Where a value came from: the execution that wrote its row, the job that execution was an attempt at, the definition behind that job, and which version of it. |
 
 **A job is four objects**, and the same four serve both kinds:
@@ -115,7 +115,6 @@ refused at load with `qanat migrate` named.
 | `key:` | ingestion definition | the columns that identify one row |
 | `script:` | transform definition | path to a `.sql` or `.py` file |
 | `options:` | either definition | free configuration, passed through |
-| `universe:` | transform definition | which universe it may hold |
 | `when:` | transform definition | tables whose new rows run it, instead of a clock |
 | `mode:` | ingestion definition | `append`, and only that. `replace` is refused: it rewrites the table to what the last poll returned |
 | `definition:` | job schedule | which definition this cadence fires, by id |

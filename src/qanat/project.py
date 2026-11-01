@@ -254,19 +254,6 @@ def validate(p: Project, root: Path) -> Report:
         elif script.suffix == ".sql" and len(st.writes) != 1:
             r.errors.append(f"transform '{st.id}': a .sql transform writes exactly one table")
 
-        if st.universe and p.universe(st.universe) is None:
-            r.errors.append(f"transform '{st.id}' uses unknown universe '{st.universe}'")
-        if not st.universe and script.is_file() and script.suffix == ".py":
-            try:
-                if "ctx.universe(" in script.read_text():
-                    r.errors.append(
-                        f"transform '{st.id}' calls ctx.universe() but has no `universe:` set. "
-                        f"A transform that holds a basket does, so this fails on the first run "
-                        f"with 'has no universe set'"
-                    )
-            except OSError:
-                pass
-
         for ref in st.reads:
             lid = ref.split(".")[0]
             if lid not in stage_ids:
@@ -302,10 +289,6 @@ def validate(p: Project, root: Path) -> Report:
                     )
             if ref in st.reads:
                 r.errors.append(f"transform '{st.id}' reads and writes the same table '{ref}'")
-
-    for b in p.universes:
-        if not (root / b.symbols).is_file():
-            r.errors.append(f"universe '{b.id}': symbols file not found at {b.symbols}")
 
     from qanat.retention import parse_duration
 

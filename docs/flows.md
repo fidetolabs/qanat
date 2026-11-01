@@ -92,7 +92,7 @@ screening filings needs to change it.
 | fetch something from outside into a table | `define_ingestion` | authoring | an `ingestion_job_definition`, and a `job_schedule` if a cron was given |
 | compute a table from other tables | `define_transform` | authoring | a `transform_job_definition`, and a `job_schedule` if a cron was given |
 | drop one | `remove_transform` | authoring | the definition, and the cadences over it |
-| say which symbols a basket holds | `define_universe` | full | a `universe`, and its csv |
+| name a basket of symbols once | `define_universe` | full | a csv under `./universes/`, which a connector's `from_universe` reads |
 | hold the project against the contract | `check` | full | — |
 | see what would change if the files were applied, and act on it | `plan` | full | drops orphan tables and applies retention, behind a flag, after listing both |
 | run the graph, or one definition | `run` | full | opens a job and an execution per definition |
@@ -117,6 +117,7 @@ the flow each one is missing:
 | `list_jobs` | A job is one definition for one instant. A caller asks about the definition (`list_pipeline`) or about what happened (`list_history`), never about the layer between. |
 | `enable_schedule`, `disable_schedule` | `unsubscribe_filings` is the flow for the one cadence a caller sets. Nothing else is paused rather than removed. |
 | `save_job_definition_version` | Nothing writes a version. It is recorded by a successful execution, which is the only honest moment to record it. |
+| a `universes:` registry, and `universe:` on a transform | **Removed in 0.11.0.** Its only reader was `ctx.universe()` inside a transform script — a basket held by one stage of the pipeline, which is the shape `weights` and `pnl` had, and they left in 0.5.0. No shipped project declared one, and `screen` refuses a named universe in as many words. The csv stayed, because a connector reads it. |
 
 ## The rule a new tool has to pass
 

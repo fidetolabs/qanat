@@ -80,12 +80,17 @@ real panel -- five hundred names by ten years is a million rows moved so somebod
 are five hundred names. `profile_table` is aggregates: fill rate, distinct count, and the range
 each column spans. It costs a scan, and the answer is the same size whatever the table is.
 
-## `define_universe` exists because the error used to name a fix nobody had
+## `define_universe` writes a file, because an agent cannot
 
-A transform that holds a basket holds itself to a universe, so the contract refuses a project that declares
-none. It used to say "add one by hand" -- which an agent reaching this project over MCP
-cannot do, because there was no universe mutation anywhere. Give this one an id and some symbols
-and it writes the csv.
+A connector's `from_universe` option names a csv under `./universes/`, so a basket of two hundred
+companies is named once rather than pasted into every definition that polls them. Writing that file
+is the whole of what this tool does -- and it is a tool because **an agent reaching a project over
+MCP cannot write a file**, which is what the error used to tell it to go and do.
+
+**There is no `universes:` key any more.** It was read by `ctx.universe()` inside a transform
+script, which is a basket held by one stage of the pipeline -- the shape `weights` and `pnl` had,
+and they left the platform in 0.5.0. A screen takes its list with the call and refuses a named one,
+because which companies you care about is yours to keep.
 
 A list with no `from` and `to` dates is today's membership applied to the past, and every number
 built on it is flattered by the names that survived. `qanat check` says so out loud.

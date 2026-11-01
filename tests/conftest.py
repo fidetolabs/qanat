@@ -83,13 +83,6 @@ QANAT_YAML = """\
 project: {name}
 store: ./data/qanat.duckdb
 
-# -------------------------------------------------------------- the universes --
-# Which symbols a portfolio is allowed to hold.
-universes:
-  - id: demo8
-    index: DEMO 8
-    symbols: ./universes/demo8.csv
-
 # ------------------------------------------------------------------ the stages --
 # Order here is order in the pipeline. The names are the project's own; the
 # platform enforces properties, not names.
@@ -155,9 +148,9 @@ transform_job_definitions:
     from: [features.momentum, features.risk, features.tone]
     to:   [features.target]
     script: transforms/portfolio.py
-    universe: demo8
     options:
       top_n: 4
+      basket: ./universes/demo8.csv
 
 # ------------------------------------------------------------ the schedules --
 # One cron line each, over one definition. `daily_prices` carries two, which is
@@ -272,8 +265,13 @@ import pandas as pd
 
 
 def run(ctx):
+    import pathlib
+
     top_n = int(ctx.options.get("top_n", 4))
-    held = ctx.universe()                             # the symbols we may hold
+    # The basket, read off the csv by path. There is no registry to look it up
+    # in any more: a universe is a file a connector can point at, and a
+    # transform that wants one reads it the same way.
+    held = pd.read_csv(pathlib.Path(ctx.root) / ctx.options["basket"])
 
     df = (
         ctx.read("features.momentum")[["symbol", "as_of", "momentum"]]
@@ -346,7 +344,7 @@ def edit_project(root: Path, old: str, new: str) -> Path:
     A test editing a definition should not have to know which file holds it --
     that is the thing the split moved, and the test is about the change.
     """
-    for name in ("qanat.yaml", "jobs.yaml", "metrics.yaml", "universes.yaml"):
+    for name in ("qanat.yaml", "jobs.yaml", "metrics.yaml"):
         path = root / name
         if path.is_file() and old in (text := path.read_text()):
             path.write_text(text.replace(old, new))

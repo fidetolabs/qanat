@@ -198,6 +198,40 @@ slot after a sequence that ruamel renders -- the one that looks like it is a
 losing it and leaving it stranded, and a note that moved says something false
 rather than nothing. That is the edge "attempted, not promised" is about.
 
+#### Two legacy things on the surface, removed
+
+Found by auditing every tool against a flow rather than by reading the diff.
+
+**The `universes:` registry is gone, and the csv stayed.** Two different things
+were both called a universe. The live one is a csv of symbols under
+`./universes/<id>.csv`, named by a connector's `from_universe` — how a basket of
+two hundred companies is named once rather than pasted into every definition
+that polls them. The legacy one was a `universes:` key in the project plus
+`universe:` on a transform, read only by `ctx.universe()` inside a transform
+script: a basket held by one stage of the pipeline, which is the shape `weights`
+and `pnl` had, and **they left the platform in 0.5.0.** No shipped project
+declared one, and `screen` refuses a named universe in as many words — *"which
+companies you care about is yours to keep, not this project's."*
+
+`models.Universe` and `screen.Universe` were also two classes under one name,
+which is the `source` problem again. There is one now.
+
+`define_universe` stays, narrowed to what it actually does: write the csv.
+It is a tool because **an agent over MCP cannot write a file**, which is the
+thing the old error told it to go and do.
+
+Gone with it: `Project.universes`, the `Universe` model, `universes.yaml`,
+`TransformJobDefinition.universe`, `ctx.universe()`, the three `check` rules
+that policed the registry, and the `universe` plumbing through the runner.
+
+**`subscribe_filings` stopped answering to `form`.** It read `forms` or `form`,
+and only `forms` was in the schema — so a caller using the singular worked while
+every document said otherwise. A quiet alias is what `source` and `step` were
+retired for.
+
+A scan now holds both: no tool declares an argument its handler does not read,
+and none reads one it did not declare.
+
 #### Migrating
 
 ```sh

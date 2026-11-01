@@ -72,7 +72,7 @@ table below if you want to know why the pieces are arranged this way rather than
 | Layer | Path | Role |
 | --- | --- | --- |
 | Project file | `qanat.yaml` | Stages, the clock, the corpus, retention, store URL. **Nothing writes it** |
-| Job files | `jobs.yaml` · `metrics.yaml` · `universes.yaml` | What a tool writes: definitions, cadences, formulas, baskets |
+| Job files | `jobs.yaml` · `metrics.yaml` | What a tool writes: definitions, cadences, formulas |
 | Contract | `src/qanat/project.py` | Validates the stage rules |
 | Runner | `src/qanat/runner.py` | Opens a job, records each execution, runs the definition |
 | Scheduler | `src/qanat/scheduler.py` | Cron + retention cleanup |

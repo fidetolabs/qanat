@@ -42,7 +42,6 @@ from qanat.models import (
 PARTS: dict[str, tuple[str, ...]] = {
     "jobs.yaml": ("ingestion_job_definitions", "transform_job_definitions",
                   "job_schedules"),
-    "universes.yaml": ("universes",),
     "metrics.yaml": ("metrics",),
 }
 
@@ -71,10 +70,6 @@ def dump_project(project: Project) -> dict[str, Any]:
         "project": project.name,
         "store": project.store,
     }
-    if project.universes:
-        data["universes"] = [
-            {"id": u.id, "index": u.index, "symbols": u.symbols} for u in project.universes
-        ]
     data["stages"] = [
         {"id": s.id, "kind": s.kind, **({"description": s.description} if s.description else {})}
         for s in project.stages
@@ -137,8 +132,6 @@ def _dump_transform(d: TransformJobDefinition) -> dict[str, Any]:
         row["key"] = list(d.key)
     if d.when:
         row["when"] = list(d.when)
-    if d.universe:
-        row["universe"] = d.universe
     if d.timeout:
         row["timeout"] = d.timeout
     if d.options:

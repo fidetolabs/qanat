@@ -415,12 +415,10 @@ def test_the_sec_connector_reads_a_universe(tmp_path, edgar):
     from qanat.connectors import sec
     from qanat.editor import save_universe
 
-    project, store = a_project(tmp_path)
+    _project, store = a_project(tmp_path)
     try:
         write_project_text(tmp_path, "project: filings\nstages:\n  - id: raw\n")
-        save_universe(project, tmp_path,
-                      {"id": "two", "index": "Two", "symbols": "./universes/two.csv",
-                       "symbols_list": ["AAPL", "TM"]})
+        save_universe(tmp_path, "two", ["AAPL", "TM"])
         src = IngestionJobDefinition(id="filings", to=["raw.documents"], connector="sec",
                      options={"from_universe": "two", "user_agent": UA})
         assert sec.companies_of(src, tmp_path) == ["AAPL", "TM"]

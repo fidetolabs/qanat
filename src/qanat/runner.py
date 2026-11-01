@@ -154,8 +154,6 @@ def _run_sql(store: Store, ctx: Context, transform: TransformJobDefinition, scri
     if ctx.as_of:
         names["as_of"] = ctx.as_of
     sql = _VAR.sub(lambda m: str(names.get(m.group(1), m.group(0))), sql)
-    if transform.universe:
-        store.con.register("universe", ctx.universe())
     try:
         body = sql.strip().rstrip(";")
         if transform.key:
@@ -164,8 +162,7 @@ def _run_sql(store: Store, ctx: Context, transform: TransformJobDefinition, scri
             return store.sql_append(transform.writes[0], body, transform.key)
         return store.sql_into(transform.writes[0], body)
     finally:
-        if transform.universe:
-            store.con.unregister("universe")
+        pass
 
 
 def _run_python(store: Store, ctx: Context, transform: TransformJobDefinition, script: Path) -> int:
@@ -251,13 +248,12 @@ def run_transform(
     transform: TransformJobDefinition,
     as_of: str | None = None,
     seed: int | None = None,
-    universe: str | None = None,
     scheduled_for: Any = None,
     schedule_id: str | None = None,
 ) -> RunResult:
     job_id, execution = _open(store, transform, "transform", list(transform.writes),
                            scheduled_for, schedule_id)
-    ctx = Context(store, project, root, transform, as_of=as_of, universe=universe)
+    ctx = Context(store, project, root, transform, as_of=as_of)
     script = root / transform.script
     try:
         missing = [r for r in transform.reads if not store.exists(r)]
@@ -318,7 +314,6 @@ def run_definition(
     definition_id: str,
     as_of: str | None = None,
     seed: int | None = None,
-    universe: str | None = None,
     scheduled_for: Any = None,
     schedule_id: str | None = None,
 ) -> RunResult:
@@ -335,8 +330,7 @@ def run_definition(
         return run_ingestion(store, project, root, definition,
                              scheduled_for=scheduled_for, schedule_id=schedule_id)
     return run_transform(store, project, root, definition, as_of=as_of, seed=seed,
-                         universe=universe, scheduled_for=scheduled_for,
-                         schedule_id=schedule_id)
+                         scheduled_for=scheduled_for, schedule_id=schedule_id)
 
 
 def run_all(
@@ -346,7 +340,6 @@ def run_all(
     as_of: str | None = None,
     seed: int | None = None,
     ingest: bool = True,
-    universe: str | None = None,
     only: set[str] | None = None,
     on_job: Any = None,
 ) -> list[RunResult]:
@@ -382,8 +375,7 @@ def run_all(
                 on_job(results[-1])
             continue
         results.append(
-            run_transform(store, project, root, transform, as_of=as_of, seed=seed,
-                          universe=universe)
+            run_transform(store, project, root, transform, as_of=as_of, seed=seed)
         )
         if not results[-1].ok:
             broken.update(results[-1].targets)

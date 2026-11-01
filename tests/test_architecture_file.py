@@ -44,10 +44,20 @@ def test_what_stays_is_what_a_person_writes():
     }
 
 
-def test_definitions_schedules_metrics_and_universes_are_all_tool_written():
+def test_definitions_schedules_and_metrics_are_all_tool_written():
     for key in ("ingestion_job_definitions", "transform_job_definitions",
-                "job_schedules", "metrics", "universes"):
+                "job_schedules", "metrics"):
         assert part_for(key), key
+
+
+def test_a_universe_is_a_file_and_not_a_key():
+    """It used to be both: a csv, and a `universes:` entry in the project read by
+    `ctx.universe()` inside a transform. The entry went with the stages that
+    needed a basket, so there is nothing left for a part file to own."""
+    assert part_for("universes") is None
+    from qanat.project_io import ARCHITECTURE
+
+    assert "universes" not in ARCHITECTURE
 
 
 # ---- the rule, held by a test rather than by review --------------------------

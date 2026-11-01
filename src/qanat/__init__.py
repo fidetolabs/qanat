@@ -25,7 +25,6 @@ from qanat.models import (
     Project,
     Stage,
     TransformJobDefinition,
-    Universe,
 )
 from qanat.store import Store
 
@@ -36,6 +35,5 @@ __all__ = [
     "Stage",
     "Store",
     "TransformJobDefinition",
-    "Universe",
     "__version__",
 ]

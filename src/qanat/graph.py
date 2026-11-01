@@ -686,7 +686,6 @@ def build_graph(
             "script": getattr(j, "script", None),
             "from": list(j.reads),
             "to": list(j.writes),
-            "universe": getattr(j, "universe", None),
             # Several cadences over one definition, which is why this is a list.
             # A single `schedule` string could only show one of them, and the
             # drawing would be telling the truth about one and nothing about the
@@ -769,7 +768,6 @@ def build_graph(
              "tables": [t["ref"] for t in tables if t["stage"] == x.id]}
             for x in project.stages
         ],
-        "universes": [{"id": b.id, "index": b.index, "symbols": b.symbols} for b in project.universes],
         "retention": dict(project.retention),
         "tables": tables,
         "jobs": jobs,

@@ -69,7 +69,6 @@ class Context:
         root: Path,
         transform: TransformJobDefinition,
         as_of: str | None = None,
-        universe: str | None = None,
     ):
         self.store = store
         self.project = project
@@ -80,9 +79,6 @@ class Context:
         #: newer than this, and `ctx.now` is this instant rather than the wall clock,
         #: so the same screen twice gives the same numbers.
         self.as_of: str | None = as_of
-        #: A screen may hold the same transform to a different universe than the file
-        #: names, so "does this work on large caps too" costs one argument, not an edit.
-        self.universe_override: str | None = universe
         self.now: datetime = (
             pd.Timestamp(as_of).to_pydatetime() if as_of else datetime.now(timezone.utc)
         )
@@ -127,23 +123,6 @@ class Context:
                 "the table in SQL went around it, and the graph then drew the wrong arrow"
             )
         return self.store.query(query)
-
-    def universe(self, bid: str | None = None, as_of: str | None = None) -> pd.DataFrame:
-        """Which symbols this transform is allowed to hold, **on the day it is deciding**.
-
-        A universe file may carry `from` and `to` columns. When it does, this returns
-        only the members of that date, so a screen never holds a name before it
-        listed and never quietly drops one that was delisted. Without those columns
-        the list is static, and every number built on it carries survivorship bias --
-        `qanat check` says so.
-        """
-        bid = bid or self.universe_override or self.transform.universe
-        if not bid:
-            raise ValueError(f"transform '{self.transform.id}' has no universe set")
-        b = self.project.universe(bid)
-        if b is None:
-            raise KeyError(f"unknown universe '{bid}'")
-        return members(pd.read_csv(self.root / b.symbols), as_of or self.as_of)
 
     def log(self, message: str, level: str = "info") -> None:
         self.store.event(level, self.transform.id, str(message))

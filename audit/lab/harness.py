@@ -44,7 +44,10 @@ def run(ctx):
     df = ctx.read("normalized.prices")
     if df.empty:
         return pd.DataFrame(columns=["symbol", "weight", "as_of"])
-    syms = sorted(ctx.universe()["symbol"])
+    import pathlib
+
+    syms = sorted(pd.read_csv(
+        pathlib.Path(ctx.root) / "universes/u.csv")["symbol"])
     return pd.DataFrame([{"symbol": s, "weight": 1.0 / len(syms), "as_of": df["date"].max()}
                          for s in syms])
 '''
@@ -61,8 +64,6 @@ def project_yaml(name: str, *, extra_steps: str = "",
     lines = [
         f"project: {name}",
         "store: ./data/q.duckdb",
-        "universes:",
-        "  - {id: u, index: TEST, symbols: ./universes/u.csv}",
         "stages:",
         "  - {id: raw, kind: raw}",
         "  - {id: normalized, kind: normalized}",
@@ -76,7 +77,6 @@ def project_yaml(name: str, *, extra_steps: str = "",
         "    from: [normalized.prices]",
         "    to: [normalized.probe]",
         f"    script: {step_script}",
-        "    universe: u",
         "    options: {reads: normalized.prices}",
     ]
     if extra_steps:

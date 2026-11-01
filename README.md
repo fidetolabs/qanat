@@ -182,9 +182,9 @@ time_columns:
 # corpus:, returns: and retention: live here too -- all architecture.
 ```
 
-**`jobs.yaml`, `metrics.yaml` and `universes.yaml` are written by the authoring
-tools.** They are separate files because the two kinds do not mix: an authoring
-verb that re-dumped one file took every comment in it along with the change.
+**`jobs.yaml` and `metrics.yaml` are written by the authoring tools.** They are
+separate files because the two kinds do not mix: an authoring verb that
+re-dumped one file took every comment in it along with the change.
 
 ```yaml
 # jobs.yaml -- written by subscribe_filings, define_ingestion, define_transform

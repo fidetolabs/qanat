@@ -346,7 +346,6 @@ def test_every_field_the_model_holds_is_written_back(tmp_path):
         "project": "everything",
         "store": "./data/qanat.duckdb",
         "stages": [{"id": "raw", "kind": "raw"}],
-        "universes": [{"id": "u", "index": "U", "symbols": "./universes/u.csv"}],
         "ingestion_job_definitions": [{"id": "s", "to": ["raw.a"], "connector": "csv",
                      "options": {"path": "./x.csv"}}],
         "transform_job_definitions": [{"id": "t", "from": ["raw.a"], "to": ["raw.b"], "script": "s.sql"}],

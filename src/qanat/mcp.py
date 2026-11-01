@@ -329,7 +329,7 @@ def _list_steps(s: Session, args: dict) -> Any:
     chosen = [x for x in order(s.project)
               if not stage or any(w.startswith(f"{stage}.") for w in x.writes)]
     rows = [{"id": x.id, "from": x.reads, "to": x.writes, "script": x.script,
-             "universe": x.universe, "schedules": cadences(x.id), "options": x.options}
+             "schedules": cadences(x.id), "options": x.options}
             for x in chosen]
     return {
         "ingestion": [] if stage else [
@@ -894,7 +894,11 @@ def _subscribe_filings(s: Session, args: dict) -> Any:
     try:
         out = subscribe(
             s.project, s.root, [str(c) for c in companies],
-            forms=args.get("forms") or args.get("form") or "10-K",
+            # `forms`, and only `forms`. It also read `form` -- a word the
+            # schema does not advertise -- so a caller using the singular worked
+            # while every document said otherwise. A quiet alias is the thing
+            # `source` and `step` were retired for.
+            forms=args.get("forms") or "10-K",
             frm=args.get("from"), to=args.get("to"),
             every=str(args.get("every") or "daily"),
             hour=int(args.get("hour") if args.get("hour") is not None else 6),
@@ -980,7 +984,6 @@ def _cadence(s: Session, definition_id: str, cron: str) -> dict[str, Any]:
           "to": {"type": "array", "items": {"type": "string"}},
           "script": {"type": "string", "description": "path relative to the project root"},
           "source": {"type": "string", "description": "the script body to write"},
-          "universe": {"type": "string"},
           "schedule": {"type": "string",
                        "description": "a cron line. Stored as its own cadence row, so "
                                       "this transform may carry more than one"},
@@ -1027,45 +1030,37 @@ def _remove_step(s: Session, args: dict) -> Any:
 
 
 @tool("define_universe",
-      "Add or replace a universe: the symbols a portfolio may hold. Pass `symbols` and the csv "
-      "is written for you. A transform that holds a basket holds itself to one, so a project "
-      "with "
-      "none cannot install one until this has been called.",
+      "Name a basket of symbols once, as a csv a connector can point at. "
+      "`from_universe` on an ingestion job resolves `./universes/<id>.csv` and reads the "
+      "symbols out of it, so a selection of two hundred companies is named here rather "
+      "than pasted into every definition that polls them. **The file is the whole of it** "
+      "-- nothing in the project refers to it by name, and a screen takes its list with "
+      "the call.",
       {"properties": {
           "id": {"type": "string", "description": "lower case, e.g. tech8"},
-          "index": {"type": "string", "description": "what to call it in front of a person"},
           "symbols": {"type": "array", "items": {"type": "string"},
-                      "description": "the symbols it may hold. Written to a csv under the "
-                                     "project. Leave out only if the file already exists"},
+                      "description": "the symbols in it, written to the csv"},
           "file": {"type": "string",
                    "description": "where the csv lives, relative to the project. Defaults to "
                                   "./universes/<id>.csv"},
-      }, "required": ["id"]},
+      }, "required": ["id", "symbols"]},
       writes=True,
       scope="full")
 def _save_universe(s: Session, args: dict) -> Any:
     from qanat.editor import EditorError, save_universe
 
     uid = _need(args, "id")
-    raw = {
-        "id": uid,
-        "index": args.get("index") or "",
-        "symbols": args.get("file") or f"./universes/{uid}.csv",
-    }
-    syms = args.get("symbols")
-    if syms is not None:
-        raw["symbols_list"] = [str(x).strip() for x in syms if str(x).strip()]
+    syms = [str(x).strip() for x in (_need(args, "symbols") or []) if str(x).strip()]
     try:
-        written = save_universe(s.project, s.root, raw)
+        path = save_universe(s.root, uid, syms, file=args.get("file"))
     except EditorError as exc:
         raise ToolError(str(exc)) from exc
-    s.reload()
-    u = s.project.universe(uid)
-    return {"saved": uid, "symbols_file": u.symbols if u else raw["symbols"],
-            "symbols": len(syms or []), "warnings": written,
-            "note": "a list with no join and leave dates is today's membership applied to the "
-                    "past, which flatters every number built on it. Add `from` and `to` columns "
-                    "to the csv when you know them"}
+    return {"saved": uid, "symbols_file": str(path.relative_to(s.root)),
+            "symbols": len(syms),
+            "note": "point an ingestion job at it with `options.from_universe: " + uid +
+                    "`. A list with no join and leave dates is today's membership applied "
+                    "to the past, which flatters every number built on it -- add `from` and "
+                    "`to` columns to the csv when you know them"}
 
 
 @tool("define_ingestion",
