@@ -771,6 +771,23 @@ class Store:
                     key_columns VARCHAR
                 )""")
 
+    def _meta_exists(self, name: str) -> bool:
+        """Is this metadata table there? **Asked of the catalogue, not of the files.**
+
+        `_exists` answers for a *data* table, and on a parquet store that means
+        asking whether any parquet files are on disk for it. The metadata tables
+        are never parquet -- they live in the attached `meta` database -- so
+        `_exists` answered False for every one of them, and the rename below
+        silently never fired on the store kind this product actually uses. The
+        new tables were then created empty beside the old ones, and a project
+        upgrading lost its whole execution history with nothing saying so.
+        """
+        try:
+            return bool(self._scalar(
+                "SELECT count(*) FROM duckdb_tables() WHERE table_name = ?", [name]))
+        except Exception:  # noqa: BLE001 -- no catalogue yet means no table
+            return False
+
     def _rename_old_meta(self, where: str) -> None:
         """`_qanat_runs` -> `_qanat_job_execution`, and the same for the state table.
 
@@ -778,18 +795,28 @@ class Store:
         only ever existed inside this file, so nothing outside has to know.
         """
         for old, new in _RENAMED.items():
-            if self._exists(old) and not self._exists(new):
+            if self._meta_exists(old) and not self._meta_exists(new):
                 self.con.execute(f"ALTER TABLE {where}{old} RENAME TO {new}")
-            # The old column name went with it. `run_id` said which run, and a
-            # run was an execution; `job_id` on the state table named the file's
-            # entry, which is a definition.
+            # The old column names went with it.
+            #
+            # **`job_id` meant the definition, and it has to move before the new
+            # `job_id` is added.** The old table keyed a row to the config entry
+            # that produced it -- a definition -- under a name the job layer now
+            # uses for something else entirely: one definition at one instant.
+            # Renamed the other way round, `ADD COLUMN IF NOT EXISTS job_id`
+            # would find the column already there, the definition names would
+            # sit in it typed as text, and `definition_id` would come back null
+            # for every row carried across.
             if new == EXECUTIONS:
+                self._rename_column(where, new, "job_id", "definition_id")
                 self._rename_column(where, new, "run_id", "execution_id")
             else:
                 self._rename_column(where, new, "job_id", "definition_id")
 
     def _rename_column(self, where: str, table: str, old: str, new: str) -> None:
-        if not self._exists(table):
+        # `_meta_exists`, for the same reason the table rename needs it: a
+        # metadata table is never a parquet file, so `_exists` says no.
+        if not self._meta_exists(table):
             return
         have = {c for (c,) in self.con.execute(
             "SELECT column_name FROM duckdb_columns() WHERE table_name = ?",

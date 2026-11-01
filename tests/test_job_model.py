@@ -366,3 +366,65 @@ def test_migrate_prints_before_it_writes(tmp_path: Path):
     assert out.returncode == 0, out.stderr
     assert "nothing was written" in out.stdout
     assert (tmp_path / "qanat.yaml").read_text() == before
+
+
+# ---- upgrading a store written by 0.10.x -------------------------------------
+@pytest.mark.parametrize("kind", ["parquet", "duckdb"])
+def test_a_store_from_before_the_rename_keeps_its_history(tmp_path: Path, kind: str):
+    """**Nothing covered this, and it was broken on the store kind the product
+    actually uses.**
+
+    The rename-on-open was guarded by `_exists`, which answers for a *data*
+    table -- and on a parquet store that means asking whether any parquet files
+    are on disk. The metadata tables are never parquet, they live in the
+    attached `meta` database, so `_exists` said no for every one of them: the
+    rename never fired, `CREATE TABLE IF NOT EXISTS` made the new tables empty
+    beside the old ones, and a project upgrading lost its whole execution
+    history with nothing saying so. Every test passed, because every test builds
+    a fresh store.
+    """
+    import duckdb
+
+    if kind == "parquet":
+        root = tmp_path / "corpus"
+        (root / "tables").mkdir(parents=True)
+        meta, target = root / "meta.duckdb", str(root)
+    else:
+        meta = target = tmp_path / "q.duckdb"
+        target = str(target)
+
+    con = duckdb.connect(str(meta))
+    con.execute("""CREATE TABLE _qanat_runs (run_id BIGINT PRIMARY KEY, job_id VARCHAR,
+        kind VARCHAR, started_at TIMESTAMP, ended_at TIMESTAMP, status VARCHAR,
+        rows_out BIGINT, targets VARCHAR, error VARCHAR)""")
+    con.execute("INSERT INTO _qanat_runs VALUES "
+                "(1, 'land', 'source', now(), now(), 'ok', 42, 'raw.a', NULL)")
+    con.execute("""CREATE TABLE _qanat_state (job_id VARCHAR PRIMARY KEY,
+        digest VARCHAR, spec VARCHAR, applied_at TIMESTAMP)""")
+    con.execute("INSERT INTO _qanat_state VALUES ('land', 'abc123', '{}', now())")
+    con.execute("""CREATE TABLE _qanat_events (ts TIMESTAMP, level VARCHAR,
+        job_id VARCHAR, message VARCHAR)""")
+    con.close()
+
+    store = Store(target)
+    try:
+        store._meta()
+        held = {r[0] for r in store.con.execute(
+            "SELECT table_name FROM duckdb_tables() WHERE table_name LIKE '_qanat%'"
+        ).fetchall()}
+        assert "_qanat_runs" not in held, "renamed, not left beside the new one"
+        assert "_qanat_state" not in held
+        assert {"_qanat_job_execution", "_qanat_job_definition_version"} <= held
+
+        history = store.recent_executions()
+        assert len(history) == 1, "the execution survived the rename"
+        one = history[0]
+        # **The old `job_id` held the definition**, under a name the job layer
+        # now uses for one definition at one instant.
+        assert one["definition_id"] == "land"
+        assert one["status"] == "ok" and one["rows_out"] == 42
+        assert one["job_id"] is None, "no job existed above it, and none is invented"
+
+        assert store.load_state() == {"land": {"digest": "abc123", "spec": "{}"}}
+    finally:
+        store.close()
