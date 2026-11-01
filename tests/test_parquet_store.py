@@ -183,18 +183,28 @@ def test_a_key_that_cannot_match_takes_the_cheap_path(store: Store, tmp_path: Pa
     assert len(store.read("raw.p")) == 3
 
 
-def test_a_key_that_could_match_rewrites(store: Store, tmp_path: Path):
-    """And when it really could already be there, correctness wins: the table
-    is rewritten so the old row is replaced rather than duplicated."""
+def test_a_key_that_could_match_writes_the_correction_beside_the_old_row(
+        store: Store, tmp_path: Path):
+    """**And when it really could already be there, nothing is rewritten.** This
+    used to rewrite the table so the stored row was replaced -- which is what
+    `data-once-served-is-never-replaced-automatically` refuses: a vendor
+    restating yesterday's close silently replaced the number an answer had
+    already rested on. The correction is a new file; a read returns the new
+    value; the old one is still there to read back."""
     store.write("raw.p", pd.DataFrame({
         "sym": ["A", "B"], "date": pd.to_datetime(["2024-01-01"] * 2), "px": [1.0, 2.0]}))
     store.write("raw.p", pd.DataFrame({
         "sym": ["A"], "date": pd.to_datetime(["2024-01-01"]), "px": [99.0]}),
         mode="append", key=["sym", "date"])
+
     got = store.read("raw.p").set_index("sym")["px"].to_dict()
-    assert got == {"A": 99.0, "B": 2.0}
+    assert got == {"A": 99.0, "B": 2.0}, "a plain read returns one row per key"
+
     parts = tmp_path / "corpus" / "tables" / "raw__p"
-    assert len(list(parts.glob("*.parquet"))) == 1, "a rewrite leaves one file"
+    assert len(list(parts.glob("*.parquet"))) == 2, "the correction is a new file"
+    held = store.con.execute(
+        f'SELECT px FROM "{store.home}"."raw__p" WHERE sym = \'A\' ORDER BY px').df()
+    assert list(held["px"]) == [1.0, 99.0], "both rows are readable underneath"
 
 
 def test_a_table_written_as_one_file_still_opens(tmp_path: Path):

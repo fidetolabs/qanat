@@ -102,7 +102,11 @@ EVENTS = "_qanat_events"
 #: What a definition looked like the last time it worked. Was `_qanat_state`,
 #: which named the file rather than the thing in it.
 VERSIONS = "_qanat_job_definition_version"
-META = (JOBS, EXECUTIONS, EVENTS, VERSIONS)
+#: Which columns identify one row in a table. Told to the store by whoever
+#: writes it, and remembered, because the reader that has to pick the current
+#: row among two versions of one key is not the writer and has no way to ask.
+KEYS = "_qanat_table_key"
+META = (JOBS, EXECUTIONS, EVENTS, VERSIONS, KEYS)
 
 #: What these tables were called before the vocabulary changed. Renamed in place
 #: on open, so a store written by an older version keeps its history instead of
@@ -134,9 +138,17 @@ NOW = "qanat_now"
 #: of the whole provenance.
 EXEC_COL = "_qanat_execution"
 
+#: When this row was written, as a monotonic counter. **A different question from
+#: which execution wrote it, and the reader needs this one.** Picking the current
+#: row among two versions of a key means ordering by write, and an execution id
+#: answers that only for rows a job wrote -- a row written outside one carries no
+#: execution, and two of those would order arbitrarily. One row, possibly the
+#: wrong one, is worse than a failure.
+SEQ_COL = "_qanat_written"
+
 #: Columns the engine owns. A frame arriving with one of these in it is an error:
 #: a transform cannot set, forge or omit its own provenance.
-ENGINE_COLS = (EXEC_COL,)
+ENGINE_COLS = (EXEC_COL, SEQ_COL)
 
 #: Who is causing work right now, recorded on every event.
 #:
@@ -362,6 +374,8 @@ class Store:
         #: Physical names that have a `now` view over them. Held rather than
         #: asked for, so a read never pays a catalogue query to find out.
         self._now: set[str] = set()
+        #: physical name -> the columns that identify one row there
+        self._keys: dict[str, list[str]] = {}
         self._readers = threading.local()
         if self.kind == "parquet":
             # Needs `home`, so it waits until the connection is settled.
@@ -369,6 +383,7 @@ class Store:
         else:
             self._ensure_meta()
             self._recover()
+        self._load_keys()
         self._build_now_views()
         self.con.execute(f"SET search_path='{self._search_path()}'")
 
@@ -632,6 +647,13 @@ class Store:
         self.con.execute(f"SET search_path='{self._search_path()}'")
         self._ensure_meta()
         self._recover()
+        # The keys live in the file that has just been attached, so this is the
+        # first moment they can be read. A read taken before now saw every row
+        # of a corrected key instead of the current one -- which is why the
+        # views are rebuilt here rather than left as they were.
+        self._load_keys()
+        self._build_now_views()
+        self.con.execute(f"SET search_path='{self._search_path()}'")
 
     # ---- reading while something else is writing ------------------------------
     @property
@@ -742,6 +764,11 @@ class Store:
                     digest        VARCHAR,
                     spec          VARCHAR,
                     applied_at    TIMESTAMP
+                )""")
+            self.con.execute(f"""
+                CREATE TABLE IF NOT EXISTS {where}{KEYS} (
+                    name        VARCHAR PRIMARY KEY,
+                    key_columns VARCHAR
                 )""")
 
     def _rename_old_meta(self, where: str) -> None:
@@ -856,9 +883,11 @@ class Store:
             return df
         out = df.copy()
         out[EXEC_COL] = current_execution()
-        # Nullable, because a row written outside a job has no execution and
-        # reads as unknown rather than as zero.
-        return out.astype({EXEC_COL: "Int64"})
+        out[SEQ_COL] = time.time_ns()
+        # The execution is nullable, because a row written outside a job has none
+        # and reads as unknown rather than as zero. The write counter never is:
+        # every row was written at some point, and that is what orders them.
+        return out.astype({EXEC_COL: "Int64", SEQ_COL: "int64"})
 
     def write(self, ref: str, df: pd.DataFrame, mode: str = "replace",
               key: Sequence[str] | None = None) -> int:
@@ -927,22 +956,12 @@ class Store:
             # Two rows carrying the same key in one batch would both land, and the
             # key would stop meaning one row.
             df = df.drop_duplicates(subset=list(key), keep="last")
+        written = len(df)
         with self._lock:
             self.con.register("_incoming", df)
             try:
                 exists = self._exists(name)
                 if mode == "append" and exists:
-                    if key:
-                        # IS NOT DISTINCT FROM, not `=`: in SQL a null never equals a
-                        # null, so a row whose key held a blank matched nothing and was
-                        # appended again on every single poll, for ever.
-                        match = " AND ".join(
-                            f'{self._q(name)}."{_ident(k)}" IS NOT DISTINCT FROM '
-                            f'_incoming."{_ident(k)}"' for k in key
-                        )
-                        self.con.execute(
-                            f'DELETE FROM {self._q(name)} USING _incoming WHERE {match}'
-                        )
                     # By name, not by position. `INSERT ... SELECT *` lines the columns
                     # up in order, so a feed that reordered its columns wrote dates into
                     # the symbol column and reported ok.
@@ -962,29 +981,60 @@ class Store:
                         )
                     self._widen(name, ref, have)
                     cols = ", ".join(f'"{_ident(c)}"' for c in have)
-                    self.con.execute(
-                        f'INSERT INTO {self._q(name)} ({cols}) SELECT {cols} FROM _incoming'
-                    )
+                    if key:
+                        # **Nothing is deleted.** A row that arrives identical to
+                        # one already stored is not stored twice; one that arrives
+                        # with a changed value is appended *beside* the old row.
+                        # This used to DELETE the matching key and insert the new
+                        # row over it -- so a vendor restating yesterday's close
+                        # silently replaced the number an answer had already
+                        # rested on, and nothing anywhere said it had moved.
+                        data = [c for c in have if c not in ENGINE_COLS]
+                        same = ", ".join(f'"{_ident(c)}"' for c in data)
+                        fresh = (f"SELECT {same} FROM _incoming "
+                                 f"EXCEPT SELECT {same} FROM {self._q(name)}")
+                        # Counted before the insert, or the answer is always zero.
+                        written = int(self._scalar(
+                            f"SELECT count(*) FROM ({fresh}) AS _new") or 0)
+                        self.con.execute(
+                            f'INSERT INTO {self._q(name)} '
+                            f'({same}, "{_ident(EXEC_COL)}", "{_ident(SEQ_COL)}") '
+                            f"SELECT {same}, CAST(? AS BIGINT), CAST(? AS BIGINT) "
+                            f"FROM ({fresh}) AS _new",
+                            [current_execution(), time.time_ns()],
+                        )
+                    else:
+                        self.con.execute(
+                            f'INSERT INTO {self._q(name)} ({cols}) '
+                            f"SELECT {cols} FROM _incoming"
+                        )
                 else:
                     self.con.execute(
                         f'CREATE OR REPLACE TABLE {self._q(name)} AS SELECT * FROM _incoming'
                     )
             finally:
                 self._release()
+                if key:
+                    self.remember_key(ref, key)
                 self._now_view(ref)
                 if self.as_of is not None:
                     self._shadow(ref)
-        return len(df)
+        return written
 
     def _write_parquet(self, ref: str, df: pd.DataFrame, mode: str,
                        key: Sequence[str] | None) -> int:
-        """Land a frame as one parquet file, written whole and renamed into place.
+        """Land a frame as parquet files in the table's directory.
 
-        A parquet file is not edited, so an append is read-concat-write rather
-        than an INSERT. At the size a filings corpus reaches that is the right
-        trade: the corpus is written once a day by one recorder and read all
-        day by everybody, and a rewrite nobody waits for beats an in-place
-        write that blocks every reader.
+        **An append only ever adds a file.** It used to rewrite the whole table
+        when an incoming key was already present -- dropping the stored row and
+        writing the new one in its place -- and that is the shape
+        `data-once-served-is-never-replaced-automatically` refuses: a vendor
+        restating yesterday's close silently replaced the number an answer had
+        already rested on, with nothing anywhere saying it had moved.
+
+        So a row identical to one already stored is not stored twice, and one
+        that differs is appended beside it. Which of the two a read returns is
+        the `now` view's answer, not this function's.
         """
         name = phys(ref)
         if key:
@@ -997,6 +1047,7 @@ class Store:
             # Two rows with one key in a single batch would both land, and the
             # key would stop meaning one row.
             df = df.drop_duplicates(subset=list(key), keep="last")
+        written = len(df)
         with self._lock:
             self.con.register("_incoming", df)
             try:
@@ -1025,47 +1076,46 @@ class Store:
                         )
                     cols = ", ".join(f'"{_ident(c)}"' for c in have)
 
-                # `appending` is read once, above. Asking `_exists` again here
-                # would be true even when the branch above has just created the
-                # table, and this block would run with no columns worked out.
-                if appending and (not key or not self._overlaps(name, key, "_incoming")):
-                    # The cheap path, and the common one. With no key there is
-                    # nothing to replace; with a key whose values are all new --
-                    # a day of prices after the last day stored -- there is
-                    # nothing to replace either. One file goes down and the rest
-                    # of the table is not read, let alone rewritten.
-                    self._add_part(name, f"SELECT {cols} FROM _incoming")
-                elif appending:
-                    kept = f"SELECT {cols} FROM {self._q(name)}"
-                    if key:
-                        # A null never equals a null in SQL, so a key holding a
-                        # blank would match nothing and the row would be appended
-                        # again on every poll, for ever.
-                        match = " AND ".join(
-                            f'old."{_ident(k)}" IS NOT DISTINCT FROM _incoming."{_ident(k)}"'
-                            for k in key
-                        )
-                        kept = (f"SELECT {cols} FROM {self._q(name)} old WHERE NOT EXISTS "
-                                f"(SELECT 1 FROM _incoming WHERE {match})")
-                    # The overlapping path: a key that already exists has to be
-                    # replaced, and a parquet file cannot be edited, so the table
-                    # is rewritten. Reached only when the footers say an incoming
-                    # key really could be in a file already here.
-                    #
-                    # By name, not by position: a feed that reordered its columns
-                    # would otherwise write dates into the symbol column.
-                    self._publish(
-                        name, f"{kept} UNION ALL BY NAME SELECT {cols} FROM _incoming")
+                    # `appending` is read once, above. Asking `_exists` again here
+                    # would be true even when the branch above has just created the
+                    # table, and this block would run with no columns worked out.
+                    if not key or not self._overlaps(name, key, "_incoming"):
+                        # The cheap path, and the common one. With no key there is
+                        # nothing that could already be stored; with a key whose
+                        # values are all new -- a day of prices after the last day
+                        # stored -- there is nothing to compare against either. The
+                        # footers settle it without reading a row, which is the
+                        # reason a table is a directory.
+                        self._add_part(name, f"SELECT {cols} FROM _incoming")
+                    else:
+                        # A key that is already here. Only the rows that actually
+                        # differ go down, and they go down as a new file: nothing
+                        # stored is read past its footer and nothing is rewritten.
+                        data = [c for c in have if c not in ENGINE_COLS]
+                        same = ", ".join(f'"{_ident(c)}"' for c in data)
+                        fresh = (f"SELECT {same} FROM _incoming "
+                                 f"EXCEPT SELECT {same} FROM {self._q(name)}")
+                        written = int(self._scalar(
+                            f"SELECT count(*) FROM ({fresh}) AS _new") or 0)
+                        if written:
+                            held = ("CAST(NULL AS BIGINT)" if current_execution() is None
+                                    else f"CAST({int(current_execution())} AS BIGINT)")
+                            self._add_part(name, (
+                                f'SELECT {same}, {held} AS "{EXEC_COL}", '
+                                f'CAST({time.time_ns()} AS BIGINT) AS "{SEQ_COL}" '
+                                f"FROM ({fresh}) AS _new"))
             finally:
                 self._release()
+                if key:
+                    self.remember_key(ref, key)
                 self._now_view(ref)
                 if self.as_of is not None:
                     self._shadow(ref)
-        # What this job did, which is the rows it handed over -- never the table
+        # What this job did, which is the rows it landed -- never the table
         # total, which made an incremental append of 16 rows report 11,672 and
         # look like it had re-fetched everything. The total is not counted here
         # at all now; see `_publish`.
-        return len(df)
+        return written
 
     def count_older(self, ref: str, col: str, cutoff: Any) -> int:
         """How many rows `prune_rows` would drop. Reads, and removes nothing."""
@@ -1136,11 +1186,11 @@ class Store:
         """
         name = phys(ref)
         execution = current_execution()
+        held = "CAST(NULL AS BIGINT)" if execution is None else f"CAST({int(execution)} AS BIGINT)"
         stamped = (
-            f"SELECT *, CAST({int(execution)} AS BIGINT) AS \"{EXEC_COL}\" "
+            f'SELECT *, {held} AS "{EXEC_COL}", '
+            f'CAST({time.time_ns()} AS BIGINT) AS "{SEQ_COL}" '
             f"FROM ({select_sql}) AS _out"
-            if execution is not None else
-            f"SELECT *, CAST(NULL AS BIGINT) AS \"{EXEC_COL}\" FROM ({select_sql}) AS _out"
         )
         with self._lock:
             try:
@@ -1192,6 +1242,52 @@ class Store:
         except Exception:  # noqa: BLE001 -- no view catalogue: fall back to the table
             return False
 
+    # ---- which columns identify one row --------------------------------------
+    def remember_key(self, ref: str, key: Sequence[str]) -> None:
+        """Record what identifies one row in this table.
+
+        **A reader needs this and cannot derive it.** Once a correction is a new
+        row beside the old one rather than an edit, something has to say which of
+        the two is current -- and the answer is "the newest write for this key",
+        which is unanswerable without knowing the key. The writer knows it; this
+        is where it leaves it.
+        """
+        if not key:
+            return
+        import json as _json
+
+        name = phys(ref)
+        held = _json.dumps(list(key))
+        self._meta()
+        with self._lock:
+            row = self._one(f"SELECT key_columns FROM {self._meta_home}{KEYS} "
+                            f"WHERE name = ?", [name], con=self.rcon)
+            if row is not None and row[0] == held:
+                return
+            self.con.execute(f"DELETE FROM {self._meta_home}{KEYS} WHERE name = ?", [name])
+            self.con.execute(f"INSERT INTO {self._meta_home}{KEYS} VALUES (?, ?)",
+                             [name, held])
+        self._keys[name] = list(key)
+        self._now_view(ref)
+
+    def key_of(self, ref: str) -> list[str]:
+        """What identifies one row in this table, or an empty list if nobody said."""
+        return list(self._keys.get(phys(ref), []))
+
+    def _load_keys(self) -> None:
+        import json as _json
+
+        self._keys: dict[str, list[str]] = {}
+        if self.kind == "parquet" and not self._meta_open:
+            # Opening the metadata file here would make every reader take the
+            # one writer lock on it, which is the thing a parquet store exists
+            # to avoid. The keys load the first time something opens it anyway.
+            return
+        with contextlib.suppress(Exception):
+            for name, held in self.con.execute(
+                    f"SELECT name, key_columns FROM {self._meta_home}{KEYS}").fetchall():
+                self._keys[name] = list(_json.loads(held))
+
     # ---- the `now` views -----------------------------------------------------
     def _engine_cols(self, name: str) -> list[str]:
         """Which engine-owned columns this table actually carries.
@@ -1210,19 +1306,47 @@ class Store:
             return []
         return [c for c in ENGINE_COLS if c in have]
 
+    def _current(self, ref: str, inner: str) -> str:
+        """One row per key, newest write wins, and the engine's columns hidden.
+
+        **Two rows for one key is the shape a correction takes**: a re-fetch that
+        finds a different value writes a new row and leaves the old one readable,
+        because an answer somebody was already given cannot be lost. The cost the
+        decision names is exactly this -- *every reader now has to pick* -- and
+        the risk is not size but a reader that forgets to and silently returns
+        two answers for one day. So the picking is here, in the view, once.
+
+        Ordered by the execution that wrote the row. A row written before the
+        engine recorded one sorts last: a corrected value from a real pass beats
+        an unattributed one.
+        """
+        name = phys(ref)
+        hidden = list(self._engine_cols(name))
+        key = [k for k in self._keys.get(name, []) if k]
+        if not key:
+            return (f"SELECT * EXCLUDE ({', '.join(chr(34) + _ident(c) + chr(34) for c in hidden)}) "
+                    f"FROM ({inner}) AS _t") if hidden else inner
+        parts = ", ".join(f'"{_ident(k)}"' for k in key)
+        order = f'"{_ident(SEQ_COL)}" DESC' if SEQ_COL in hidden else "1"
+        drop = ", ".join(f'"{_ident(c)}"' for c in [*hidden, "_qanat_rn"])
+        return (
+            f"SELECT * EXCLUDE ({drop}) FROM ("
+            f"SELECT *, row_number() OVER (PARTITION BY {parts} ORDER BY {order}) "
+            f'AS "_qanat_rn" FROM ({inner}) AS _t) AS _r WHERE "_qanat_rn" = 1'
+        )
+
     def _now_view(self, ref: str) -> bool:
         """(Re)build the `now` view over one table. True if it needs one."""
         name = phys(ref)
         mine = self._engine_cols(name)
-        if not mine:
+        if not mine and not self._keys.get(name):
             self._now.discard(name)
             return False
-        hidden = ", ".join(f'"{_ident(c)}"' for c in mine)
         with contextlib.suppress(Exception):
             self.con.execute(f'CREATE SCHEMA IF NOT EXISTS "{NOW}"')
             self.con.execute(
                 f'CREATE OR REPLACE VIEW "{NOW}"."{_ident(name)}" AS '
-                f"SELECT * EXCLUDE ({hidden}) FROM {self._q(name)}"
+                + self._current(ref, f"SELECT * FROM {self._q(name)}")
             )
             first = not self._now
             self._now.add(name)
@@ -1344,15 +1468,20 @@ class Store:
         """
         col = self.time_column(ref, self._pit_overrides.get(ref))
         name = phys(ref)
-        under = (f'"{NOW}"."{_ident(name)}"' if name in self._now else self._q(name))
+        # **The clock first, then the pick.** Built on the `now` view instead, a
+        # screen would ask "which row is current today" and then filter the
+        # answer by date -- so a value corrected last week would be invisible at
+        # a date before the correction, rather than showing what was knowable
+        # then.
         if col is None:
             # no clock on this table: it is the same at every as-of
-            body = f"SELECT * FROM {under}"
+            inner = f"SELECT * FROM {self._q(name)}"
         else:
-            body = (
-                f'SELECT * FROM {under} '
+            inner = (
+                f'SELECT * FROM {self._q(name)} '
                 f"WHERE {self._instant(ref, col)} <= CAST('{self.as_of}' AS TIMESTAMP)"
             )
+        body = self._current(ref, inner)
         self.con.execute(f'CREATE OR REPLACE VIEW "{PIT}"."{name}" AS {body}')
         return col is not None
 
