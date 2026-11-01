@@ -15,6 +15,7 @@ import textwrap
 from pathlib import Path
 
 import pytest
+from conftest import write_project_text
 
 from qanat.models import IngestionJobDefinition, JobSchedule, TransformJobDefinition
 from qanat.project import ProjectError, load, validate
@@ -26,7 +27,7 @@ def _project(tmp_path: Path, body: str) -> Path:
     (tmp_path / "transforms" / "t.sql").write_text("SELECT * FROM raw__docs")
     (tmp_path / "seed").mkdir(parents=True, exist_ok=True)
     (tmp_path / "seed" / "docs.csv").write_text("id,as_of\n1,2024-01-01\n")
-    (tmp_path / "qanat.yaml").write_text(body)
+    write_project_text(tmp_path, body)
     return tmp_path
 
 
@@ -282,9 +283,13 @@ def test_the_connector_package_is_named_for_what_it_is():
 def test_the_old_spellings_are_refused_rather_than_aliased(tmp_path: Path):
     """An alias leaves both vocabularies in the record, which is the state this
     change exists to end."""
-    root = _project(tmp_path, BASE.replace("ingestion_job_definitions:", "sources:"))
+    # Written whole on purpose: this is the file a migration reads.
+    (tmp_path / "transforms").mkdir(parents=True, exist_ok=True)
+    (tmp_path / "transforms" / "t.sql").write_text("SELECT 1")
+    (tmp_path / "qanat.yaml").write_text(
+        BASE.replace("ingestion_job_definitions:", "sources:"))
     with pytest.raises(ProjectError) as exc:
-        load(root)
+        load(tmp_path)
     assert "old vocabulary" in str(exc.value)
     assert "qanat migrate" in str(exc.value), "the refusal names what to run"
 

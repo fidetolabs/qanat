@@ -69,7 +69,8 @@ table below if you want to know why the pieces are arranged this way rather than
 
 | Layer | Path | Role |
 | --- | --- | --- |
-| Project file | `qanat.yaml` | Stages, job definitions, schedules, retention, store URL |
+| Project file | `qanat.yaml` | Stages, the clock, the corpus, retention, store URL. **Nothing writes it** |
+| Job files | `jobs.yaml` · `metrics.yaml` · `universes.yaml` | What a tool writes: definitions, cadences, formulas, baskets |
 | Contract | `src/qanat/project.py` | Validates the stage rules |
 | Runner | `src/qanat/runner.py` | Opens a job, records each execution, runs the definition |
 | Scheduler | `src/qanat/scheduler.py` | Cron + retention cleanup |
@@ -83,7 +84,7 @@ table below if you want to know why the pieces are arranged this way rather than
 | CLI | `src/qanat/cli.py` | `init`, `check`, `migrate`, `mcp`, `schedule`. Nothing else |
 | Filings | `src/qanat/filings.py` | Which filings exist, which parse, and landing the chosen ones |
 | Metrics | `src/qanat/metrics.py` | Defining a metric, and refusing a formula that will not run |
-| Editor logic | `src/qanat/editor.py` | Mutations that write `qanat.yaml` |
+| Editor logic | `src/qanat/editor.py` | Mutations, each validated, writing the part files |
 | Graph | `src/qanat/graph.py` | The read model, and the terminal drawing of it |
 | Connectors | `src/qanat/connectors/` | Plugin surface: one `fetch()` per connector |
 

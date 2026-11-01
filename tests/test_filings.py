@@ -15,6 +15,7 @@ from pathlib import Path
 
 import httpx
 import pytest
+from conftest import write_project_text
 
 from qanat import filings
 from qanat.models import IngestionJobDefinition, Project
@@ -416,7 +417,7 @@ def test_the_sec_connector_reads_a_universe(tmp_path, edgar):
 
     project, store = a_project(tmp_path)
     try:
-        (tmp_path / "qanat.yaml").write_text("project: filings\nstages:\n  - id: raw\n")
+        write_project_text(tmp_path, "project: filings\nstages:\n  - id: raw\n")
         save_universe(project, tmp_path,
                       {"id": "two", "index": "Two", "symbols": "./universes/two.csv",
                        "symbols_list": ["AAPL", "TM"]})
@@ -462,7 +463,7 @@ def test_adding_a_company_names_no_table_stage_or_connector():
 def a_written_project(root: Path) -> tuple[Project, Store]:
     """A project on disk, because a subscription is an edit to qanat.yaml."""
     (root / "data").mkdir(parents=True, exist_ok=True)
-    (root / "qanat.yaml").write_text(textwrap.dedent("""\
+    write_project_text(root, textwrap.dedent("""\
         project: filings
         store: ./data/qanat.duckdb
         stages:
@@ -744,7 +745,7 @@ def test_a_corpus_fed_by_another_connector_is_not_taken_over(tmp_path, edgar):
     (tmp_path / "data").mkdir(parents=True, exist_ok=True)
     (tmp_path / "seed").mkdir(parents=True, exist_ok=True)
     (tmp_path / "seed" / "docs.csv").write_text("id\n1\n")
-    (tmp_path / "qanat.yaml").write_text(textwrap.dedent("""\
+    write_project_text(tmp_path, textwrap.dedent("""\
         project: filings
         store: ./data/qanat.duckdb
         stages:

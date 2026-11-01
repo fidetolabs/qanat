@@ -44,7 +44,7 @@ transform_job_definitions:
 
 @pytest.fixture
 def ran(tmp_path: Path):
-    from conftest import STORE_KIND
+    from conftest import STORE_KIND, write_project_text
 
     store_line = "./data" if STORE_KIND == "parquet" else "./data/qanat.duckdb"
     (tmp_path / "transforms").mkdir(parents=True)
@@ -52,7 +52,7 @@ def ran(tmp_path: Path):
     (tmp_path / "seed" / "docs.csv").write_text(
         "id,subject,value,as_of\n1,AAPL,10,2024-01-01\n2,MSFT,20,2024-01-02\n")
     (tmp_path / "transforms" / "t.sql").write_text("SELECT * FROM raw__docs")
-    (tmp_path / "qanat.yaml").write_text(YAML.format(store=store_line))
+    write_project_text(tmp_path, YAML.format(store=store_line))
 
     project, root = load(tmp_path)
     store = Store(project.store_url(root))
@@ -145,7 +145,7 @@ def test_a_job_cannot_write_the_column(ran):
 
 def test_a_transform_returning_the_column_fails_the_transform(tmp_path: Path):
     """The same rule, reached the way a script would reach it."""
-    from conftest import STORE_KIND
+    from conftest import STORE_KIND, write_project_text
 
     store_line = "./data" if STORE_KIND == "parquet" else "./data/qanat.duckdb"
     (tmp_path / "transforms").mkdir(parents=True)
@@ -161,7 +161,7 @@ def test_a_transform_returning_the_column_fails_the_transform(tmp_path: Path):
             df["{EXEC_COL}"] = 1
             return df
         '''))
-    (tmp_path / "qanat.yaml").write_text(
+    write_project_text(tmp_path, 
         YAML.format(store=store_line).replace("script: transforms/t.sql",
                                               "script: transforms/forge.py"))
     project, root = load(tmp_path)
@@ -182,11 +182,13 @@ def test_a_row_landed_by_ingest_filings_names_an_execution(tmp_path: Path, monke
     """**It used to write rows and log an event while opening neither a job nor an
     execution**, which is exactly why the documents table held rows nothing could
     claim."""
+    from conftest import write_project_text
+
     from qanat import filings
     from qanat.connectors import sec
 
     (tmp_path / "data").mkdir(parents=True)
-    (tmp_path / "qanat.yaml").write_text(textwrap.dedent("""\
+    write_project_text(tmp_path, textwrap.dedent("""\
         project: filings
         store: ./data/qanat.duckdb
         stages:

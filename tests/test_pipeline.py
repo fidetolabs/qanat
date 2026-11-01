@@ -3,6 +3,7 @@
 from pathlib import Path
 
 import pytest
+from conftest import edit_project, write_project_text
 from conftest import write_demo_project as write_project
 
 from qanat.project import load
@@ -65,8 +66,7 @@ def test_plan_sees_new_changed_and_orphan(tmp_path: Path):
     assert plan(project, root, store).empty
 
     # 2. change an option and a script -> two updates, no new tables
-    yaml = (tmp_path / "qanat.yaml").read_text().replace("lookback: 20", "lookback: 60")
-    (tmp_path / "qanat.yaml").write_text(yaml)
+    edit_project(tmp_path, "lookback: 20", "lookback: 60")
     (tmp_path / "transforms" / "risk.sql").write_text(
         (tmp_path / "transforms" / "risk.sql").read_text() + "\n-- edited\n"
     )
@@ -77,23 +77,26 @@ def test_plan_sees_new_changed_and_orphan(tmp_path: Path):
     assert any("script contents changed" in d for c in p2.updates for d in c.details)
     assert not p2.creates and not p2.orphans
 
-    # 3. delete the step that owns a table -> the job goes, the table is orphaned
-    yaml = (tmp_path / "qanat.yaml").read_text()
-    start = yaml.index("  - id: tone")
-    end = yaml.index("  - id: portfolio")
-    yaml = yaml[:start] + yaml[end:]
-    yaml = yaml.replace(
-        "from: [features.momentum, features.risk, features.tone]",
-        "from: [features.momentum, features.risk]",
-    )
-    (tmp_path / "qanat.yaml").write_text(yaml)
+    # 3. delete the transform that owns a table -> it goes, the table is orphaned
+    from qanat.editor import delete_transform
+
+    project, root = load(tmp_path)
+    # `portfolio` reads what `tone` writes, so it goes first -- and its cadence
+    # goes with it, since a schedule over a definition that is not there fires
+    # nothing and reads as live.
+    delete_transform(project, root, "portfolio")
+    delete_transform(project, root, "tone")
     project, root = load(tmp_path)
     p3 = plan(project, root, store)
-    assert [c.target for c in p3.removes] == ["tone"]
-    assert [c.target for c in p3.orphans] == ["features.tone"]
+    # Both transforms, and the cadences that pointed at them: `plan` watches
+    # definitions and schedules alike, so a removed schedule is drift too.
+    assert {c.target for c in p3.removes} == {
+        "tone", "portfolio", "tone_5m", "portfolio_5m"}
+    assert {c.target for c in p3.orphans} == {"features.tone", "features.target"}
 
-    # 4. prune removes it, and then the plan is quiet about tables again
+    # 4. prune removes them, and then the plan is quiet about tables again
     assert store.drop("features.tone") == 8
+    store.drop("features.target")
     assert not plan(project, root, store).orphans
     store.close()
 
@@ -149,16 +152,14 @@ def test_a_key_naming_a_column_that_is_not_there_says_so(tmp_path: Path):
 
 # ------------------------------------- a step that waits on a table, not a clock
 def _wire_when(root: Path) -> None:
-    """Take the scaffolded project off its clocks and have the steps wait instead."""
+    """Take the project off its clocks and have the transforms wait instead."""
     import yaml
 
-    f = root / "qanat.yaml"
+    f = root / "jobs.yaml"
     spec = yaml.safe_load(f.read_text())
-    for job in spec["ingestion_job_definitions"]:
-        job.pop("schedule", None)
-    for step in spec["transform_job_definitions"]:
-        step.pop("schedule", None)
-        step["when"] = list(step["from"])
+    spec.pop("job_schedules", None)
+    for transform in spec["transform_job_definitions"]:
+        transform["when"] = list(transform["from"])
     f.write_text(yaml.safe_dump(spec, sort_keys=False))
 
 
@@ -272,8 +273,9 @@ def test_the_scaffold_asks_the_sec_for_a_contact(tmp_path: Path):
     from qanat.scaffold import write_project as write_scaffold
 
     write_scaffold(tmp_path, "demo")
-    body = (tmp_path / "qanat.yaml").read_text()
-    assert "SEC_USER_AGENT" in body
+    # In `jobs.yaml`, with the rest of the selection. `qanat.yaml` is the
+    # architecture and holds nothing a connector needs.
+    assert "SEC_USER_AGENT" in (tmp_path / "jobs.yaml").read_text()
 
 
 # ------------------------------------- the example that ships with it
@@ -360,7 +362,7 @@ def test_a_source_declaring_mode_replace_is_refused_at_load(tmp_path: Path):
 
     (tmp_path / "seed").mkdir()
     (tmp_path / "seed/b.csv").write_text("ts,symbol,close\n2024-01-01,A,1.0\n")
-    (tmp_path / "qanat.yaml").write_text(
+    write_project_text(tmp_path, 
         "project: t\nstore: ./data\n"
         "stages:\n  - {id: raw, kind: raw}\n"
         "ingestion_job_definitions:\n  - {id: b, to: [raw.b], connector: csv, mode: replace, "

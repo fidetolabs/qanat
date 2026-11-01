@@ -80,6 +80,31 @@ an enum, and a project had to be shaped like the one product they were written f
 now declares what is true of it rather than which slot it fills, and what `check` enforces is
 in [contract.md](contract.md). `normalized` in the starter project is a name, not a keyword.
 
+## The files
+
+| File | Holds | Written by |
+| --- | --- | --- |
+| `qanat.yaml` | `project`, `store`, `stages`, `time_columns`, `corpus`, `returns`, `retention`, `job_timeout` | **you** |
+| `jobs.yaml` | `ingestion_job_definitions`, `transform_job_definitions`, `job_schedules` | a tool |
+| `metrics.yaml` | `metrics` | a tool |
+| `universes.yaml` | `universes` | a tool |
+
+**The boundary is human-written against tool-written, and the two were sharing a
+file.** `define_metric` loaded `qanat.yaml`, mutated the model and re-dumped the
+whole thing — which cost the project's own header, the note explaining why a row
+needs a publication date, the note naming which tables the reading tools open,
+the section spacing and the hand-wrapped SQL. All of it survived only in
+`qanat.yaml.bak`.
+
+So **nothing rewrites `qanat.yaml`**: no authoring verb has a write path to it,
+and a test holds that rather than a review. Comment preservation in the other
+three is attempted and not promised — a key a tool removed has nowhere left to
+keep the note that sat above it, which is exactly why the file holding your
+notes is not one of them.
+
+A tool-written key left in `qanat.yaml`, or one in the wrong part file, is
+refused at load with `qanat migrate` named.
+
 ## The fields, one spelling each
 
 | Field | On | Means |

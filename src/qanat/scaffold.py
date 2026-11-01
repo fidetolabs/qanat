@@ -39,6 +39,21 @@ time_columns:
   raw.documents: published_at
   normalized.facts: as_of
 
+# ------------------------------------------------------------------ the corpus --
+# Which tables hold the documents and the numbers pulled out of them. The
+# reading tools need to know where to look, and the platform does not name
+# layers -- so the project says. Without this they are simply not offered.
+corpus:
+  documents: raw.documents
+  facts: normalized.facts
+
+"""
+
+#: Tool-written, and said out loud in the file itself: a definition, a
+#: cadence and a formula are things an authoring tool writes, and a tool
+#: that re-dumps a file cannot keep the comments somebody put in it. So they
+#: are not in `qanat.yaml`, which is the one file nothing here rewrites.
+JOBS_YAML = """\
 # --------------------------------------------------------- the ingestion jobs --
 # What to fetch, and the one table it lands in. **No cadence here** -- how often
 # this runs is a `job_schedules:` row pointing at it, below, so one definition
@@ -88,14 +103,9 @@ transform_job_definitions:
 #     definition: filings
 #     cron: "0 6 * * *"
 
-# ------------------------------------------------------------------ the corpus --
-# Which tables hold the documents and the numbers pulled out of them. The
-# reading tools need to know where to look, and the platform does not name
-# layers -- so the project says. Without this they are simply not offered.
-corpus:
-  documents: raw.documents
-  facts: normalized.facts
+"""
 
+METRICS_YAML = """\
 # ----------------------------------------------------------------- the metrics --
 # A formula with a name and a version. Shared: `net income / revenue` is
 # arithmetic, so it is the same number for every caller. The threshold you
@@ -212,6 +222,14 @@ README = """\
 A qanat project over real SEC filings. Two stages: what arrived, and what was
 read out of it.
 
+    qanat.yaml      what you write and mean to keep -- stages, the clock, the corpus
+    jobs.yaml       what to fetch, what to transform, and how often. Tool-written
+    metrics.yaml    the formulas, each with a version. Tool-written
+
+**Nothing rewrites `qanat.yaml`.** The other two are written by authoring tools,
+and a tool that re-dumps a file cannot keep the comments somebody put in it --
+which is why the file holding your notes is not one of them.
+
     export SEC_USER_AGENT="your name you@example.com"
 
     qanat check      # does the pipeline obey the stage contract?
@@ -233,6 +251,8 @@ a metric is a query over the facts, not another stage.
 
 FILES = {
     "qanat.yaml": QANAT_YAML,
+    "jobs.yaml": JOBS_YAML,
+    "metrics.yaml": METRICS_YAML,
     "README.md": README,
     "transforms/parse_facts.py": PARSE_FACTS_PY,
 }

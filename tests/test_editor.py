@@ -5,6 +5,7 @@ from pathlib import Path
 
 import pytest
 from conftest import write_demo_project as write_project
+from conftest import write_project_text
 
 from qanat.project import load, validate
 from qanat.project_io import dump_project, save_project
@@ -39,12 +40,28 @@ def test_retention_drops_old_rows(tmp_path: Path):
 
 
 def test_project_save_roundtrip(tmp_path: Path):
+    """A save writes the part files and **nothing else**.
+
+    `retention:` is `qanat.yaml`'s, so changing it in memory and saving does not
+    write it -- which is the point rather than a gap: the architecture file is
+    not something a tool edits, and a verb that silently rewrote it is the
+    defect this split exists to close.
+    """
     write_project(tmp_path, "demo")
     project, root = load(tmp_path)
+    before = (root / "qanat.yaml").read_text()
+
+    project.transform_job_definitions[0].options = {"lookback": 99}
     project.retention = {"normalized.prices": "30d"}
-    save_project(project, root)
+    written = save_project(project, root)
+
+    assert (root / "qanat.yaml") not in written
+    assert (root / "qanat.yaml").read_text() == before, "the architecture file is untouched"
+
     again, _ = load(tmp_path)
-    assert again.retention == {"normalized.prices": "30d"}
+    edited = project.transform_job_definitions[0].id
+    assert again.definition(edited).options == {"lookback": 99}, "the part file saved"
+    assert again.retention == {}, "and the architecture key was never a tool's to write"
     assert validate(again, root).ok
 
 
@@ -83,7 +100,7 @@ def test_saving_a_step_keeps_the_rest_of_the_file(tmp_path: Path):
     from qanat.project import load
 
     write_project(tmp_path, "demo")
-    (tmp_path / "qanat.yaml").write_text(
+    write_project_text(tmp_path, 
         (tmp_path / "qanat.yaml").read_text() + "\ntime_columns:\n  raw.daily_prices: ts\n"
     )
     before, root = load(tmp_path)
@@ -162,33 +179,58 @@ def _comments(text):
     return [l.strip() for l in text.splitlines() if l.strip().startswith("#")]
 
 
-def test_saving_keeps_the_comments_somebody_wrote(tmp_path):
-    """An edit must not delete the notes in qanat.yaml.
+def test_a_save_never_touches_the_architecture_file(tmp_path):
+    """The notes in `qanat.yaml` survive because nothing writes it.
 
     `yaml.safe_dump` cannot round-trip a comment, so the first edit an agent made
-    stripped every one -- including the header on a bundled example saying
-    what the dataset is. A tool that deletes your notes on its way past is one you
-    cannot leave alone with the file.
+    stripped every one -- including the header on a bundled example saying what
+    the dataset is. The round-tripper came first and kept most of them; the file
+    split is the actual answer, because a key a tool *removed* has nowhere left
+    to keep the note that sat above it. A tool that deletes your notes on its way
+    past is one you cannot leave alone with the file, so it is not left alone
+    with it.
     """
-    (tmp_path / "qanat.yaml").write_text(COMMENTED)
+    write_project_text(tmp_path, COMMENTED)
     (tmp_path / "transforms").mkdir()
     (tmp_path / "transforms" / "normalize.sql").write_text("SELECT 1")
-    before = (tmp_path / "qanat.yaml").read_text()
+    architecture = (tmp_path / "qanat.yaml").read_text()
 
     project, root = load(tmp_path)
     project.transform_job_definitions[0].options = {"lookback": 20}      # the smallest real edit
     save_project(project, root)
 
-    after = (tmp_path / "qanat.yaml").read_text()
+    assert (tmp_path / "qanat.yaml").read_text() == architecture, "byte-identical"
+    assert "# What this project is" in architecture
+    assert "lookback: 20" in (tmp_path / "jobs.yaml").read_text()
+
+
+def test_a_part_file_keeps_its_comments_where_it_can(tmp_path):
+    """**Attempted, not promised**, and the difference is the point of the split.
+
+    A tool writes these files, so a note above a key the tool removed has nowhere
+    to land. One above a key that stays survives, because the round-tripper lays
+    the new values onto the tree it parsed. That is the best a tool-written file
+    can do -- which is why the file holding somebody's actual notes is not one.
+    """
+    write_project_text(tmp_path, COMMENTED)
+    (tmp_path / "transforms").mkdir()
+    (tmp_path / "transforms" / "normalize.sql").write_text("SELECT 1")
+    jobs = tmp_path / "jobs.yaml"
+    jobs.write_text("# polls once a day, which is all EDGAR publishes\n" + jobs.read_text())
+    before = jobs.read_text()
+
+    project, root = load(tmp_path)
+    project.transform_job_definitions[0].options = {"lookback": 20}
+    save_project(project, root)
+
+    after = jobs.read_text()
     assert _comments(after) == _comments(before)
-    assert after.startswith("# What this project is")
-    assert "# the only feed" in after
     assert "lookback: 20" in after
 
 
 def test_a_save_still_says_exactly_what_the_project_holds(tmp_path):
     """Comments are kept, but never at the cost of the data being right."""
-    (tmp_path / "qanat.yaml").write_text(COMMENTED)
+    write_project_text(tmp_path, COMMENTED)
     (tmp_path / "transforms").mkdir()
     (tmp_path / "transforms" / "normalize.sql").write_text("SELECT 1")
 
@@ -203,7 +245,7 @@ def test_a_save_still_says_exactly_what_the_project_holds(tmp_path):
 
 def test_repeated_saves_do_not_drift(tmp_path):
     """An editor writes on every change, so save-load-save has to be a fixed point."""
-    (tmp_path / "qanat.yaml").write_text(COMMENTED)
+    write_project_text(tmp_path, COMMENTED)
     (tmp_path / "transforms").mkdir()
     (tmp_path / "transforms" / "normalize.sql").write_text("SELECT 1")
 
@@ -219,7 +261,7 @@ def test_it_still_saves_without_ruamel(tmp_path, monkeypatch):
     """The dependency is optional: an older install keeps working, minus comments."""
     import qanat.project_io as pio
 
-    (tmp_path / "qanat.yaml").write_text(COMMENTED)
+    write_project_text(tmp_path, COMMENTED)
     (tmp_path / "transforms").mkdir()
     (tmp_path / "transforms" / "normalize.sql").write_text("SELECT 1")
     monkeypatch.setattr(pio, "_round_tripper", lambda: None)

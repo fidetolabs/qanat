@@ -135,10 +135,10 @@ def _check_inside(root: Path, definition: TransformJobDefinition) -> None:
 def save_universe(project: Project, root: Path, raw: dict) -> list[str]:
     """Add or replace a universe, writing its symbol file if symbols were given.
 
-    A transform that holds a basket holds itself to one, and a project that declares
-    none was a dead end: the install refused, and told whoever asked to add one to
-    `qanat.yaml` by hand -- which an agent reaching this project over MCP cannot
-    do. The error named a fix that no tool offered.
+    A transform that holds a basket holds itself to one, and a project that
+    declares none was a dead end: the install refused, and told whoever asked to
+    add one to the project file by hand -- which an agent reaching this project
+    over MCP cannot do. The error named a fix that no tool offered.
     """
     symbols = raw.pop("symbols_list", None)
     universe = Universe.model_validate(raw)

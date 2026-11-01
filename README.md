@@ -159,11 +159,13 @@ found and labelled, never parsed, and `ingest_filings` says which pile a refused
 form is in rather than failing quietly — because a product that ingests two forms
 and crashes on the rest is not scoped, it is broken.
 
-### The project file
+### The project files
 
-Everything is in one `qanat.yaml`.
+A project is four files. **`qanat.yaml` is the one you write**, and nothing
+rewrites it:
 
 ```yaml
+# qanat.yaml -- yours
 project: research
 store: ./data            # a directory: parquet files, read by DuckDB
 
@@ -177,6 +179,15 @@ stages:
 time_columns:
   raw.documents: published_at
 
+# corpus:, returns: and retention: live here too -- all architecture.
+```
+
+**`jobs.yaml`, `metrics.yaml` and `universes.yaml` are written by the authoring
+tools.** They are separate files because the two kinds do not mix: an authoring
+verb that re-dumped one file took every comment in it along with the change.
+
+```yaml
+# jobs.yaml -- written by subscribe_filings, save_source, save_step
 # What to fetch, and the one table it lands in. No cadence here.
 ingestion_job_definitions:
   - id: filings

@@ -1,4 +1,22 @@
-"""Read and write qanat.yaml."""
+"""Read a project, and write back the parts a tool owns.
+
+**`qanat.yaml` holds what a person writes and means to keep** -- the project
+name, the store, the stages, the tables and the graph between them,
+`time_columns`, `corpus`, `returns`, `retention`. Nothing here writes it.
+
+**The parts a tool writes live in their own files beside it.** The boundary is
+not tidiness, it is human-written against tool-written, and the two were sharing
+a file: `define_metric` loaded `qanat.yaml`, mutated the model and re-dumped the
+whole thing. What a re-dump destroyed, measured on the `check` project, was the
+note explaining why a row needs a publication date, the note naming which tables
+the reading tools open, the section spacing, and the hand-wrapped metric SQL --
+including the project's own header saying what the project was for. All of it
+survived only in `qanat.yaml.bak`.
+
+So an authoring verb has no write path to `qanat.yaml` at all. `save_project`
+refuses to write it, and a field belonging to it that has changed in memory is a
+bug rather than a save.
+"""
 
 from __future__ import annotations
 
@@ -18,9 +36,37 @@ from qanat.models import (
     TransformJobDefinition,
 )
 
+#: Which file each tool-written key lives in, and in which order inside it.
+#: **Comment preservation is attempted and not promised**: these are written by
+#: tools, and a key a tool removed has nowhere to keep a note that sat above it.
+PARTS: dict[str, tuple[str, ...]] = {
+    "jobs.yaml": ("ingestion_job_definitions", "transform_job_definitions",
+                  "job_schedules"),
+    "universes.yaml": ("universes",),
+    "metrics.yaml": ("metrics",),
+}
+
+#: What `qanat.yaml` holds, and the only keys read out of it.
+ARCHITECTURE: tuple[str, ...] = (
+    "project", "store", "stages", "time_columns", "corpus", "returns",
+    "retention", "job_timeout",
+)
+
+
+def part_for(key: str) -> str | None:
+    """Which file owns this key, or None if `qanat.yaml` does."""
+    for name, keys in PARTS.items():
+        if key in keys:
+            return name
+    return None
+
 
 def dump_project(project: Project) -> dict[str, Any]:
-    """Project -> dict using YAML field names (from/to, project)."""
+    """Project -> dict using YAML field names (from/to, project).
+
+    The whole project in one dict, which is what `check` and the migration want.
+    `save_project` splits it across the files that own each key.
+    """
     data: dict[str, Any] = {
         "project": project.name,
         "store": project.store,
@@ -216,30 +262,47 @@ def render_project(data: dict[str, Any], path: Path) -> str:
     return text
 
 
-def save_project(project: Project, root: Path) -> Path:
-    """Write qanat.yaml, atomically, keeping the last good copy.
+def _write(path: Path, text: str) -> None:
+    """Atomically, because `write_text` truncates and then writes.
 
-    `write_text` truncates and then writes, so anything reading in between sees a
-    torn file -- `state.reload()` after an edit, `qanat check` in another terminal,
-    an agent over MCP. Writing beside it and renaming is atomic on every platform
-    this runs on, and costs nothing.
+    Anything reading in between sees a torn file -- `state.reload()` after an
+    edit, `qanat check` in another terminal, an agent over MCP. Writing beside it
+    and renaming is atomic on every platform this runs on, and costs nothing.
     """
-    path = root / "qanat.yaml"
-    data = dump_project(project)
-    text = render_project(data, path)
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    with tmp.open("w") as fh:
+        fh.write(text)
+        fh.flush()
+        os.fsync(fh.fileno())
+    os.replace(tmp, path)
+
+
+def save_project(project: Project, root: Path) -> list[Path]:
+    """Write the tool-owned part files. **Never `qanat.yaml`.**
+
+    A part with nothing in it is removed rather than left holding an empty key,
+    so a project with no schedules does not carry a file saying `job_schedules:`
+    and nothing under it.
+    """
+    whole = dump_project(project)
+    written: list[Path] = []
     with _WRITE:
-        if path.is_file():
-            try:
-                (root / "qanat.yaml.bak").write_text(path.read_text())
-            except OSError:  # a backup we cannot write is not a reason to block the save
-                pass
-        tmp = path.with_suffix(".yaml.tmp")
-        with tmp.open("w") as fh:
-            fh.write(text)
-            fh.flush()
-            os.fsync(fh.fileno())
-        os.replace(tmp, path)
-    return path
+        for name, keys in PARTS.items():
+            path = root / name
+            mine = {k: whole[k] for k in keys if k in whole}
+            if not mine:
+                if path.is_file():
+                    path.unlink()
+                continue
+            _write(path, render_project(mine, path))
+            written.append(path)
+    return written
+
+
+def architecture_of(project: Project) -> dict[str, Any]:
+    """Only the keys `qanat.yaml` owns. For the migration, which rewrites it once."""
+    whole = dump_project(project)
+    return {k: v for k, v in whole.items() if k in ARCHITECTURE}
 
 
 def project_from_dict(raw: dict[str, Any]) -> Project:

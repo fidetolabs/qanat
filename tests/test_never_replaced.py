@@ -17,6 +17,7 @@ from pathlib import Path
 
 import pandas as pd
 import pytest
+from conftest import write_project_text
 
 from qanat.project import ProjectError, load, validate
 from qanat.store import Store
@@ -38,12 +39,12 @@ ingestion_job_definitions:
 
 
 def _project(tmp_path: Path, rows: str):
-    from conftest import STORE_KIND
+    from conftest import STORE_KIND, write_project_text
 
     store_line = "./data" if STORE_KIND == "parquet" else "./data/qanat.duckdb"
     (tmp_path / "seed").mkdir(parents=True, exist_ok=True)
     (tmp_path / "seed" / "prices.csv").write_text(rows)
-    (tmp_path / "qanat.yaml").write_text(YAML.format(store=store_line))
+    write_project_text(tmp_path, YAML.format(store=store_line))
     return load(tmp_path)
 
 
@@ -51,7 +52,7 @@ def _project(tmp_path: Path, rows: str):
 def test_mode_replace_is_refused_with_the_fix_in_the_message(tmp_path: Path):
     (tmp_path / "seed").mkdir()
     (tmp_path / "seed" / "prices.csv").write_text("symbol,close,as_of\nA,1,2024-01-01\n")
-    (tmp_path / "qanat.yaml").write_text(textwrap.dedent("""\
+    write_project_text(tmp_path, textwrap.dedent("""\
         project: k
         store: ./data
         stages:
@@ -72,7 +73,7 @@ def test_an_append_with_no_key_is_warned_about(tmp_path: Path):
     loud, because without a key every poll keeps a full copy."""
     (tmp_path / "seed").mkdir()
     (tmp_path / "seed" / "prices.csv").write_text("symbol,close,as_of\nA,1,2024-01-01\n")
-    (tmp_path / "qanat.yaml").write_text(textwrap.dedent("""\
+    write_project_text(tmp_path, textwrap.dedent("""\
         project: k
         store: ./data
         stages:

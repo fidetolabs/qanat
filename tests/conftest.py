@@ -316,6 +316,44 @@ SYMBOL_LIST = ["AAPL", "MSFT", "NVDA", "AMZN", "META", "JPM", "XOM", "SPY"]
 STORE_KIND = os.environ.get("QANAT_TEST_STORE", "duckdb")
 
 
+def split_project(root: Path) -> Path:
+    """Put a one-blob `qanat.yaml` into the files the project actually has.
+
+    **The tests write one blob on purpose.** A fixture is about the project, not
+    about which file each key lives in, and spelling the split out in forty of
+    them would make every one of them a worse description of what it is testing.
+    The migration is the one thing that knows the layout, so this uses it.
+    """
+    from qanat.migrate import apply_migration, plan_migration
+
+    m = plan_migration(root)
+    if m.needed:
+        apply_migration(m)
+        (root / "qanat.yaml.before-the-job-model").unlink(missing_ok=True)
+    return root
+
+
+def write_project_text(root: Path, text: str) -> Path:
+    """One YAML blob on disk, split into the files that own each key."""
+    root.mkdir(parents=True, exist_ok=True)
+    (root / "qanat.yaml").write_text(text)
+    return split_project(root)
+
+
+def edit_project(root: Path, old: str, new: str) -> Path:
+    """Change a line wherever it lives: `qanat.yaml` or one of the part files.
+
+    A test editing a definition should not have to know which file holds it --
+    that is the thing the split moved, and the test is about the change.
+    """
+    for name in ("qanat.yaml", "jobs.yaml", "metrics.yaml", "universes.yaml"):
+        path = root / name
+        if path.is_file() and old in (text := path.read_text()):
+            path.write_text(text.replace(old, new))
+            return path
+    raise AssertionError(f"{old!r} is in none of this project's files")
+
+
 def write_demo_project(target: Path, name: str = "demo", store: str | None = None) -> Path:
     """Write the fixture project and its two seed files. Nothing runs yet."""
     if store is None:
@@ -333,7 +371,7 @@ def write_demo_project(target: Path, name: str = "demo", store: str | None = Non
     make_prices(SYMBOL_LIST).to_csv(seed / "daily_prices.csv", index=False)
     make_news(SYMBOL_LIST).to_csv(seed / "news.csv", index=False)
     (target / "data").mkdir(exist_ok=True)
-    return target
+    return split_project(target)
 
 
 @pytest.fixture

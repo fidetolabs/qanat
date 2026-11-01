@@ -1,0 +1,67 @@
+ingestion_job_definitions:
+- id: filings
+  to:
+  - raw.documents
+  connector: sec
+  key:
+  - id
+  options:
+    companies:
+    - AAPL
+    - MSFT
+    - GOOGL
+    - META
+    - NVDA
+    - WMT
+    - TGT
+    - COST
+    form: 10-K
+    years: 5
+    user_agent: ${SEC_USER_AGENT}
+    cache: ./data/documents
+- id: prices
+  to:
+  - raw.prices
+  connector: yfinance
+  mode: append
+  key:
+  - subject
+  - date
+  options:
+    companies:
+    - AAPL
+    - MSFT
+    - GOOGL
+    - META
+    - NVDA
+    - WMT
+    - TGT
+    - COST
+    from: '2021-01-01'
+    to: '2026-12-31'
+transform_job_definitions:
+- id: parse_facts
+  from:
+  - raw.documents
+  to:
+  - normalized.facts
+  script: transforms/parse_facts.py
+  options:
+    reads: raw.documents
+- id: filing_prices
+  from:
+  - raw.documents
+  - raw.prices
+  to:
+  - normalized.filing_prices
+  script: transforms/filing_prices.py
+  options:
+    reads: raw.documents
+- id: split_sections
+  from:
+  - raw.documents
+  to:
+  - normalized.spans
+  script: transforms/split_sections.py
+  options:
+    reads: raw.documents

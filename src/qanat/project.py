@@ -73,20 +73,57 @@ def load(path: str | os.PathLike[str] | None = None) -> tuple[Project, Path]:
         f = f / "qanat.yaml"
     with f.open() as fh:
         raw = yaml.safe_load(fh) or {}
-    from qanat.migrate import OLD_KEYS, looks_old
+    from qanat.migrate import OLD_KEYS
+    from qanat.project_io import PARTS, part_for
 
-    if looks_old(raw):
-        said = ", ".join(f"`{k}:`" for k in OLD_KEYS if k in raw)
+    # **Both refusals are about this file, before anything is merged into it.**
+    # Tested against the part files as well, `sources:` in `jobs.yaml` would be
+    # reported as `qanat.yaml` saying it -- which sends whoever has to fix it to
+    # the wrong file.
+    said = [k for k in OLD_KEYS if k in raw]
+    if said:
         raise ProjectError(
-            f"{f.name} is written in the old vocabulary: it says {said}.\n"
+            f"{f.name} is written in the old vocabulary: it says "
+            f"{', '.join('`' + k + ':`' for k in said)}.\n"
             "  `sources:` is now `ingestion_job_definitions:` and `steps:` is "
             "`transform_job_definitions:`,\n"
             "  and the `schedule:` field on either one is a `job_schedules:` row pointing "
             "at it by id --\n"
             "  which is what lets one definition carry a daily and a weekly.\n"
-            f"  Run `qanat migrate {f.parent}` to rewrite it. It keeps a copy of this file "
-            "beside the new one."
+            f"  Run `qanat migrate {f.parent}` to rewrite it. It prints before it writes, "
+            "and keeps a copy."
         )
+    stray = sorted(k for k in raw if part_for(k))
+    if stray:
+        where = ", ".join(sorted({part_for(k) for k in stray}))
+        raise ProjectError(
+            f"{f.name} holds {', '.join('`' + k + ':`' for k in stray)}, which a tool "
+            f"writes.\n"
+            f"  Those live in {where} now, beside this file. **`qanat.yaml` is what you "
+            f"write and mean to\n"
+            f"  keep, and nothing rewrites it** -- which is why they moved: an authoring "
+            f"tool re-dumped this\n"
+            f"  file and took every comment in it along with the change.\n"
+            f"  Run `qanat migrate {f.parent}` to split them out. It prints before it "
+            f"writes."
+        )
+
+    # Then the part files beside it, each holding only the keys it owns.
+    for name, keys in PARTS.items():
+        part = f.parent / name
+        if not part.is_file():
+            continue
+        with part.open() as fh:
+            more = yaml.safe_load(fh) or {}
+        if not isinstance(more, dict):
+            raise ProjectError(f"{name}: expected a mapping of keys, got {type(more).__name__}")
+        unknown = sorted(k for k in more if part_for(k) != name)
+        if unknown:
+            raise ProjectError(
+                f"{name} holds {', '.join(unknown)}, which it does not own. "
+                f"It holds {', '.join(keys)}")
+        raw.update(more)
+
     try:
         return Project.model_validate(raw), f.parent
     except ValidationError as exc:

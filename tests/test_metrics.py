@@ -47,13 +47,13 @@ SHAPE = "SELECT * FROM raw__docs\n"
 @pytest.fixture
 def project(tmp_path: Path):
     """A project on disk with one written table, so a formula can be run."""
-    from conftest import STORE_KIND
+    from conftest import STORE_KIND, write_project_text
 
     store_line = "./data" if STORE_KIND == "parquet" else "./data/qanat.duckdb"
     (tmp_path / "seed").mkdir(parents=True, exist_ok=True)
     (tmp_path / "transforms").mkdir(parents=True, exist_ok=True)
     (tmp_path / "data").mkdir(parents=True, exist_ok=True)
-    (tmp_path / "qanat.yaml").write_text(YAML.format(store=store_line))
+    write_project_text(tmp_path, YAML.format(store=store_line))
     (tmp_path / "transforms" / "shape.sql").write_text(SHAPE)
     pd.DataFrame({
         "subject": ["AAPL", "MSFT"],
@@ -139,13 +139,13 @@ def test_an_empty_formula_is_refused(project):
 
 def test_a_table_declared_and_not_yet_written_is_a_warning_not_a_refusal(tmp_path):
     """Defining a metric before the first run is the normal order on a new project."""
-    from conftest import STORE_KIND
+    from conftest import STORE_KIND, write_project_text
 
     store_line = "./data" if STORE_KIND == "parquet" else "./data/qanat.duckdb"
     (tmp_path / "seed").mkdir(parents=True, exist_ok=True)
     (tmp_path / "transforms").mkdir(parents=True, exist_ok=True)
     (tmp_path / "data").mkdir(parents=True, exist_ok=True)
-    (tmp_path / "qanat.yaml").write_text(YAML.format(store=store_line))
+    write_project_text(tmp_path, YAML.format(store=store_line))
     (tmp_path / "transforms" / "shape.sql").write_text(SHAPE)
     (tmp_path / "seed" / "docs.csv").write_text("subject,value,as_of\n")
 
@@ -395,8 +395,13 @@ def test_the_yaml_a_definition_lands_in_is_still_the_project(project):
     pr, store, root = project
     metrics.define(store, pr, root, mid="pe", sql=GOOD, unit="ratio",
                    description="a multi\nline description")
-    text = (root / "qanat.yaml").read_text()
-    assert "metrics:" in text
+    # **In `metrics.yaml`, not in `qanat.yaml`.** `define_metric` used to load the
+    # architecture file, mutate it and re-dump the whole thing -- which cost the
+    # project's own header, the note explaining why a row needs a publication
+    # date, the note naming which tables the reading tools open, the section
+    # spacing and the hand-wrapped SQL. All of it survived only in the .bak.
+    assert "metrics:" in (root / "metrics.yaml").read_text()
+    assert "metrics:" not in (root / "qanat.yaml").read_text()
     fresh, _ = load(root)
     assert validate(fresh, root).ok
     assert fresh.metric("pe").description.strip() == "a multi line description" or \

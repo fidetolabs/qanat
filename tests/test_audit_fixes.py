@@ -13,6 +13,7 @@ from pathlib import Path
 
 import pandas as pd
 import pytest
+from conftest import write_project_text
 
 from qanat.models import TransformJobDefinition
 from qanat.store import Store
@@ -191,7 +192,7 @@ def _project(tmp_path: Path, steps: str, files: dict) -> tuple:
         "{'symbol': ['A'], 'weight': [1.0], 'as_of': ['2024-01-01']})\n")
     for name, body in files.items():
         (tmp_path / "transforms" / name).write_text(body)
-    (tmp_path / "qanat.yaml").write_text(
+    write_project_text(tmp_path, 
         "project: t\nstore: ./data/q.duckdb\n"
         "stages:\n  - {id: raw, kind: raw}\n  - {id: f, kind: features}\n"
         "  - {id: weights, kind: weights}\n"
