@@ -246,8 +246,9 @@ def test_the_word_step_is_gone_from_the_engine():
     """`step` named a position in a sequence and said nothing about a table going
     in and a table coming out, which is the only thing one does."""
     hits = _grep(r"\b(step|steps)\b", "src/qanat", "docs")
-    # The tool names carrying the word are T-08's to choose from a flow, so they
-    # are named here rather than silently passed over.
+    # These tool names still carry the word. Renaming them is a separate
+    # decision, to be made from a flow rather than from this test, so they are
+    # named here rather than silently passed over.
     hits = [h for h in hits if not any(
         name in h for name in ("list_pipeline", "define_transform", "read_script", "remove_transform"))]
     assert not hits, "\n".join(hits)
@@ -268,7 +269,7 @@ def test_the_word_source_survives_only_as_row_provenance():
         and not _documents_the_column(h)
         # the paragraph in each module that explains why the word went
         and "qanat/sources" not in h and "was `qanat/sources/`" not in h
-        # as above: `save_source` is renamed from a flow, in T-08
+        # as above: renaming `save_source` is a separate decision, from a flow
         and "define_ingestion" not in h
     ]
     assert not hits, "\n".join(hits)

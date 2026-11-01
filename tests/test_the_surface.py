@@ -1,6 +1,6 @@
 """The surface is not the data model.
 
-**T-01 took the model from two objects to eight.** These are the tests that the
+**The model went from two objects to eight.** These are the tests that the
 surface did not follow it there. A mirror of it would be about thirty-two tools
 -- four objects, two kinds, create-read-update-delete -- generated from the shape
 of the schema rather than from anything a caller needs.
