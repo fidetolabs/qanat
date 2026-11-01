@@ -12,8 +12,8 @@ callers apart has nowhere to put one correctly.
 rows come back the same shape either way, so a caller never has to branch on
 which form it asked for.
 
-    screen(store, project, filters, as_of="2025-12-31")
-    screen(store, project, filters, frm="2021-01-01", to="2025-12-31")
+    screen(store, project, clauses, as_of="2025-12-31")
+    screen(store, project, clauses, frm="2021-01-01", to="2025-12-31")
 
 **The two halves of a clause.** A metric is a formula and is shared, because
 `price / diluted EPS` is arithmetic with no judgement in it. A threshold is an
@@ -42,16 +42,20 @@ inputs -- enough to store a record it can read back later without asking
 again. Returning a bare pass/fail would make the caller re-query for the numbers
 it had just paid to compute.
 
-What a screen does with a filter is accept the name and report it back:
+**What a screen takes is clauses, not a filter.** A filter is the caller's named
+rule and nothing here stores one, so there is no name to send:
 
-    filters=[{"filter": "deep_value", "version": 2, "clauses": [
-        {"metric": "pe", "version": 3, "op": "lt", "value": 15},
-        {"metric": "net_margin", "op": "gte", "value": 0.2}]}]
+    clauses=[{"metric": "pe", "metric_version": 3, "op": "lt", "value": 15},
+             {"metric": "net_margin", "op": "gte", "value": 0.2}]
 
-`applied` comes back carrying that name and version, so whoever stored the
-filter can record which rule produced which list. An unnamed list of clauses
-still works, because trying a threshold before naming it is the normal way
-round.
+It used to accept `[{filter, version, clauses}]` as well, and **that wrapper did
+nothing at all**: every clause was flattened into one verdict before anything
+was judged, so two filters and one concatenated list gave identical answers, and
+the name and version were echoed into `applied` and read nowhere. A meaningless
+`version` therefore rode through and was recorded as if it meant something.
+
+`applied` still carries what the caller could *not* have known -- the definition
+version each clause actually read. Not what they sent.
 
 **A clause may pin the metric version it meant.** Without one it reads the
 current definition, which is right for a fresh screen and wrong for a rule
@@ -128,6 +132,23 @@ class Clause:
         """What identifies the column this clause reads: the metric at a version."""
         return (self.metric, self.version)
 
+    def as_applied(self, resolved: dict[str, int] | None = None) -> dict[str, Any]:
+        """What a caller records about this clause, as it ran.
+
+        **`metric_version_used` is the point of it**: the definition version the
+        clause actually read. `metric_version` is what the caller pinned and may
+        be absent; this one ran and never is. A caller keeping its own history
+        can only keep what it was handed, and that is the half it could not have
+        known -- unlike a filter name, which it sent.
+        """
+        resolved = resolved or {}
+        return {
+            "metric": self.metric, "op": self.op, "value": self.value,
+            **({} if self.version is None else {"metric_version": self.version}),
+            **({} if self.column not in resolved
+               else {"metric_version_used": resolved[self.column]}),
+        }
+
     @property
     def column(self) -> str:
         """The name this clause's values go under while the screen runs."""
@@ -141,63 +162,39 @@ class Clause:
         return f"{self.metric}{at} {self.op} {self.value:g}"
 
 
-@dataclass
-class Filter:
-    """A named rule holding several clauses. All of them have to pass."""
+def parse_clauses(raw: Any) -> list[Clause]:
+    """One flat list of conditions, which is all a screen can act on.
 
-    name: str | None = None
-    version: int | None = None
-    clauses: list[Clause] = field(default_factory=list)
+    It used to also accept `[{filter, version, clauses}]` -- a named filter
+    wrapping its clauses. **The wrapper did nothing.** Every clause from every
+    filter was flattened into one verdict before anything was judged, so two
+    filters and one concatenated list gave identical answers; and the name and
+    version were echoed into `applied` and read nowhere, so a meaningless
+    `version` rode through and was recorded as if it meant something.
 
-    def as_applied(self, resolved: dict[str, int] | None = None) -> dict[str, Any]:
-        """What a caller records about this filter, as it ran.
-
-        Name and version may both be absent. A clause somebody typed once and
-        never saved has nothing to point at, and recording it as data rather
-        than as a pointer is the only way the answer stays readable afterwards.
-
-        `resolved` carries the definition version each clause actually read.
-        `metric_version` is what the caller pinned and may be absent;
-        `metric_version_used` is what ran and never is.
-        """
-        resolved = resolved or {}
-        return {
-            "filter": self.name,
-            "version": self.version,
-            "clauses": [
-                {"metric": c.metric, "op": c.op, "value": c.value,
-                 **({} if c.version is None else {"metric_version": c.version}),
-                 **({} if c.column not in resolved
-                    else {"metric_version_used": resolved[c.column]})}
-                for c in self.clauses
-            ],
-        }
-
-
-def parse_filters(raw: Any) -> list[Filter]:
-    """Accept the shapes a caller actually sends.
-
-    A bare list of clauses is one unnamed filter, which is the common case and
-    should not need wrapping.
+    A filter is the caller's named rule and **nothing here stores one**. What
+    crosses is its clauses. The nested shape is refused rather than flattened,
+    because flattening it quietly would keep the belief that this end knows
+    about filters.
     """
     if raw is None:
         return []
     if isinstance(raw, dict):
         raw = [raw]
     if not isinstance(raw, (list, tuple)):
-        raise ScreenError("filters must be a list")
-    # A bare list of clauses, rather than a list of filters.
-    if raw and all(isinstance(x, dict) and "metric" in x for x in raw):
-        return [Filter(clauses=[_clause(x) for x in raw])]
+        raise ScreenError("clauses is a list of {metric, op, value}")
     out = []
-    for f in raw:
-        if not isinstance(f, dict):
-            raise ScreenError(f"a filter must be an object, got {type(f).__name__}")
-        out.append(Filter(
-            name=f.get("filter") or f.get("name"),
-            version=f.get("version"),
-            clauses=[_clause(c) for c in (f.get("clauses") or [])],
-        ))
+    for c in raw:
+        if not isinstance(c, dict):
+            raise ScreenError(f"a clause must be an object, got {type(c).__name__}")
+        if "clauses" in c or "filter" in c:
+            raise ScreenError(
+                "a clause is {metric, op, value}, not a named filter wrapping "
+                "clauses. Pass the clauses themselves: nothing here stores a "
+                "filter, so a name has nothing to point at -- and the grouping "
+                "was never honoured either, because every clause has to pass"
+            )
+        out.append(_clause(c))
     return out
 
 
@@ -586,7 +583,7 @@ COLUMNS = ["as_of", "subject", "passed", "failed_on", "evaluated"]
 def screen(
     store: Store,
     project: Project,
-    filters: Sequence[Filter],
+    clauses: Sequence[Clause],
     as_of: str | None = None,
     frm: str | None = None,
     to: str | None = None,
@@ -599,7 +596,7 @@ def screen(
 
     | `rows`      | one row per subject per date, the verdict, and the values |
     | `counts`    | per date: how many could be evaluated, how many could not |
-    | `applied`   | the filters as they ran, clauses and all |
+    | `applied`   | the clauses as they ran, with the version each one read |
     | `inputs`    | the definition versions it read, and the corpus it read them from |
 
     No average across dates, no comparison against the companies that failed,
@@ -633,9 +630,8 @@ def screen(
     # One entry per metric *at a version*, because two clauses may read two
     # versions of one formula -- which is the whole reason a clause may pin one.
     wanted: dict[tuple[str, int | None], str] = {}
-    for f in filters:
-        for c in f.clauses:
-            wanted[c.key] = c.column
+    for c in clauses:
+        wanted[c.key] = c.column
 
     missing: list[str] = []
     for mid, version in wanted:
@@ -716,12 +712,14 @@ def screen(
 
         passed = pd.Series(True, index=table.index)
         failed_on: list[list[str]] = [[] for _ in range(len(table))]
-        for f in filters:
-            for c in f.clauses:
-                ok = c.test(table[c.column])
-                for i in table.index[~ok.fillna(False)]:
-                    failed_on[i].append(str(c))
-                passed &= ok.fillna(False)
+        # **Every clause has to pass.** That is why there was nothing for the
+        # old filter grouping to express: two filters and one concatenated list
+        # reach the same verdict, because the AND is over all of them either way.
+        for c in clauses:
+            ok = c.test(table[c.column])
+            for i in table.index[~ok.fillna(False)]:
+                failed_on[i].append(str(c))
+            passed &= ok.fillna(False)
 
         for i, subject in enumerate(table["subject"]):
             rows.append({
@@ -760,7 +758,7 @@ def screen(
     out: dict[str, Any] = {
         "rows": rows,
         "counts": counts,
-        "applied": [f.as_applied(resolved) for f in filters],
+        "applied": [c.as_applied(resolved) for c in clauses],
         "inputs": _inputs(store, project, resolved, stops, as_of, frm, to, every,
                           picked),
     }
@@ -833,13 +831,12 @@ __all__ = [
     "COLUMNS",
     "OPERATORS",
     "Clause",
-    "Filter",
     "ScreenError",
     "Universe",
     "coverage",
     "forward_returns",
     "metric_values",
-    "parse_filters",
+    "parse_clauses",
     "raw_metric_frame",
     "read_universe",
     "screen",

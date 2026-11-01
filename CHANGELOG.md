@@ -232,6 +232,29 @@ retired for.
 A scan now holds both: no tool declares an argument its handler does not read,
 and none reads one it did not declare.
 
+#### `screen` takes clauses, because the filter around them did nothing
+
+`screen(filters=...)` accepted either a bare list of clauses or a list of named
+filters, `[{filter, version, clauses}]`. **Measured, the wrapper did nothing at
+all.** Two named filters and one concatenated list return the same verdicts, the
+same values and the same `inputs.id` — because every clause from every filter is
+AND-ed into one `passed` series before anything is judged, and `failed_on`
+carries no filter attribution. The name and the version were written from the
+request, echoed into `applied`, and read nowhere: a `version: 7` meaning nothing
+rode through and was recorded as if it meant something.
+
+So the argument is `clauses`, a flat list, and the nested shape is **refused**
+rather than flattened quietly — flattening it would keep the belief that this
+end knows about filters. It does not: *nothing on this surface stores a filter*,
+and a filter is the caller's named rule. `words.md` already said a clause has no
+name and no version of its own; the code just did not agree.
+
+`applied` still reports `metric_version_used`, the definition version each clause
+actually read. **Echo what the caller could not have known; do not echo what they
+told you.** A filter name is the second kind — they sent it, so they have it.
+
+`Filter` is gone and `parse_filters` is `parse_clauses`. A break at `research`.
+
 #### Migrating
 
 ```sh

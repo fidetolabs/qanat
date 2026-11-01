@@ -90,10 +90,9 @@ def test_a_metric_defined_over_the_api_is_listed_and_screenable(project):
     assert [m["id"] for m in listed] == ["pe"]
     assert listed[0]["current"] is True
 
-    from qanat.screen import Clause, Filter, screen
+    from qanat.screen import Clause, screen
 
-    answer = screen(store, pr, [Filter(clauses=[Clause("pe", "gt", 15)])],
-                    as_of="2024-06-01")
+    answer = screen(store, pr, [Clause("pe", "gt", 15)], as_of="2024-06-01")
     passed = {r["subject"]: r["passed"] for r in answer["rows"]}
     assert passed == {"AAPL": False, "MSFT": True}
 
@@ -445,58 +444,52 @@ def two_metrics(store, pr, root):
                    sql="SELECT subject, value / 100 AS value FROM normalized__facts")
 
 
-def test_screening_by_filter_name_matches_the_same_clauses_inline(project):
-    """`applied.filter` was null, waiting for an object that could not be made.
-
-    It is made by the caller and passed in, because it is the caller's. What was
-    missing here was accepting the name and reporting it back.
+def test_a_screen_is_its_clauses_and_nothing_else(project):
+    """**`applied.filter` was null, and then it was whatever the caller sent.**
+    Neither was information: the caller holds its own filter, so echoing a name
+    back tells it something it already knew. What `applied` reports now is the
+    part it could not have known -- the definition version each clause read.
     """
     pr, store, root = project
     two_metrics(store, pr, root)
 
-    from qanat.screen import parse_filters, screen
+    from qanat.screen import parse_clauses, screen
 
-    clauses = [{"metric": "pe", "op": "gt", "value": 15}]
-    inline = screen(store, pr, parse_filters(clauses), as_of="2024-06-01")
-    named = screen(store, pr, parse_filters(
-        [{"filter": "deep_value", "version": 2, "clauses": clauses}]), as_of="2024-06-01")
+    out = screen(store, pr, parse_clauses(
+        [{"metric": "pe", "op": "gt", "value": 15}]), as_of="2024-06-01")
 
-    assert named["rows"] == inline["rows"], "the same rule returns the same rows"
-    assert named["counts"] == inline["counts"]
-    assert named["applied"][0]["filter"] == "deep_value"
-    assert named["applied"][0]["version"] == 2
-    assert inline["applied"][0]["filter"] is None, "an unnamed list has nothing to point at"
+    assert out["applied"] == [{"metric": "pe", "op": "gt", "value": 15.0,
+                               "metric_version_used": 1}]
+    assert "filter" not in out
 
 
-def test_a_named_filter_holds_several_metrics_each_with_its_own_threshold(project):
+def test_several_metrics_each_with_its_own_threshold(project):
+    """Two clauses over two metrics, and both have to pass."""
     pr, store, root = project
     two_metrics(store, pr, root)
 
-    from qanat.screen import parse_filters, screen
+    from qanat.screen import parse_clauses, screen
 
-    out = screen(store, pr, parse_filters([{
-        "filter": "mine",
-        "clauses": [{"metric": "pe", "op": "gte", "value": 10},
-                    {"metric": "margin", "op": "gt", "value": 0.15}],
-    }]), as_of="2024-06-01")
+    out = screen(store, pr, parse_clauses(
+        [{"metric": "pe", "op": "gte", "value": 10},
+         {"metric": "margin", "op": "gt", "value": 0.15}]), as_of="2024-06-01")
 
     passed = {r["subject"]: r["passed"] for r in out["rows"]}
     assert passed == {"AAPL": False, "MSFT": True}
-    assert len(out["applied"][0]["clauses"]) == 2
-    assert {c["metric"] for c in out["applied"][0]["clauses"]} == {"pe", "margin"}
+    assert {c["metric"] for c in out["applied"]} == {"pe", "margin"}
 
 
-def test_a_metric_bumped_to_a_new_version_does_not_change_a_pinned_filter(project):
+def test_a_metric_bumped_to_a_new_version_does_not_change_a_pinned_clause(project):
     """The reason a clause may pin a version at all."""
     pr, store, root = project
     metrics.define(store, pr, root, mid="pe", sql=GOOD)
 
-    from qanat.screen import parse_filters, screen
+    from qanat.screen import parse_clauses, screen
 
-    pinned = parse_filters([{"filter": "mine", "clauses": [
-        {"metric": "pe", "metric_version": 1, "op": "gt", "value": 15}]}])
-    floating = parse_filters([{"filter": "mine", "clauses": [
-        {"metric": "pe", "op": "gt", "value": 15}]}])
+    pinned = parse_clauses([
+        {"metric": "pe", "metric_version": 1, "op": "gt", "value": 15}])
+    floating = parse_clauses([
+        {"metric": "pe", "op": "gt", "value": 15}])
 
     before = screen(store, pr, pinned, as_of="2024-06-01")
     # Version 2 halves every value, so MSFT's 20 becomes 10 and stops passing.
@@ -505,7 +498,7 @@ def test_a_metric_bumped_to_a_new_version_does_not_change_a_pinned_filter(projec
 
     after = screen(store, pr, pinned, as_of="2024-06-01")
     assert after["rows"] == before["rows"], "a pinned clause still means what it meant"
-    assert after["applied"][0]["clauses"][0]["metric_version"] == 1
+    assert after["applied"][0]["metric_version"] == 1
 
     moved = screen(store, pr, floating, as_of="2024-06-01")
     assert moved["rows"] != before["rows"], "an unpinned clause reads the current one"
@@ -520,12 +513,12 @@ def test_one_filter_may_read_two_versions_of_one_metric(project):
     metrics.define(store, pr, root, mid="pe", version=2,
                    sql="SELECT subject, value / 2 AS value FROM normalized__facts")
 
-    from qanat.screen import parse_filters, screen
+    from qanat.screen import parse_clauses, screen
 
-    out = screen(store, pr, parse_filters([{"filter": "both", "clauses": [
+    out = screen(store, pr, parse_clauses([
         {"metric": "pe", "metric_version": 1, "op": "gt", "value": 15},
         {"metric": "pe", "metric_version": 2, "op": "lt", "value": 15},
-    ]}]), as_of="2024-06-01")
+    ]), as_of="2024-06-01")
     passed = {r["subject"]: r["passed"] for r in out["rows"]}
     assert passed == {"AAPL": False, "MSFT": True}
 
@@ -534,10 +527,10 @@ def test_pinning_a_version_that_does_not_exist_names_the_ones_that_do(project):
     pr, store, root = project
     metrics.define(store, pr, root, mid="pe", sql=GOOD)
 
-    from qanat.screen import ScreenError, parse_filters, screen
+    from qanat.screen import ScreenError, parse_clauses, screen
 
     with pytest.raises(ScreenError) as exc:
-        screen(store, pr, parse_filters([{"metric": "pe", "metric_version": 9,
+        screen(store, pr, parse_clauses([{"metric": "pe", "metric_version": 9,
                                           "op": "gt", "value": 1}]),
                as_of="2024-06-01")
     assert "no version 9" in str(exc.value)
@@ -548,10 +541,10 @@ def test_an_unknown_metric_still_names_what_the_project_has(project):
     pr, store, root = project
     metrics.define(store, pr, root, mid="pe", sql=GOOD)
 
-    from qanat.screen import ScreenError, parse_filters, screen
+    from qanat.screen import ScreenError, parse_clauses, screen
 
     with pytest.raises(ScreenError, match="This project has: pe"):
-        screen(store, pr, parse_filters([{"metric": "nope", "op": "gt", "value": 1}]),
+        screen(store, pr, parse_clauses([{"metric": "nope", "op": "gt", "value": 1}]),
                as_of="2024-06-01")
 
 
@@ -560,17 +553,17 @@ def test_a_clause_names_the_version_in_what_it_reports_back(project):
     pr, store, root = project
     metrics.define(store, pr, root, mid="pe", sql=GOOD)
 
-    from qanat.screen import parse_filters
+    from qanat.screen import parse_clauses
 
-    pinned = parse_filters([{"metric": "pe", "metric_version": 1,
+    pinned = parse_clauses([{"metric": "pe", "metric_version": 1,
                              "op": "gt", "value": 1}])[0].as_applied()
-    plain = parse_filters([{"metric": "pe", "op": "gt", "value": 1}])[0].as_applied()
-    assert pinned["clauses"][0]["metric_version"] == 1
-    assert "metric_version" not in plain["clauses"][0], "no pin, nothing to report"
+    plain = parse_clauses([{"metric": "pe", "op": "gt", "value": 1}])[0].as_applied()
+    assert pinned["metric_version"] == 1
+    assert "metric_version" not in plain, "no pin, nothing to report"
 
 
 # ------------------------------------------------- calling it wrong says so
-def test_screen_with_no_filter_argument_errors_the_way_read_facts_does(project):
+def test_screen_with_no_clauses_argument_errors_the_way_read_facts_does(project):
     """It returned `subjects: 0, passed: 0, applied: []`, which reads as
     "nobody passed" rather than "you called it wrong"."""
     from qanat.mcp import TOOLS, Session, ToolError
@@ -582,7 +575,7 @@ def test_screen_with_no_filter_argument_errors_the_way_read_facts_does(project):
         handler = next(t for t in TOOLS if t["name"] == "screen")["handler"]
         with pytest.raises(ToolError) as exc:
             handler(session, {"as_of": "2024-06-01"})
-        assert "'filters' is required" in str(exc.value)
+        assert "'clauses' is required" in str(exc.value)
         assert "tools/list" in str(exc.value), "the same shape read_facts uses"
     finally:
         session.close()
@@ -601,7 +594,7 @@ def test_there_is_one_spelling_because_there_is_one_door():
     from qanat.mcp import TOOLS
 
     tool = next(t for t in TOOLS if t["name"] == "screen")
-    assert tool["inputSchema"]["required"] == ["filters"]
+    assert tool["inputSchema"]["required"] == ["clauses"]
 
     verbs = set()
     for action in build_parser()._actions:

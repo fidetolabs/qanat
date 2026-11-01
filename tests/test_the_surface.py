@@ -207,3 +207,41 @@ def test_a_universe_is_a_csv_and_nothing_in_the_project_names_one():
     from qanat.connectors.sec import universe_path
 
     assert callable(universe_path)
+
+
+def test_a_screen_takes_clauses_and_never_a_filter():
+    """**Nothing on this surface stores a filter**, so there is no name to send.
+
+    `screen` accepted `[{filter, version, clauses}]` as well, and the wrapper did
+    nothing: every clause was AND-ed into one verdict before anything was judged,
+    so grouping could not change an answer, and the name was echoed back unread.
+    A meaningless `version` therefore rode through and was recorded as if it
+    meant something.
+    """
+    import pytest as _pytest
+
+    from qanat import screen as screen_mod
+
+    entry = next(t for t in mcp.TOOLS if t["name"] == "screen")
+    assert entry["inputSchema"]["required"] == ["clauses"]
+    assert "filters" not in entry["inputSchema"]["properties"]
+    assert not hasattr(screen_mod, "Filter"), "the wrapper is gone, not deprecated"
+
+    with _pytest.raises(screen_mod.ScreenError, match="not a named filter"):
+        screen_mod.parse_clauses(
+            [{"filter": "mine", "version": 1,
+              "clauses": [{"metric": "pe", "op": "lt", "value": 10}]}])
+
+
+def test_applied_echoes_what_the_caller_could_not_have_known():
+    """And nothing else. The version a clause read is the server's answer; the
+    clause itself is the caller's own words handed back so a kept record reads
+    without a second call."""
+    from qanat.screen import Clause
+
+    bare = Clause(metric="pe", op="lt", value=10).as_applied()
+    assert bare == {"metric": "pe", "op": "lt", "value": 10.0}
+    assert "filter" not in bare and "version" not in bare
+
+    ran = Clause(metric="pe", op="lt", value=10).as_applied({"pe": 3})
+    assert ran["metric_version_used"] == 3

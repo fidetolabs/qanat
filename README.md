@@ -252,22 +252,26 @@ second door onto the same question is a second place the behaviour can differ.
 
 ```json
 {"name": "screen", "arguments": {
-  "filters": [{"metric": "pe", "op": "lt", "value": 30}],
+  "clauses": [{"metric": "pe", "op": "lt", "value": 30}],
   "universe": ["AAPL", "MSFT", "NVDA"],
   "as_of": "2025-12-31"}}
 
 {"name": "screen", "arguments": {
-  "filters": [{"filter": "deep_value", "version": 2, "clauses": [
-    {"metric": "pe", "metric_version": 3, "op": "lt", "value": 30}]}],
+  "clauses": [{"metric": "pe", "metric_version": 3, "op": "lt", "value": 30},
+              {"metric": "net_margin", "op": "gte", "value": 0.2}],
   "from": "2021-12-31", "to": "2025-12-31", "every": "1y"}}
 ```
 
-**A filter is a named object and the name is yours.** Pass it and it comes back
-in `applied`, so whatever is keeping your filters can record which rule produced
-which list. It is not stored here: a filter is your research criteria rather
-than a financial dataset, and a server with no identity has nowhere to keep one
-person's preference. A clause may pin `metric_version`, and then somebody
-bumping a formula cannot change what your rule computes.
+**A filter is your named rule, and what crosses the wire is its clauses.** A
+filter is not stored here — it is your research criteria rather than a financial
+dataset, and a server with no identity has nowhere to keep one person's
+preference. So there is no name to send: you hold the filter, which means you
+already know which rule you just ran.
+
+What comes back in `applied` is the half you could *not* have known: the
+definition version each clause actually read. A clause may also pin
+`metric_version`, and then somebody bumping a formula cannot change what your
+rule computes.
 
 **Because you keep the record, a screen hands you enough to keep one.** Each row
 carries `values` — the numbers the verdict was reached on, for the companies that

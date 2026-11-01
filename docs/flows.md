@@ -59,7 +59,7 @@ no way to do the thing at all, where door ② would still have a screen around i
 | define an indicator | `define_metric` | authoring | a `transform_job_definition` writing the metrics table, when the formula is a series |
 | see which indicators exist, and at which versions | `list_metrics` | data | reads the definitions |
 | drop one | `remove_metric` | authoring | removes the definition and the transform behind it |
-| ask who passed a filter, on a date or over a window | `screen` | research | reads materialised metric values, or runs the formula |
+| ask who passed, on a date or over a window | `screen` | research | takes the clauses of your filter, never the filter; reads materialised metric values, or runs the formula |
 
 ## Trusting the answer
 

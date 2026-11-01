@@ -159,7 +159,7 @@ def test_an_error_says_what_to_do_next(tmp_path: Path):
     session = _session(tmp_path)
     for name, args in (("describe_table", {"ref": "nope.nope"}),
                        ("read_script", {"id": "nope"}),
-                       ("screen", {"filters": [{"metric": "nope", "op": "<", "value": 1}]})):
+                       ("screen", {"clauses": [{"metric": "nope", "op": "<", "value": 1}]})):
         try:
             _call(session, name, args)
         except mcp.ToolError as exc:

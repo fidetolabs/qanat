@@ -16,7 +16,7 @@ comparison a clause makes.
 import pytest
 from lab import data, harness
 
-from qanat.screen import forward_returns, parse_filters, screen
+from qanat.screen import forward_returns, parse_clauses, screen
 
 G = 0.001                       # +0.1% a day, every day, for everyone
 CAL = data.calendar(200)
@@ -77,10 +77,10 @@ def test_a_threshold_is_applied_exactly_where_it_is_set(tmp_path):
     project, _r, store = _run(tmp_path, "thresh", data.drift(CAL, {"A": G, "B": G}))
     try:
         values = {r["subject"]: r for r in screen(
-            store, project, parse_filters([{"metric": "px", "op": "<", "value": 1e9}]),
+            store, project, parse_clauses([{"metric": "px", "op": "<", "value": 1e9}]),
             as_of="2024-03-01")["rows"]}
         assert all(r["passed"] for r in values.values())
-        none_pass = screen(store, project, parse_filters(
+        none_pass = screen(store, project, parse_clauses(
             [{"metric": "px", "op": "<", "value": 0}]), as_of="2024-03-01")
         assert not any(r["passed"] for r in none_pass["rows"])
     finally:
@@ -92,7 +92,7 @@ def test_nothing_is_averaged_across_dates(tmp_path):
     """A number that cannot be read off one date's list is not in the answer."""
     project, _r, store = _run(tmp_path, "noavg", data.drift(CAL, {"A": G, "B": G}))
     try:
-        out = screen(store, project, parse_filters(
+        out = screen(store, project, parse_clauses(
             [{"metric": "px", "op": ">", "value": 0}]),
             frm="2024-02-01", to="2024-06-01", every="30d")
         assert set(out) <= {"rows", "counts", "applied", "inputs", "notes"}
@@ -109,7 +109,7 @@ def test_nothing_is_averaged_across_dates(tmp_path):
             assert isinstance(row["values"]["px"], (float, type(None)))
         # And the same screen twice is still the same answer, `execution`
         # included -- which is only true because nothing in it is a wall clock.
-        again = screen(store, project, parse_filters(
+        again = screen(store, project, parse_clauses(
             [{"metric": "px", "op": ">", "value": 0}]),
             frm="2024-02-01", to="2024-06-01", every="30d")
         assert again == out

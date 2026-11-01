@@ -48,12 +48,12 @@ Seven words belong to the screen:
 | Word | What it is |
 | --- | --- |
 | **screen** | The verb, and the only one. Ask who passed a filter — on one date, or on every date in a window. A window of one is a single date, so there is one verb and not two. **There is no noun `screen`**: what you save is a *filter*, and what happened is a *run*. |
-| **filter** | A named rule, holding one or more clauses. Versioned. "My usual set" is a filter. |
-| **clause** | One condition inside a filter: a metric against a threshold. It has no name and no version of its own, and is never a table. |
+| **filter** | A named rule, holding one or more clauses. Versioned. "My usual set" is a filter. **It lives entirely on the caller's side** — a screen takes its clauses, never the filter itself, so there is no name or version to send. |
+| **clause** | One condition inside a filter: a metric against a threshold. It has no name and no version of its own, and is never a table. **A screen is a flat list of them and every one has to pass** — which is why grouping them into named filters could never change a verdict, and why that shape is now refused rather than silently flattened. |
 | **metric** | A formula with a name and a version. Arithmetic, no judgement: `pe = price / diluted EPS`. Shared, because it is the same number for everybody. **A formula carrying a `date` of its own is a series, and `define_metric` writes a transform definition that materialises it into the metrics table.** One that takes the date as a parameter is a fact rescaled, and is computed on the call. |
 | **threshold** | The number a clause compares a metric against. A judgement, so it belongs to whoever set it and never to the project. |
 | **as-of** | The date being asked about. Nothing published later is readable. |
-| **run** | One application of filters, with what ran recorded as data rather than as a pointer. |
+| **run** | One application of a set of clauses, with what ran recorded as data rather than as a pointer. |
 
 The split that matters is **formula against threshold**. A formula is not an
 opinion, so it is shared and computed once. A threshold is an opinion, so it is

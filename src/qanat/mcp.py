@@ -481,19 +481,20 @@ def _run(s: Session, args: dict) -> Any:
       "narrowing it: a name you asked about that has no value for one of your metrics "
       "comes back as a row that could not be evaluated, instead of being quietly absent, "
       "and a name this project does not hold at all is reported rather than dropped. "
-      "`filters` is either a bare list of clauses -- `[{metric, op, value}]`, which is "
-      "the normal way to try a threshold -- or a list of named filters, "
-      "`[{filter, version, clauses}]`. Pass the name and it comes back in `applied`, so "
-      "whoever keeps the filter can record which rule produced which list. Filters are "
-      "not stored here: a filter is your research criteria, and this server cannot tell "
-      "two callers apart. A clause may also pin `metric_version`, and then bumping a "
+      "`clauses` is a flat list -- `[{metric, op, value, metric_version?}]`, and every "
+      "one of them has to pass. **A filter is your named rule and nothing here stores "
+      "one**, so there is no name to send: what crosses is its clauses, and `applied` "
+      "comes back with the definition version each one actually read, which is the part "
+      "you could not have known. It used to accept `[{filter, version, clauses}]` too, "
+      "and that wrapper did nothing at all -- the grouping was discarded before anything "
+      "was judged and the name came back unread -- so the nested shape is refused rather "
+      "than flattened quietly. A clause may pin `metric_version`, and then bumping a "
       "metric cannot change what your rule computes.",
       {"type": "object",
        "properties": {
-           "filters": {"type": "array",
-                       "description": "clauses, each {metric, op, value, metric_version?}; "
-                                      "or a list of named filters, each "
-                                      "{filter, version, clauses}",
+           "clauses": {"type": "array",
+                       "description": "each {metric, op, value, metric_version?}. All of "
+                                      "them have to pass",
                        "items": {"type": "object"}},
            "as_of": {"type": "string", "description": "one date, YYYY-MM-DD"},
            "from": {"type": "string", "description": "start of a window"},
@@ -507,19 +508,19 @@ def _run(s: Session, args: dict) -> Any:
                                        "today's winners being applied to the past",
                         "items": {}},
        },
-       "required": ["filters"]},
+       "required": ["clauses"]},
       "research")
 def _screen(s: Session, args: dict) -> Any:
-    from qanat.screen import ScreenError, parse_filters, screen
+    from qanat.screen import ScreenError, parse_clauses, screen
 
     # The schema said `required` and the handler did not check, so a call with
     # the argument missing came back `subjects: 0, passed: 0, applied: []` --
     # which reads as "nobody passed" rather than "you called it wrong". Those
     # are not the same answer and the second one is actionable.
-    _need(args, "filters")
+    _need(args, "clauses")
     try:
         return screen(
-            s.store, s.project, parse_filters(args.get("filters")),
+            s.store, s.project, parse_clauses(args.get("clauses")),
             as_of=args.get("as_of"), frm=args.get("from"), to=args.get("to"),
             every=args.get("every") or "1y",
             universe=args.get("universe"),
