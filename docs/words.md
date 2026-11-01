@@ -50,7 +50,7 @@ Seven words belong to the screen:
 | **screen** | The verb, and the only one. Ask who passed a filter — on one date, or on every date in a window. A window of one is a single date, so there is one verb and not two. **There is no noun `screen`**: what you save is a *filter*, and what happened is a *run*. |
 | **filter** | A named rule, holding one or more clauses. Versioned. "My usual set" is a filter. |
 | **clause** | One condition inside a filter: a metric against a threshold. It has no name and no version of its own, and is never a table. |
-| **metric** | A formula with a name and a version. Arithmetic, no judgement: `pe = price / diluted EPS`. Shared, because it is the same number for everybody. |
+| **metric** | A formula with a name and a version. Arithmetic, no judgement: `pe = price / diluted EPS`. Shared, because it is the same number for everybody. **A formula carrying a `date` of its own is a series, and `define_metric` writes a transform definition that materialises it into the metrics table.** One that takes the date as a parameter is a fact rescaled, and is computed on the call. |
 | **threshold** | The number a clause compares a metric against. A judgement, so it belongs to whoever set it and never to the project. |
 | **as-of** | The date being asked about. Nothing published later is readable. |
 | **run** | One application of filters, with what ran recorded as data rather than as a pointer. |
@@ -125,7 +125,8 @@ refused at load with `qanat migrate` named.
 | `time_columns:` | project | which column on a table says when a row became public. The one line the point-in-time reads depend on |
 | `metrics:` | project | the formulas this project defines, each with a version |
 | `returns:` | project | which table says what a company did next, so a screen can report it |
-| `corpus:` | project | which tables hold documents, their text and their facts, for the reading tools |
+| `corpus:` | project | which tables hold documents, their text, their facts and their computed metric values |
+| `key:` | transform definition | the columns identifying one output row. **With one it appends and never replaces** — what a materialised metric needs, since a corrected price has to leave the value somebody was shown readable |
 | `store:` | project | where the tables live: a directory for parquet, or a `.duckdb` path for one file |
 
 **Both definitions say `to:`**, because writing a table is the same act whichever

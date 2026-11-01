@@ -65,6 +65,7 @@ def definition_spec(definition: Definition, root: Path) -> dict:
         "script_digest": file_digest(root / definition.script),
         "from": sorted(definition.reads),
         "to": sorted(definition.writes),
+        "key": sorted(definition.key),
         "universe": definition.universe,
         "options": definition.options,
         "when": sorted(definition.when),

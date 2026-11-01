@@ -133,6 +133,8 @@ def _dump_transform(d: TransformJobDefinition) -> dict[str, Any]:
         "to": list(d.writes),
         "script": d.script,
     }
+    if d.key:
+        row["key"] = list(d.key)
     if d.when:
         row["when"] = list(d.when)
     if d.universe:

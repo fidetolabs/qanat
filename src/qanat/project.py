@@ -449,9 +449,13 @@ def validate(p: Project, root: Path) -> Report:
     #: reader like any other -- `list_sections` and `read_facts` do nothing else.
     #: A project of filings was being told its documents, spans and facts were
     #: read by nothing, which is every table it has.
+    #: And `corpus.metrics` is read by a screen, which resolves a clause against
+    #: the materialised value rather than recomputing the formula -- so the one
+    #: table a metric writes was being reported as read by nothing.
     if p.corpus:
         read_by_metric.update(
-            ref for ref in (p.corpus.documents, p.corpus.spans, p.corpus.facts) if ref)
+            ref for ref in (p.corpus.documents, p.corpus.spans, p.corpus.facts,
+                            p.corpus.metrics) if ref)
 
     for ref, who in writers.items():
         read_by = [st.id for st in p.transform_job_definitions if ref in st.reads]

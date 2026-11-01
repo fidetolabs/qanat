@@ -220,18 +220,22 @@ def _clause(c: dict) -> Clause:
 _AS_OF = re.compile(r":as_of\b")
 
 
-def metric_values(store: Store, metric: Metric, as_of: str) -> pd.DataFrame:
-    """One metric for every subject, as it stood on one date.
+def raw_metric_frame(store: Store, metric: Metric, as_of: str) -> pd.DataFrame:
+    """The formula's own output, whatever shape it is.
 
-    The formula is the user's SQL. `:as_of` in it is replaced with the date, so
-    a definition can filter its own history rather than relying on the caller
-    to have opened a screen first.
+    Separate from `metric_values` because two callers want two different things
+    from the same statement: a screen wants `subject` and `value`, and
+    `define_metric` wants to know whether the formula carries a `date` of its
+    own -- which decides whether it can be materialised at all.
     """
     sql = _AS_OF.sub(f"DATE '{as_of}'", metric.sql)
     try:
-        df = store.query(sql)
+        return store.query(sql)
     except Exception as exc:
         raise ScreenError(f"metric '{metric.id}' failed: {exc}") from exc
+
+
+def _shaped(metric: Metric, df: pd.DataFrame) -> pd.DataFrame:
     cols = {c.lower(): c for c in df.columns}
     if "subject" not in cols or "value" not in cols:
         raise ScreenError(
@@ -242,6 +246,52 @@ def metric_values(store: Store, metric: Metric, as_of: str) -> pd.DataFrame:
     out.columns = ["subject", "value"]
     out["value"] = pd.to_numeric(out["value"], errors="coerce")
     return out
+
+
+def stored_metric_values(store: Store, project, metric: Metric,
+                         as_of: str) -> pd.DataFrame | None:
+    """The materialised values, if this metric has any. None if it has none.
+
+    **The newest date at or before `as_of`, per subject.** A metric is a series,
+    so "the value on that date" means the most recent one the series had reached
+    by then -- not an exact match, which would answer nothing on a day the
+    subject had no new filing.
+
+    Which *row* for that date is the store's answer, not this one's: two rows for
+    one key are a correction, and the `now` view returns the newest write.
+    """
+    from qanat.metrics import metrics_table
+
+    ref = metrics_table(project) if project is not None else ""
+    if not ref or not store.exists(ref):
+        return None
+    try:
+        df = store.query(
+            f"SELECT subject, value FROM ("
+            f"  SELECT subject, value, row_number() OVER ("
+            f"    PARTITION BY subject ORDER BY date DESC) AS rn"
+            f"  FROM {store.readable(ref)}"
+            f"  WHERE metric = ? AND version = ? AND CAST(date AS DATE) <= CAST(? AS DATE)"
+            f") WHERE rn = 1",
+            [metric.id, int(metric.version), as_of])
+    except Exception:  # noqa: BLE001 -- a table that cannot answer is one that has not run
+        return None
+    return None if df.empty else _shaped(metric, df)
+
+
+def metric_values(store: Store, metric: Metric, as_of: str, project=None) -> pd.DataFrame:
+    """One metric for every subject, as it stood on one date.
+
+    **Read from the table when there is one.** A materialised value is what
+    somebody was shown, and recomputing instead would answer the question a
+    second time rather than answering what the first answer was. With no table,
+    or none written yet, the formula runs -- which is also the only path a
+    formula taking the date as a parameter has.
+    """
+    stored = stored_metric_values(store, project, metric, as_of)
+    if stored is not None:
+        return stored
+    return _shaped(metric, raw_metric_frame(store, metric, as_of))
 
 
 # ------------------------------------------------------------------ the universe
@@ -644,7 +694,7 @@ def screen(
     counts: list[dict] = []
     for stop in stops:
         values = {
-            col: metric_values(store, project.metric(mid, version), stop)
+            col: metric_values(store, project.metric(mid, version), stop, project)
             for (mid, version), col in wanted.items()
         }
         # Without a universe the subjects are whoever the metrics returned.
@@ -784,6 +834,8 @@ __all__ = [
     "forward_returns",
     "metric_values",
     "parse_filters",
+    "raw_metric_frame",
     "read_universe",
     "screen",
+    "stored_metric_values",
 ]

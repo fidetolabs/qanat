@@ -1204,6 +1204,70 @@ class Store:
                 if self.as_of is not None:
                     self._shadow(ref)
 
+    def sql_append(self, ref: str, select_sql: str, key: Sequence[str]) -> int:
+        """Land a SELECT as rows **added** to a table, never over it.
+
+        What a materialised metric needs. A corrected price has to leave the
+        value somebody was already shown readable, so the pass that notices the
+        correction adds a row rather than rewriting the table -- and the row it
+        adds is only the one that actually differs, so a recompute that finds
+        nothing new writes nothing.
+
+        Done in SQL rather than through a frame: the metrics table is the first
+        one whose size depends on a date grid rather than on how many filings
+        exist, and 5,000 tickers over 250 trading days over 20 metrics is about
+        25M rows a year.
+        """
+        name = phys(ref)
+        execution, written = current_execution(), 0
+        held = "CAST(NULL AS BIGINT)" if execution is None else f"CAST({int(execution)} AS BIGINT)"
+        with self._lock:
+            try:
+                if not self._exists(name):
+                    stamped = (
+                        f'SELECT *, {held} AS "{EXEC_COL}", '
+                        f'CAST({time.time_ns()} AS BIGINT) AS "{SEQ_COL}" '
+                        f"FROM ({select_sql}) AS _out"
+                    )
+                    if self.kind == "parquet":
+                        self._publish(name, stamped)
+                        written = self._rows(name)
+                    else:
+                        self.con.execute(
+                            f"CREATE OR REPLACE TABLE {self._q(name)} AS ({stamped})")
+                        written = int(self._scalar(
+                            f"SELECT count(*) FROM {self._q(name)}") or 0)
+                    return written
+
+                have = [c for (c,) in self.con.execute(
+                    "SELECT column_name FROM duckdb_columns() WHERE database_name = "
+                    "current_catalog() AND schema_name = ? AND table_name = ? "
+                    "ORDER BY column_index", [self.home, name]).fetchall()]
+                data = [c for c in have if c not in ENGINE_COLS]
+                same = ", ".join(f'"{_ident(c)}"' for c in data)
+                fresh = (f"SELECT {same} FROM ({select_sql}) AS _out "
+                         f"EXCEPT SELECT {same} FROM {self._q(name)}")
+                written = int(self._scalar(
+                    f"SELECT count(*) FROM ({fresh}) AS _new") or 0)
+                if not written:
+                    return 0
+                rows = (f'SELECT {same}, {held} AS "{EXEC_COL}", '
+                        f'CAST({time.time_ns()} AS BIGINT) AS "{SEQ_COL}" '
+                        f"FROM ({fresh}) AS _new")
+                if self.kind == "parquet":
+                    self._add_part(name, rows)
+                else:
+                    self.con.execute(
+                        f'INSERT INTO {self._q(name)} '
+                        f'({same}, "{_ident(EXEC_COL)}", "{_ident(SEQ_COL)}") {rows}')
+                return written
+            finally:
+                if key:
+                    self.remember_key(ref, key)
+                self._now_view(ref)
+                if self.as_of is not None:
+                    self._shadow(ref)
+
     def _q(self, name: str) -> str:
         """A table name pinned to the home schema, so `search_path` cannot move it."""
         return f'"{self.home}"."{_ident(name)}"'

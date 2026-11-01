@@ -224,6 +224,16 @@ class TransformJobDefinition(Base):
     reads: list[str] = Field(default_factory=list, validation_alias=AliasChoices("from", "reads"))
     writes: list[str] = Field(default_factory=list, validation_alias=AliasChoices("to", "writes"))
     script: str
+    #: Which columns identify one row of the output. **With a key, a transform
+    #: appends and never replaces**: a row identical to one already stored is not
+    #: stored twice, and one that differs is written beside the old row.
+    #:
+    #: Without one it rewrites its table, which is right for an ordinary
+    #: transform -- the output is a function of what is upstream of it, so
+    #: recomputing loses nothing. It is wrong for a materialised metric: a
+    #: corrected price has to leave the value somebody was already shown
+    #: readable, and the only way to do that is to add a row.
+    key: list[str] = Field(default_factory=list)
     # Tables whose new rows should run this transform. A clock is a guess about
     # when the data arrives; this is the arrival itself. Both may be set, and a
     # transform on neither runs when you ask for it.
@@ -328,6 +338,13 @@ class Corpus(Base):
     documents: str = ""
     spans: str = ""
     facts: str = ""
+    #: Where computed metric values land. **One row per subject per date per
+    #: metric per version**, which is what makes a metric a time series rather
+    #: than an answer to one call: `PER on 2024-05-03` is
+    #: `price(2024-05-03) / EPS(latest filing as of 2024-05-03)`, and the date is
+    #: the metric's own. Unset, a metric is computed when it is asked for and
+    #: nothing is stored.
+    metrics: str = ""
 
 
 class Metric(Base):

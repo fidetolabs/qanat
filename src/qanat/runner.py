@@ -157,7 +157,12 @@ def _run_sql(store: Store, ctx: Context, transform: TransformJobDefinition, scri
     if transform.universe:
         store.con.register("universe", ctx.universe())
     try:
-        return store.sql_into(transform.writes[0], sql.strip().rstrip(";"))
+        body = sql.strip().rstrip(";")
+        if transform.key:
+            # A keyed transform adds rows and never replaces one. See
+            # `TransformJobDefinition.key`.
+            return store.sql_append(transform.writes[0], body, transform.key)
+        return store.sql_into(transform.writes[0], body)
     finally:
         if transform.universe:
             store.con.unregister("universe")
@@ -202,7 +207,8 @@ def _run_python(store: Store, ctx: Context, transform: TransformJobDefinition, s
                 f"transform '{transform.id}' returned '{key}', which it did not declare in writes "
                 f"({', '.join(transform.writes)})"
             )
-        total += store.write(ref, df)
+        total += store.write(ref, df, mode="append" if transform.key else "replace",
+                             key=transform.key)
     return total
 
 

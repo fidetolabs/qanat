@@ -46,6 +46,15 @@ time_columns:
 corpus:
   documents: raw.documents
   facts: normalized.facts
+  # Where computed metric values land, when a metric is a series: one row per
+  # subject per date per metric per version. `define_metric` writes a transform
+  # into this table for any formula carrying a `date` of its own, and nothing
+  # writes it until one does.
+  #
+  # The starter formula below is not one -- it takes the date as a parameter and
+  # collapses to one row per company, which is a fact rescaled. It is computed
+  # when a screen asks, and `define_metric` says so when you write one.
+  metrics: normalized.metrics
 
 """
 
