@@ -127,7 +127,8 @@ def test_a_reader_does_not_open_the_metadata_file(store: Store, tmp_path: Path):
 
 
 def test_asking_for_the_run_log_opens_it(store: Store, tmp_path: Path):
-    store.start_run("j", "step", ["raw.p"])
+    store.start_execution(store.open_job("j", "transform", "2024-01-01"),
+                          "j", "transform", ["raw.p"])
     assert store._meta_open
     assert (tmp_path / "corpus" / "meta.duckdb").exists()
 
@@ -308,7 +309,8 @@ def test_opening_the_run_log_does_not_lift_the_as_of_views(store: Store):
         "sym": ["A", "B"], "as_of": pd.to_datetime(["2024-01-01", "2025-01-01"])}))
     store.open_pit("2024-06-01", {})
     try:
-        store.start_run("j", "step", ["raw.p"])     # attaches the metadata file
+        store.start_execution(store.open_job("j", "transform", "2024-01-01"),
+                          "j", "transform", ["raw.p"])     # attaches the metadata file
         assert list(store.read("raw.p")["sym"]) == ["A"], "the as-of views were lost"
         assert store.con.execute("select count(*) from raw__p").fetchone()[0] == 1
     finally:
@@ -358,7 +360,7 @@ def test_the_run_log_survives_a_close_on_either_store(tmp_path: Path, url: str):
 
     A parquet store's own connection is `:memory:`, and its search path is
     `memory.main` then `meta.main` -- data first, because a bare name means a
-    data table. So `CREATE TABLE IF NOT EXISTS _qanat_runs` resolved to the
+    data table. So `CREATE TABLE IF NOT EXISTS _qanat_job_execution` resolved to the
     front of that path and built the run log, the event log and the applied
     state **in memory**, in a file-backed store.
 
@@ -371,23 +373,26 @@ def test_the_run_log_survives_a_close_on_either_store(tmp_path: Path, url: str):
     target = str(tmp_path / "data") if url == "dir" else str(tmp_path / "q.duckdb")
 
     s = Store(target)
-    run = s.start_run("land", "source", ["raw.a"])
-    s.end_run(run, "ok", 42)
+    job = s.open_job("land", "ingestion", "2024-01-01")
+    run = s.start_execution(job, "land", "ingestion", ["raw.a"])
+    s.end_execution(run, "ok", 42)
     s.set_state("land", "digest-1", '{"spec": 1}')
     s.event("ok", "land", "landed 42 rows")
     s.close()
 
     again = Store(target)
     try:
-        runs = again.recent_runs(5)
-        assert [r["job_id"] for r in runs] == ["land"]
+        runs = again.recent_executions(5)
+        assert [r["definition_id"] for r in runs] == ["land"]
+        assert [r["job_id"] for r in runs] == [job]
+        assert [r["attempt"] for r in runs] == [1]
         assert runs[0]["status"] == "ok"
         assert runs[0]["rows_out"] == 42
         assert again.load_state() == {"land": {"digest": "digest-1",
                                                "spec": '{"spec": 1}'}}
         assert [e["message"] for e in again.recent_events(5)] == ["landed 42 rows"]
         # And the reader connection sees it too, which is the one a tool uses.
-        assert again.last_run_by_job()["land"]["rows_out"] == 42
+        assert again.last_execution_by_definition()["land"]["rows_out"] == 42
     finally:
         again.close()
 
@@ -397,7 +402,8 @@ def test_the_metadata_tables_are_not_built_in_memory(tmp_path: Path):
     in the in-memory database of a file-backed store."""
     s = Store(str(tmp_path / "data"))
     try:
-        s.start_run("land", "source", ["raw.a"])      # forces the catalogue open
+        s.start_execution(s.open_job("land", "ingestion", "2024-01-01"),
+                          "land", "ingestion", ["raw.a"])   # opens the catalogue
         where = s.con.execute(
             "SELECT DISTINCT database_name FROM duckdb_tables() "
             "WHERE table_name LIKE '_qanat%'").fetchall()

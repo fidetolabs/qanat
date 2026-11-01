@@ -23,7 +23,7 @@ url, the params and the headers, and the symbol is kept as a column:
       symbols: [AAPL, MSFT]        # or from_universe: ./universes/sp100.csv
       url: https://api.example.com/v1/chart/{symbol}
 
-`records` is a dot path, and a step in it that is a number indexes a list. The
+`records` is a dot path, and a segment of it that is a number indexes a list. The
 World Bank answers `[{metadata}, [rows]]`, so:
 
       records: "1"                 # take the second element, which is the rows
@@ -34,12 +34,12 @@ A body that is one object rather than a list of them lands as a single row --
 Some APIs still answer in a shape no combination of the above can flatten: several
 lists that have to be zipped together, or records nested under keys that vary.
 Rather than teach this connector every one of them, land the body untouched and
-take it apart in a step, which is what `raw` is for:
+take it apart in a transform, which is what `raw` is for:
 
       payload: true
 
 That writes one row per request: `fetched_at`, `source_id`, `symbol`, and
-`payload`, the response as JSON text. Use a `.py` step to parse it -- DuckDB and
+`payload`, the response as JSON text. Use a `.py` transform to parse it -- DuckDB and
 Postgres do not spell their JSON functions the same way.
 
 Columns held as parallel arrays -- `{"time": [...], "temp": [...]}` -- do *not*
@@ -58,7 +58,7 @@ from typing import Any
 import httpx
 import pandas as pd
 
-from qanat.models import Source
+from qanat.models import IngestionJobDefinition
 
 _ENV = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}")
 
@@ -92,7 +92,7 @@ def expand(value: Any, missing: set[str] | None = None) -> Any:
 
 
 def dig(body: Any, path: str | None) -> Any:
-    """Walk a dot path into the body. A numeric step indexes a list.
+    """Walk a dot path into the body. A numeric segment indexes a list.
 
     The World Bank answers `[{metadata}, [rows]]`, and with a key-only path there
     was no way to say "the second element", so the body could not be landed at all.
@@ -110,15 +110,15 @@ def dig(body: Any, path: str | None) -> Any:
                      else f"a list of {len(body)}" if isinstance(body, list)
                      else type(body).__name__)
             raise KeyError(
-                f"records path '{path}' has no step '{part}'. At that point the body holds: "
+                f"records path '{path}' has no segment '{part}'. At that point the body holds: "
                 f"{where}"
             ) from None
     return body
 
 
-def symbols_of(source: Source, root: Path) -> list[str] | None:
+def symbols_of(job: IngestionJobDefinition, root: Path) -> list[str] | None:
     """The symbols to ask for one at a time, or None to make a single request."""
-    o = source.options
+    o = job.options
     if syms := o.get("symbols"):
         return [str(s) for s in syms]
     if path := o.get("from_universe"):
@@ -137,18 +137,18 @@ def for_symbol(value: Any, symbol: str) -> Any:
     return value
 
 
-def _body(source: Source, symbol: str | None) -> Any:
-    o = source.options
+def _body(job: IngestionJobDefinition, symbol: str | None) -> Any:
+    o = job.options
     missing: set[str] = set()
     url = expand(o.get("url"), missing)
     params, headers = expand(o.get("params"), missing), expand(o.get("headers"), missing)
     if missing:
         raise MissingEnv(
-            f"source '{source.id}': {', '.join('${' + m + '}' for m in sorted(missing))} "
+            f"ingestion job '{job.id}': {', '.join('${' + m + '}' for m in sorted(missing))} "
             "is not set in the environment"
         )
     if not url:
-        raise ValueError(f"source '{source.id}': rest needs options.url")
+        raise ValueError(f"ingestion job '{job.id}': rest needs options.url")
     if symbol is not None:
         url, params, headers = (for_symbol(x, symbol) for x in (url, params, headers))
     timeout = float(o.get("timeout", 30))
@@ -159,7 +159,7 @@ def _body(source: Source, symbol: str | None) -> Any:
         )
     except httpx.TimeoutException as exc:
         raise TimeoutError(
-            f"source '{source.id}': {url} did not answer within {timeout:g}s. "
+            f"ingestion job '{job.id}': {url} did not answer within {timeout:g}s. "
             "Set options.timeout higher if the endpoint is simply slow"
         ) from exc
     r.raise_for_status()
@@ -168,7 +168,7 @@ def _body(source: Source, symbol: str | None) -> Any:
     except ValueError as exc:
         ct = r.headers.get("content-type", "unknown")
         raise ValueError(
-            f"source '{source.id}': {url} answered with {ct}, not JSON. "
+            f"ingestion job '{job.id}': {url} answered with {ct}, not JSON. "
             f"It starts: {r.text[:80]!r}"
         ) from exc
 
@@ -196,7 +196,7 @@ def _flatten(body: Any, o: dict[str, Any]) -> pd.DataFrame:
     return df
 
 
-def _envelope(source: Source, body: Any, symbol: str | None) -> pd.DataFrame:
+def _envelope(job: IngestionJobDefinition, body: Any, symbol: str | None) -> pd.DataFrame:
     """The response as it arrived, with just enough around it to be a table.
 
     `fetched_at` is not decoration. Retention drops rows by time column, and a
@@ -208,7 +208,7 @@ def _envelope(source: Source, body: Any, symbol: str | None) -> pd.DataFrame:
         # then renders in the session zone, so every as-of comparison was off by the
         # machine's offset. Right on a UTC server, nine hours wrong in Seoul.
         "fetched_at": datetime.now(timezone.utc).replace(tzinfo=None),
-        "source_id": source.id,
+        "source_id": job.id,
         "symbol": symbol,
         "payload": json.dumps(body),
     }])
@@ -217,14 +217,14 @@ def _envelope(source: Source, body: Any, symbol: str | None) -> pd.DataFrame:
     return df.astype({"symbol": "string"})
 
 
-def fetch(source: Source, root: Path, on_warn=None) -> pd.DataFrame:
-    o = source.options
+def fetch(job: IngestionJobDefinition, root: Path, on_warn=None) -> pd.DataFrame:
+    o = job.options
     shape = _envelope if o.get("payload") else None
 
-    syms = symbols_of(source, root)
+    syms = symbols_of(job, root)
     if syms is None:
-        body = _body(source, None)
-        return shape(source, body, None) if shape else _flatten(body, o)
+        body = _body(job, None)
+        return shape(job, body, None) if shape else _flatten(body, o)
 
     # One symbol failing used to discard every symbol that had already worked, so a
     # single delisted ticker stalled the feed indefinitely -- every poll landing
@@ -232,12 +232,12 @@ def fetch(source: Source, root: Path, on_warn=None) -> pd.DataFrame:
     frames, failed = [], []
     for sym in syms:
         try:
-            body = _body(source, sym)
+            body = _body(job, sym)
         except Exception as exc:  # noqa: BLE001 -- one symbol, not the batch
             failed.append(f"{sym} ({type(exc).__name__})")
             continue
         if shape:
-            frames.append(shape(source, body, sym))
+            frames.append(shape(job, body, sym))
         else:
             part = _flatten(body, o)
             if "symbol" not in part.columns:
@@ -249,7 +249,7 @@ def fetch(source: Source, root: Path, on_warn=None) -> pd.DataFrame:
     if not frames:
         if failed:
             raise RuntimeError(
-                f"source '{source.id}': every symbol failed -- " + ", ".join(failed[:5])
+                f"ingestion job '{job.id}': every symbol failed -- " + ", ".join(failed[:5])
             )
         return pd.DataFrame()
     return pd.concat(frames, ignore_index=True)

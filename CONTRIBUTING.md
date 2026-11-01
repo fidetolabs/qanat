@@ -20,7 +20,7 @@ uv run qanat mcp --http --schedule      # both, at http://127.0.0.1:8421/mcp
 ```
 
 There is no `qanat run`: running the graph is the `run` tool, which is what an
-agent calls. `qanat schedule --run-now` fires every job once at startup, which is
+agent calls. `qanat schedule --run-now` fires every definition once at startup, which is
 the equivalent from a shell.
 
 Or with pip: `pip install -e ".[dev]"`.
@@ -69,9 +69,9 @@ table below if you want to know why the pieces are arranged this way rather than
 
 | Layer | Path | Role |
 | --- | --- | --- |
-| Project file | `qanat.yaml` | Stages, sources, steps, retention, store URL |
+| Project file | `qanat.yaml` | Stages, job definitions, schedules, retention, store URL |
 | Contract | `src/qanat/project.py` | Validates the stage rules |
-| Runner | `src/qanat/runner.py` | Executes sources and steps |
+| Runner | `src/qanat/runner.py` | Opens a job, records each execution, runs the definition |
 | Scheduler | `src/qanat/scheduler.py` | Cron + retention cleanup |
 | Store | `src/qanat/store.py` | DuckDB engine over a directory of parquet files, or one DuckDB file |
 | Reading | `src/qanat/reading.py` | The reading tools. Every one of them filters in SQL |
@@ -80,17 +80,17 @@ table below if you want to know why the pieces are arranged this way rather than
 | Screen | `src/qanat/screen.py` | Which companies passed, on a date or over a window |
 | MCP (stdio) | `src/qanat/mcp.py` | The tool surface, and the four scopes |
 | MCP (HTTP) | `src/qanat/mcp_http.py` | The same tools on `/mcp`, with Host and token checks |
-| CLI | `src/qanat/cli.py` | `init`, `check`, `mcp`, `schedule`. Nothing else |
+| CLI | `src/qanat/cli.py` | `init`, `check`, `migrate`, `mcp`, `schedule`. Nothing else |
 | Filings | `src/qanat/filings.py` | Which filings exist, which parse, and landing the chosen ones |
 | Metrics | `src/qanat/metrics.py` | Defining a metric, and refusing a formula that will not run |
 | Editor logic | `src/qanat/editor.py` | Mutations that write `qanat.yaml` |
 | Graph | `src/qanat/graph.py` | The read model, and the terminal drawing of it |
-| Connectors | `src/qanat/sources/` | Plugin surface: one `fetch()` per connector |
+| Connectors | `src/qanat/connectors/` | Plugin surface: one `fetch()` per connector |
 
 ## Adding a connector
 
-1. Implement `fetch(source, root) -> DataFrame` in `src/qanat/sources/your_connector.py`
-2. Register it in `src/qanat/sources/__init__.py`
+1. Implement `fetch(job, root) -> DataFrame` in `src/qanat/connectors/your_connector.py`
+2. Register it in `src/qanat/connectors/__init__.py`
 3. Add the name to `Connector` in `src/qanat/models.py`
 4. Document options in README and add a test if feasible
 

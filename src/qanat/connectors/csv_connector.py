@@ -20,8 +20,8 @@ from pathlib import Path
 
 import pandas as pd
 
-from qanat.models import Source
-from qanat.sources.rest import expand
+from qanat.connectors.rest import expand
+from qanat.models import IngestionJobDefinition
 
 #: What may be handed to `pandas.read_csv`. A list rather than a pass-through, so a
 #: misspelled option is an error the user sees instead of a setting silently ignored.
@@ -34,10 +34,10 @@ READ_CSV_OPTIONS = (
 _NOT_FOR_READ = {"path", "file"}
 
 
-def read_options(source: Source) -> dict:
-    """The `read_csv` keywords this source asked for, checked."""
+def read_options(job: IngestionJobDefinition) -> dict:
+    """The `read_csv` keywords this ingestion job asked for, checked."""
     out, unknown = {}, []
-    for k, v in (source.options or {}).items():
+    for k, v in (job.options or {}).items():
         if k in _NOT_FOR_READ:
             continue
         if k in READ_CSV_OPTIONS:
@@ -46,18 +46,18 @@ def read_options(source: Source) -> dict:
             unknown.append(k)
     if unknown:
         raise ValueError(
-            f"source '{source.id}': csv does not know the option(s) "
+            f"ingestion job '{job.id}': csv does not know the option(s) "
             f"{', '.join(sorted(unknown))}. It takes path and any of: "
             f"{', '.join(sorted(READ_CSV_OPTIONS))}"
         )
     return out
 
 
-def fetch(source: Source, root: Path, on_warn=None) -> pd.DataFrame:
-    p = expand(source.options.get("path"))
+def fetch(job: IngestionJobDefinition, root: Path, on_warn=None) -> pd.DataFrame:
+    p = expand(job.options.get("path"))
     if not p:
-        raise ValueError(f"source '{source.id}': csv needs options.path")
-    kw = read_options(source)
+        raise ValueError(f"ingestion job '{job.id}': csv needs options.path")
+    kw = read_options(job)
     if str(p).startswith(("http://", "https://")):
         return pd.read_csv(p, **kw)
     return pd.read_csv(root / p, **kw)

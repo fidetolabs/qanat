@@ -1,7 +1,7 @@
 """Where the tables live: the run history, the event log, and the data itself.
 
-DuckDB is the engine -- it is what executes a `.sql` step -- and the storage is
-one of two kinds, with the SQL a step writes identical across both:
+DuckDB is the engine -- it runs a `.sql` transform -- and the storage is
+one of two kinds, with the SQL a transform writes identical across both:
 
 | `store:` | kind | who can open it at once |
 | --- | --- | --- |
@@ -87,10 +87,27 @@ def _release_duckdb(key: str) -> None:
 class StoreBusy(RuntimeError):
     """The database is open somewhere else. Says which door to use instead."""
 
-RUNS = "_qanat_runs"
+#: The job layer: one definition, for one exact datetime. Two of the four
+#: objects already existed under other names -- `_qanat_runs` was the execution
+#: layer and `_qanat_state` was definition versioning -- and this is the one
+#: that did not. **It exists because of retries rather than backfills.** A poll
+#: attempted three times is one job and three executions; with one row per
+#: attempt and nothing grouping them, *"did the 07:00 poll succeed?"* had no
+#: object to ask.
+JOBS = "_qanat_job"
+#: One attempt. Was `_qanat_runs`, which is the same thing under a word that
+#: did not say what it was an execution *of*.
+EXECUTIONS = "_qanat_job_execution"
 EVENTS = "_qanat_events"
-STATE = "_qanat_state"
-META = (RUNS, EVENTS, STATE)
+#: What a definition looked like the last time it worked. Was `_qanat_state`,
+#: which named the file rather than the thing in it.
+VERSIONS = "_qanat_job_definition_version"
+META = (JOBS, EXECUTIONS, EVENTS, VERSIONS)
+
+#: What these tables were called before the vocabulary changed. Renamed in place
+#: on open, so a store written by an older version keeps its history instead of
+#: starting again with an empty log.
+_RENAMED = {"_qanat_runs": EXECUTIONS, "_qanat_state": VERSIONS}
 
 #: Schema holding the as-of views a screen reads through. Named, not `asof`,
 #: because DuckDB reserves that word for ASOF JOIN.
@@ -188,10 +205,10 @@ _SQL_NOISE = re.compile(r"--[^\n]*|/\*.*?\*/|'(?:[^']|'')*'", re.DOTALL)
 def tables_named(sql: str) -> set[str]:
     """Every `stage.table` a query mentions, ignoring comments and string literals.
 
-    `ctx.read` refuses a table the step did not declare, and says why. A `.sql` body
+    `ctx.read` refuses a table a transform did not declare, and says why. A `.sql` body
     could reach the same table anyway, so the edge the graph drew was not where the
     data came from, `stale()` never marked the consumer, and `check` warned that a
-    table read by two steps "is never read by anything".
+    table read by two transforms "is never read by anything".
     """
     return {f"{a}.{b}" for a, b in _TABLE_TOKEN.findall(_SQL_NOISE.sub(" ", sql or ""))}
 
@@ -203,7 +220,7 @@ def _typed(df: pd.DataFrame) -> pd.DataFrame:
     payload row -- is null in the first response that happens not to carry it, and
     pandas types that as INTEGER. The type sticks, and the day the field arrives with
     real data every poll fails on a cast that names neither the feed nor the field.
-    Text is the one type that does not close the door; a step can cast it later.
+    Text is the one type that does not close the door; a transform can cast it later.
     """
     empty = [c for c in df.columns if df[c].isna().all()]
     return df.astype({c: "string" for c in empty}) if empty else df
@@ -496,13 +513,13 @@ class Store:
 
         One place builds this string, because three things change it and they
         used to each set it themselves. The as-of views go first when a screen
-        is open -- that is what makes a step read the past without knowing it.
+        is open -- that is what makes a transform read the past without knowing it.
         Then the data. Then the metadata catalogue, when a parquet store has
         opened one.
 
         The bug this exists to stop: attaching the metadata file reset the
         search path, which silently took the as-of views off the front. Every
-        step then read the live table and the lookahead guard caught it as a
+        transform then read the live table and the lookahead guard caught it as a
         leak, which is the right failure for the wrong reason.
         """
         parts = []
@@ -607,18 +624,41 @@ class Store:
     def _ensure_meta(self) -> None:
         with self._lock:
             where = self._meta_home
+            self._rename_old_meta(where)
+            # One definition, for one exact datetime, and where it came from. A
+            # null `schedule_id` is the ad-hoc path and it is first-class: a
+            # hand-triggered ingest is a job with no schedule behind it, not the
+            # absence of a job -- which is what makes its rows attributable.
             self.con.execute(f"""
-                CREATE TABLE IF NOT EXISTS {where}{RUNS} (
-                    run_id     BIGINT PRIMARY KEY,
-                    job_id     VARCHAR,
-                    kind       VARCHAR,
-                    started_at TIMESTAMP,
-                    ended_at   TIMESTAMP,
-                    status     VARCHAR,
-                    rows_out   BIGINT,
-                    targets    VARCHAR,
-                    error      VARCHAR
+                CREATE TABLE IF NOT EXISTS {where}{JOBS} (
+                    job_id        BIGINT PRIMARY KEY,
+                    definition_id VARCHAR,
+                    kind          VARCHAR,
+                    scheduled_for TIMESTAMP,
+                    schedule_id   VARCHAR,
+                    created_at    TIMESTAMP
                 )""")
+            self.con.execute(f"""
+                CREATE TABLE IF NOT EXISTS {where}{EXECUTIONS} (
+                    execution_id  BIGINT PRIMARY KEY,
+                    job_id        BIGINT,
+                    definition_id VARCHAR,
+                    kind          VARCHAR,
+                    attempt       INTEGER,
+                    started_at    TIMESTAMP,
+                    ended_at      TIMESTAMP,
+                    status        VARCHAR,
+                    rows_out      BIGINT,
+                    targets       VARCHAR,
+                    error         VARCHAR
+                )""")
+            # A store written before the job layer existed has executions with no
+            # job above them and no attempt number. Added rather than backfilled:
+            # nothing can honestly say which attempt an old row was.
+            for col, kind in (("execution_id", "BIGINT"), ("job_id", "BIGINT"),
+                              ("definition_id", "VARCHAR"), ("attempt", "INTEGER")):
+                self.con.execute(
+                    f"ALTER TABLE {where}{EXECUTIONS} ADD COLUMN IF NOT EXISTS {col} {kind}")
             self.con.execute(f"""
                 CREATE TABLE IF NOT EXISTS {where}{EVENTS} (
                     ts     TIMESTAMP,
@@ -635,12 +675,38 @@ class Store:
                 f"ALTER TABLE {where}{EVENTS} ADD COLUMN IF NOT EXISTS actor VARCHAR"
             )
             self.con.execute(f"""
-                CREATE TABLE IF NOT EXISTS {where}{STATE} (
-                    job_id     VARCHAR PRIMARY KEY,
-                    digest     VARCHAR,
-                    spec       VARCHAR,
-                    applied_at TIMESTAMP
+                CREATE TABLE IF NOT EXISTS {where}{VERSIONS} (
+                    definition_id VARCHAR PRIMARY KEY,
+                    digest        VARCHAR,
+                    spec          VARCHAR,
+                    applied_at    TIMESTAMP
                 )""")
+
+    def _rename_old_meta(self, where: str) -> None:
+        """`_qanat_runs` -> `_qanat_job_execution`, and the same for the state table.
+
+        In place, on open, so an existing store keeps its history. The old name
+        only ever existed inside this file, so nothing outside has to know.
+        """
+        for old, new in _RENAMED.items():
+            if self._exists(old) and not self._exists(new):
+                self.con.execute(f"ALTER TABLE {where}{old} RENAME TO {new}")
+            # The old column name went with it. `run_id` said which run, and a
+            # run was an execution; `job_id` on the state table named the file's
+            # entry, which is a definition.
+            if new == EXECUTIONS:
+                self._rename_column(where, new, "run_id", "execution_id")
+            else:
+                self._rename_column(where, new, "job_id", "definition_id")
+
+    def _rename_column(self, where: str, table: str, old: str, new: str) -> None:
+        if not self._exists(table):
+            return
+        have = {c for (c,) in self.con.execute(
+            "SELECT column_name FROM duckdb_columns() WHERE table_name = ?",
+            [table]).fetchall()}
+        if old in have and new not in have:
+            self.con.execute(f'ALTER TABLE {where}{table} RENAME COLUMN "{old}" TO "{new}"')
 
     #: Written while a screen holds the store, cleared when it lets go. A screen
     #: rewrites the derived tables at each as-of date and puts them back in a
@@ -664,24 +730,27 @@ class Store:
         self.interrupted_screen: str | None = None
         with self._lock:
             row = self._one(
-                f"SELECT spec FROM {self._meta_home}{STATE} WHERE job_id IN (?, ?) ORDER BY job_id LIMIT 1",
+                f"SELECT spec FROM {self._meta_home}{VERSIONS} WHERE definition_id IN (?, ?) "
+                f"ORDER BY definition_id LIMIT 1",
                 [self._SCREEN_MARK, self._SCREEN_MARK_WAS],
             )
             stranded = self._scalar(
-                f"SELECT count(*) FROM {self._meta_home}{RUNS} WHERE status = 'running'")
+                f"SELECT count(*) FROM {self._meta_home}{EXECUTIONS} WHERE status = 'running'")
             if stranded:
                 self.con.execute(
-                    f"UPDATE {self._meta_home}{RUNS} SET status = 'interrupted', ended_at = now()::TIMESTAMP, "
-                    "error = 'the process ended before this run did' WHERE status = 'running'"
+                    f"UPDATE {self._meta_home}{EXECUTIONS} SET status = 'interrupted', "
+                    "ended_at = now()::TIMESTAMP, "
+                    "error = 'the process ended before this execution did' WHERE status = 'running'"
                 )
             if row is None:
                 return
             self.con.execute(f'DROP SCHEMA IF EXISTS "{PIT}" CASCADE')
-            self.con.execute(f"DELETE FROM {self._meta_home}{STATE} WHERE job_id IN (?, ?)",
-                             [self._SCREEN_MARK, self._SCREEN_MARK_WAS])
+            self.con.execute(
+                f"DELETE FROM {self._meta_home}{VERSIONS} WHERE definition_id IN (?, ?)",
+                [self._SCREEN_MARK, self._SCREEN_MARK_WAS])
             self.interrupted_screen = str(row[0])
             self.event("warn", "store", (
-                f"a screen was interrupted at as-of {row[0]}. Every table a step writes was "
+                f"a screen was interrupted at as-of {row[0]}. Every table a transform writes was "
                 "left holding only the rows that existed then -- run the pipeline once "
                 "(the `run` tool) to rebuild them from raw."
             ))
@@ -689,23 +758,27 @@ class Store:
     def screen_open(self, as_of: str) -> None:
         self._meta()
         with self._lock:
-            self.con.execute(f"DELETE FROM {self._meta_home}{STATE} WHERE job_id = ?", [self._SCREEN_MARK])
             self.con.execute(
-                f"INSERT INTO {self._meta_home}{STATE} VALUES (?, 'screen', ?, now()::TIMESTAMP)",
+                f"DELETE FROM {self._meta_home}{VERSIONS} WHERE definition_id = ?",
+                [self._SCREEN_MARK])
+            self.con.execute(
+                f"INSERT INTO {self._meta_home}{VERSIONS} VALUES (?, 'screen', ?, now()::TIMESTAMP)",
                 [self._SCREEN_MARK, str(as_of)],
             )
 
     def screen_closed(self) -> None:
         self._meta()
         with self._lock:
-            self.con.execute(f"DELETE FROM {self._meta_home}{STATE} WHERE job_id = ?", [self._SCREEN_MARK])
+            self.con.execute(
+                f"DELETE FROM {self._meta_home}{VERSIONS} WHERE definition_id = ?",
+                [self._SCREEN_MARK])
 
     # ---- writing -------------------------------------------------------------
     def write(self, ref: str, df: pd.DataFrame, mode: str = "replace",
               key: Sequence[str] | None = None) -> int:
         """Land a dataframe as a table. Returns the row count written.
 
-        `key` only applies to an append. A source polled every hour against a feed
+        `key` only applies to an append. An ingestion job polled hourly against a feed
         that answers with the last seven days appends those seven days every hour,
         and without a key the table is mostly copies. With one, a row that matches
         an existing key replaces it and the rest are added.
@@ -714,7 +787,7 @@ class Store:
             return 0
         name = phys(ref)
         if not len(df.columns) or len(df) == 0:
-            # A step with nothing to say returns an empty frame. That is an answer,
+            # A transform with nothing to say returns an empty frame. That is an answer,
             # not a crash -- early in a screen there is often not enough history yet.
             #
             # It has to *clear* the table, though. Leaving the last pass's rows in
@@ -1089,8 +1162,8 @@ class Store:
         """Shadow every table with a view holding only the rows that existed at
         `as_of`, and put that schema first on the search path.
 
-        A step therefore reads the past without knowing it is being screened, and
-        a step that forgot to filter cannot see the future by accident.
+        A transform reads the past without knowing it is being screened, and
+        one that forgot to filter cannot see the future by accident.
         """
         overrides = overrides or {}
         self._pit_overrides = overrides
@@ -1146,7 +1219,7 @@ class Store:
     def time_range(self, ref: str, override: str | None = None) -> tuple[str, str] | None:
         """The oldest and newest timestamps in a table, or None with no clock.
 
-        `max_time` answers what a source should ask for next. This answers what
+        `max_time` answers what an ingestion job should ask for next. This answers what
         a point-in-time read can be asked for at all: before the oldest row
         there was nothing public, so a screen as of then has no corpus to read.
         """
@@ -1212,35 +1285,58 @@ class Store:
                 self.con.execute(f'DROP TABLE IF EXISTS {self._q(phys(ref))}')
         return info.rows if info else 0
 
-    # ---- applied state: what the file looked like the last time it ran --------
+    # ---- definition versions: what a definition looked like when it last ran --
     def load_state(self) -> dict[str, dict[str, str]]:
         self._meta()
         with self._lock:
-            rows = self.con.execute(f"SELECT job_id, digest, spec FROM {self._meta_home}{STATE}").fetchall()
+            rows = self.con.execute(
+                f"SELECT definition_id, digest, spec FROM {self._meta_home}{VERSIONS}").fetchall()
         skip = {self._SCREEN_MARK, self._SCREEN_MARK_WAS}
         return {j: {"digest": d, "spec": s} for j, d, s in rows if j not in skip}
 
-    def set_state(self, job_id: str, digest: str, spec: str) -> None:
-        """Record one job as applied. Called when that job actually succeeds."""
+    def set_state(self, definition_id: str, digest: str, spec: str) -> None:
+        """Record one definition as applied, when it actually succeeds."""
         self._meta()
         with self._lock:
-            self.con.execute(f"DELETE FROM {self._meta_home}{STATE} WHERE job_id = ?", [job_id])
-            self.con.execute(f"INSERT INTO {self._meta_home}{STATE} VALUES (?, ?, ?, now()::TIMESTAMP)", [job_id, digest, spec])
+            self.con.execute(
+                f"DELETE FROM {self._meta_home}{VERSIONS} WHERE definition_id = ?",
+                [definition_id])
+            self.con.execute(
+                f"INSERT INTO {self._meta_home}{VERSIONS} VALUES (?, ?, ?, now()::TIMESTAMP)",
+                [definition_id, digest, spec])
 
-    def forget_state(self, job_ids: list[str]) -> None:
+    def definition_version(self, definition_id: str) -> dict[str, Any] | None:
+        """The applied digest for one definition, which is its version.
+
+        What `lineage` resolves the last link of the chain to: a row names an
+        execution, the execution names a job, the job names a definition, and
+        this names which version of it was running.
+        """
         self._meta()
         with self._lock:
-            for job_id in job_ids:
-                self.con.execute(f"DELETE FROM {self._meta_home}{STATE} WHERE job_id = ?", [job_id])
+            row = self._one(
+                f"SELECT definition_id, digest, applied_at FROM {self._meta_home}{VERSIONS} "
+                f"WHERE definition_id = ?", [definition_id], con=self.rcon)
+        if row is None:
+            return None
+        return {"definition": row[0], "version": row[1], "applied_at": str(row[2])}
+
+    def forget_state(self, definition_ids: list[str]) -> None:
+        self._meta()
+        with self._lock:
+            for did in definition_ids:
+                self.con.execute(
+                    f"DELETE FROM {self._meta_home}{VERSIONS} WHERE definition_id = ?", [did])
 
     def save_state(self, entries: dict[str, tuple[str, str]]) -> None:
-        """entries: job_id -> (digest, spec json). Replaces the whole snapshot."""
+        """entries: id -> (digest, spec json). Replaces the whole snapshot."""
         self._meta()
         with self._lock:
-            self.con.execute(f"DELETE FROM {self._meta_home}{STATE}")
-            for job_id, (digest, spec) in entries.items():
+            self.con.execute(f"DELETE FROM {self._meta_home}{VERSIONS}")
+            for did, (digest, spec) in entries.items():
                 self.con.execute(
-                    f"INSERT INTO {self._meta_home}{STATE} VALUES (?, ?, ?, now()::TIMESTAMP)", [job_id, digest, spec]
+                    f"INSERT INTO {self._meta_home}{VERSIONS} VALUES (?, ?, ?, now()::TIMESTAMP)",
+                    [did, digest, spec]
                 )
 
     def table_info(self, ref: str) -> TableInfo | None:
@@ -1263,7 +1359,7 @@ class Store:
         last = None
         if self.kind != "parquet" or self._meta_open:
             last = self._scalar(
-                f"SELECT max(ended_at) FROM {self._meta_home}{RUNS} WHERE targets LIKE ? AND status = 'ok'",
+                f"SELECT max(ended_at) FROM {self._meta_home}{EXECUTIONS} WHERE targets LIKE ? AND status = 'ok'",
                 [f"%{ref}%"], con=r)
         stage, _, tname = ref.partition(".")
         return TableInfo(ref, stage, tname, rows, [(c, t) for c, t in cols],
@@ -1275,7 +1371,7 @@ class Store:
 
         Computed as aggregates rather than by reading the table. "How many symbols,
         over what dates, with how many holes" is the first question anyone asks of a
-        new source, and answering it by pulling rows works on a demo and falls over
+        new table, and answering it by pulling rows works on a demo and falls over
         on a real panel -- five hundred names by ten years is a million rows to move
         so somebody can learn there are five hundred names. This costs a scan and
         the answer is the same size whatever the table is.
@@ -1329,25 +1425,104 @@ class Store:
             "columns": out,
         }
 
-    # ---- runs and events -----------------------------------------------------
-    def start_run(self, job_id: str, kind: str, targets: list[str]) -> int:
-        self._meta()
-        run_id = time.time_ns() // 1000
-        with self._lock:
-            self.con.execute(
-                f"INSERT INTO {self._meta_home}{RUNS} VALUES (?, ?, ?, now()::TIMESTAMP, NULL, 'running', 0, ?, NULL)",
-                [run_id, job_id, kind, ",".join(targets)],
-            )
-        return run_id
+    # ---- jobs, executions and events -----------------------------------------
+    def open_job(self, definition_id: str, kind: str, scheduled_for: Any,
+                 schedule_id: str | None = None) -> int:
+        """The job for this definition at this instant, opening one if there is none.
 
-    def end_run(self, run_id: int, status: str, rows: int = 0, error: str | None = None) -> None:
+        **Idempotent on (definition, instant), and that is the whole point of the
+        layer.** Re-running a failed job adds an execution to the job that is
+        already there; it does not create a second one. Otherwise three attempts
+        at the 07:00 poll are three unrelated rows and nothing can answer *"did
+        the 07:00 poll succeed?"*
+        """
+        self._meta()
+        with self._lock:
+            row = self._one(
+                f"SELECT job_id FROM {self._meta_home}{JOBS} WHERE definition_id = ? "
+                f"AND scheduled_for = ? LIMIT 1", [definition_id, scheduled_for],
+                con=self.rcon)
+            if row is not None:
+                return int(row[0])
+            job_id = time.time_ns() // 1000
+            self.con.execute(
+                f"INSERT INTO {self._meta_home}{JOBS} VALUES (?, ?, ?, ?, ?, now()::TIMESTAMP)",
+                [job_id, definition_id, kind, scheduled_for, schedule_id],
+            )
+        return job_id
+
+    def start_execution(self, job_id: int, definition_id: str, kind: str,
+                        targets: list[str]) -> int:
+        """One attempt at one job. `attempt` counts from 1, per job."""
+        self._meta()
+        execution_id = time.time_ns() // 1000
+        with self._lock:
+            attempt = int(self._scalar(
+                f"SELECT count(*) FROM {self._meta_home}{EXECUTIONS} WHERE job_id = ?",
+                [job_id], con=self.rcon) or 0) + 1
+            self.con.execute(
+                f"INSERT INTO {self._meta_home}{EXECUTIONS} VALUES "
+                f"(?, ?, ?, ?, ?, now()::TIMESTAMP, NULL, 'running', 0, ?, NULL)",
+                [execution_id, job_id, definition_id, kind, attempt, ",".join(targets)],
+            )
+        return execution_id
+
+    def end_execution(self, execution_id: int, status: str, rows: int = 0,
+                      error: str | None = None) -> None:
         self._meta()
         with self._lock:
             self.con.execute(
-                f"UPDATE {self._meta_home}{RUNS} SET ended_at = now()::TIMESTAMP, status = ?, rows_out = ?, error = ? "
-                "WHERE run_id = ?",
-                [status, rows, error, run_id],
+                f"UPDATE {self._meta_home}{EXECUTIONS} SET ended_at = now()::TIMESTAMP, "
+                f"status = ?, rows_out = ?, error = ? WHERE execution_id = ?",
+                [status, rows, error, execution_id],
             )
+
+    def job(self, job_id: int) -> dict[str, Any] | None:
+        """One job and every attempt at it, newest attempt last.
+
+        `status` is the job's, derived rather than stored: a job one attempt
+        succeeded at succeeded, however many failed first. That is the question
+        the layer exists to answer.
+        """
+        self._meta()
+        row = self._one(
+            f"SELECT definition_id, kind, scheduled_for, schedule_id FROM "
+            f"{self._meta_home}{JOBS} WHERE job_id = ?", [job_id], con=self.rcon)
+        if row is None:
+            return None
+        df = self.rcon.execute(
+            f"SELECT execution_id, attempt, started_at, ended_at, status, rows_out, error "
+            f"FROM {self._meta_home}{EXECUTIONS} WHERE job_id = ? ORDER BY attempt",
+            [job_id]).df()
+        attempts = _records(df)
+        return {
+            "job_id": int(job_id),
+            "definition": row[0],
+            "kind": row[1],
+            "scheduled_for": str(row[2]),
+            "schedule": row[3],
+            "status": "ok" if any(a["status"] == "ok" for a in attempts)
+                      else (attempts[-1]["status"] if attempts else "running"),
+            "attempts": attempts,
+        }
+
+    def execution(self, execution_id: int) -> dict[str, Any] | None:
+        """One attempt, and the job it was an attempt at."""
+        self._meta()
+        row = self._one(
+            f"SELECT job_id, definition_id, kind, attempt, started_at, ended_at, status, "
+            f"rows_out, targets, error FROM {self._meta_home}{EXECUTIONS} "
+            f"WHERE execution_id = ?", [execution_id], con=self.rcon)
+        if row is None:
+            return None
+        return {
+            "execution_id": int(execution_id), "job_id": None if row[0] is None else int(row[0]),
+            "definition": row[1], "kind": row[2],
+            "attempt": None if row[3] is None else int(row[3]),
+            "started_at": str(row[4]), "ended_at": None if row[5] is None else str(row[5]),
+            "status": row[6], "rows": None if row[7] is None else int(row[7]),
+            "targets": [x for x in str(row[8] or "").split(",") if x], "error": row[9],
+        }
 
     def bar_history(self, limit: int = 20) -> list[dict[str, Any]]:
         """Every time the bar moved, and who moved it.
@@ -1374,21 +1549,23 @@ class Store:
                 [level, job_id, message, current_actor()],
             )
 
-    def recent_runs(self, limit: int = 50) -> list[dict[str, Any]]:
+    def recent_executions(self, limit: int = 50) -> list[dict[str, Any]]:
         self._meta()
         df = self.rcon.execute(
-            f"SELECT * FROM {self._meta_home}{RUNS} ORDER BY started_at DESC LIMIT {int(limit)}"
+            f"SELECT * FROM {self._meta_home}{EXECUTIONS} "
+            f"ORDER BY started_at DESC LIMIT {int(limit)}"
         ).df()
         return _records(df)
 
-    def last_run_by_job(self) -> dict[str, dict[str, Any]]:
+    def last_execution_by_definition(self) -> dict[str, dict[str, Any]]:
         self._meta()
         df = self.rcon.execute(f"""
-                SELECT r.* FROM {self._meta_home}{RUNS} r
-                JOIN (SELECT job_id, max(started_at) AS s FROM {self._meta_home}{RUNS} GROUP BY job_id) m
-                  ON r.job_id = m.job_id AND r.started_at = m.s
+                SELECT e.* FROM {self._meta_home}{EXECUTIONS} e
+                JOIN (SELECT definition_id, max(started_at) AS s
+                      FROM {self._meta_home}{EXECUTIONS} GROUP BY definition_id) m
+                  ON e.definition_id = m.definition_id AND e.started_at = m.s
         """).df()
-        return {r["job_id"]: r for r in _records(df)}
+        return {r["definition_id"]: r for r in _records(df)}
 
     def recent_events(self, limit: int = 200) -> list[dict[str, Any]]:
         self._meta()

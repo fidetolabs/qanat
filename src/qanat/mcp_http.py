@@ -45,7 +45,7 @@ from qanat.mcp import PROTOCOL, TOOLS, ScopeError, Session, _dispatch, rank, too
 
 #: The names this server may be reached by.
 #:
-#: At `full` this server writes step scripts and runs them, so anything that can
+#: At `full` this server writes transform scripts and runs them, so anything that can
 #: reach it can run code on the machine serving it. Binding to loopback is not
 #: enough on its own: a site the person visits can point its own domain at
 #: 127.0.0.1, and the browser then calls this server believing it is same-origin.
@@ -74,8 +74,8 @@ def allowed_hosts(extra: list[str] | None = None) -> set[str]:
     import os
 
     names = {h.lower() for h in LOOPBACK_HOSTS}
-    for source in (os.environ.get("QANAT_ALLOWED_HOSTS", "").split(","), extra or []):
-        names |= {h.strip().lower() for h in source if h and h.strip()}
+    for group in (os.environ.get("QANAT_ALLOWED_HOSTS", "").split(","), extra or []):
+        names |= {h.strip().lower() for h in group if h and h.strip()}
     return names
 
 

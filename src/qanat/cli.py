@@ -1,7 +1,8 @@
-"""qanat -- the command line. Four verbs, and each one is here for a reason.
+"""qanat -- the command line. Five verbs, and each one is here for a reason.
 
     qanat init [dir]     scaffold a project that runs green with no keys
     qanat check          hold the pipeline against the stage contract
+    qanat migrate [dir]  rewrite a project written in the old vocabulary
     qanat mcp            serve this project to an agent, over stdio or --http
     qanat schedule       run the clock, and serve nothing
 
@@ -25,6 +26,9 @@ differ. They are gone, each named below beside what replaced it:
 project exists. `mcp` is the transport. `check` is deliberate: somebody
 connecting for the first time has to be able to tell a broken project from a
 broken server, and a tool cannot answer that when the tool is what is broken.
+`migrate` is the same shape as `init`: it runs on a project that **cannot be
+loaded yet**, so no tool over MCP could reach it -- and rewriting somebody's
+architecture file is not a thing to do silently on the way past.
 
 **And the clock and the server are two commands, not one with a flag.** They
 used to be one process -- scheduler and MCP server together, with
@@ -169,11 +173,11 @@ def _demo_fill(target: Path) -> int:
         failed = []
         for r in run_all(store, project, root):
             if r.ok:
-                print(f"  {c('·', D)} {r.job_id:<26} {c(f'{r.rows:,} rows', G)}")
+                print(f"  {c('·', D)} {r.definition_id:<26} {c(f'{r.rows:,} rows', G)}")
             else:
                 failed.append(r)
         for r in failed:
-            print(f"  {c('error', R_)} {r.job_id}: {r.error}")
+            print(f"  {c('error', R_)} {r.definition_id}: {r.error}")
         return 1 if failed else 0
     finally:
         store.close()
@@ -193,7 +197,8 @@ def cmd_check(args) -> int:
     if rep.ok:
         print(c(f"✓ {project.name}: {len(project.stages)} stages, "
                 f"{len(project.tables())} tables, "
-                f"{len(project.sources) + len(project.steps)} jobs · contract holds", G))
+                f"{len(project.definitions)} definitions, "
+                f"{len(project.job_schedules)} schedules · contract holds", G))
         return 0
     print(c(f"✗ {len(rep.errors)} error(s)", R_))
     return 1
@@ -228,6 +233,40 @@ def _opened(args):
     return project, root, store
 
 
+# --------------------------------------------------------------------- migrate
+def cmd_migrate(args) -> int:
+    """Rewrite a project in the new vocabulary. Prints first, writes on --apply.
+
+    Printing first is the point: this is the one command that edits a file
+    somebody wrote by hand, and the one thing it cannot carry across is a
+    comment above a key that no longer exists.
+    """
+    from qanat.migrate import MigrateError, apply_migration, plan_migration
+
+    try:
+        m = plan_migration(args.directory)
+    except MigrateError as exc:
+        print(c(str(exc), R_), file=sys.stderr)
+        return 1
+
+    print(f"\n  {c('qanat migrate', B)} {D}{m.path}{X}\n")
+    if not m.needed:
+        print(f"  {c('ok', G)} already in the new vocabulary -- nothing to do\n")
+        return 0
+    for note in m.notes:
+        print(f"  {c('·', D)} {note}")
+    print()
+    if not args.apply:
+        print(f"  {D}nothing was written. Run again with --apply{X}\n")
+        return 0
+    written = apply_migration(m)
+    for path in written:
+        print(f"  {c('wrote', G)} {path}")
+    print(f"\n  {D}a comment above `sources:` or `steps:` has no key left to sit on, so it\n"
+          f"  is only in the copy beside the new file. Check it before deleting that.{X}\n")
+    return 0
+
+
 # -------------------------------------------------------------------- schedule
 def cmd_schedule(args) -> int:
     """The clock, and nothing served.
@@ -246,7 +285,7 @@ def cmd_schedule(args) -> int:
 
     sched = Scheduler(store, project, root, workers=args.workers)
     print(f"\n  {c('qanat', B)} {D}v{__version__}{X}  {project.name}")
-    print(f"  schedule {c(f'{len(sched._jobs)} job(s) on a clock', B)} "
+    print(f"  schedule {c(f'{len(sched._schedules)} schedule(s) on a clock', B)} "
           f"{D}· nothing is served from this process{X}")
     print(f"  store    {D}{project.store_url(root)}{X}\n")
     sys.stdout.flush()
@@ -254,7 +293,7 @@ def cmd_schedule(args) -> int:
     sched.start()
     if args.run_now:
         # One full pass in dependency order. Firing every job at once would only
-        # make the downstream steps fail on a table that is not there yet.
+        # make the downstream transforms fail on a table that is not there yet.
         import threading
 
         from qanat.runner import run_all
@@ -283,9 +322,9 @@ def _repair_after_crash(store, project, root) -> None:
 
     print(c(f"  a screen was interrupted at as-of {store.interrupted_screen}", Y))
     print(f"  {D}the tables it rewrote hold only the rows from then. Rebuilding from raw…{X}")
-    failed = [r for r in run_all(store, project, root, sources=False) if not r.ok]
+    failed = [r for r in run_all(store, project, root, ingest=False) if not r.ok]
     for r in failed:
-        print(f"  {c('error', R_)} {r.job_id}: {r.error}")
+        print(f"  {c('error', R_)} {r.definition_id}: {r.error}")
     if not failed:
         print(f"  {c('ok', G)} rebuilt\n")
 
@@ -365,7 +404,7 @@ def _serve_with_clock(args) -> int:
     print(f"\n  {c('qanat', B)} {D}v{__version__}{X}  {project.name}")
     print(f"  mcp      {c(f'http://{args.host}:{args.port}/mcp', B)} "
           f"{D}scope {args.scope}{X}")
-    print(f"  schedule {D}{len(sched._jobs)} job(s) on a clock, in this process{X}")
+    print(f"  schedule {D}{len(sched._schedules)} schedule(s) on a clock, in this process{X}")
     print(f"  store    {D}{project.store_url(root)}{X}\n")
     sys.stdout.flush()  # uvicorn blocks next, and a piped stdout would never flush
     try:
@@ -417,7 +456,7 @@ def build_parser() -> argparse.ArgumentParser:
                                     "QANAT_MCP_TOKEN")
     mc.add_argument("--workers", type=int, default=4, help="with --schedule")
     mc.add_argument("--run-now", action="store_true",
-                    help="with --schedule: fire every job once at startup")
+                    help="with --schedule: fire every definition once at startup")
     mc.add_argument("--log-level", default="warning")
     mc.add_argument("--force", action="store_true",
                     help="with --schedule: run even if the contract fails")
@@ -425,9 +464,15 @@ def build_parser() -> argparse.ArgumentParser:
     mc.add_argument("--read-only", action="store_true", help=argparse.SUPPRESS)
     mc.set_defaults(func=cmd_mcp)
 
+    mg = sub.add_parser("migrate", help="rewrite a project written in the old vocabulary")
+    mg.add_argument("directory", nargs="?", default=".")
+    mg.add_argument("--apply", action="store_true",
+                    help="write it. Without this the changes are printed and nothing moves")
+    mg.set_defaults(func=cmd_migrate)
+
     sc = sub.add_parser("schedule", help="run the clock, and serve nothing")
     sc.add_argument("--workers", type=int, default=4)
-    sc.add_argument("--run-now", action="store_true", help="fire every job once at startup")
+    sc.add_argument("--run-now", action="store_true", help="fire every definition once at startup")
     sc.add_argument("--force", action="store_true", help="run even if the contract fails")
     sc.set_defaults(func=cmd_schedule)
 

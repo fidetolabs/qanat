@@ -65,8 +65,8 @@ from typing import Any
 import httpx
 import pandas as pd
 
-from qanat.models import Source
-from qanat.sources.rest import expand
+from qanat.connectors.rest import expand
+from qanat.models import IngestionJobDefinition
 
 SUBMISSIONS = "https://data.sec.gov/submissions/CIK{cik}.json"
 TICKERS = "https://www.sec.gov/files/company_tickers.json"
@@ -94,23 +94,23 @@ class Throttle:
         self._last = time.monotonic()
 
 
-def user_agent(source: Source) -> str:
+def user_agent(job: IngestionJobDefinition) -> str:
     missing: set[str] = set()
-    ua = expand(source.options.get("user_agent"), missing) or os.environ.get("SEC_USER_AGENT")
+    ua = expand(job.options.get("user_agent"), missing) or os.environ.get("SEC_USER_AGENT")
     if missing:
         raise ValueError(
-            f"source '{source.id}': user_agent names {', '.join(sorted(missing))}, "
+            f"ingestion job '{job.id}': user_agent names {', '.join(sorted(missing))}, "
             "which is not set. Export it, or write the contact into qanat.yaml."
         )
     if not ua:
         raise ValueError(
-            f"source '{source.id}': the SEC refuses requests with no contact in the "
+            f"ingestion job '{job.id}': the SEC refuses requests with no contact in the "
             "User-Agent. Set options.user_agent to something like "
             "'acme research ops@acme.com', or export SEC_USER_AGENT."
         )
     if "@" not in ua:
         raise ValueError(
-            f"source '{source.id}': user_agent '{ua}' carries no email address. "
+            f"ingestion job '{job.id}': user_agent '{ua}' carries no email address. "
             "The SEC asks for one so it can contact whoever is making the requests."
         )
     return ua
@@ -214,37 +214,37 @@ def universe_path(named: str, root: Path) -> Path:
     )
 
 
-def companies_of(source: Source, root: Path) -> list[str]:
-    """The companies this source asks about: an inline list, or a named universe.
+def companies_of(job: IngestionJobDefinition, root: Path) -> list[str]:
+    """The companies this ingestion job asks about: an inline list, or a named universe.
 
     An inline array means changing the list of companies is an edit to the
-    source's wiring. A universe is a named list that outlives the source, which
-    is what `from_universe` is for -- the same option name the `rest` connector
-    already reads.
+    definition. A universe is a named list that outlives it, which is what
+    `from_universe` is for -- the same option name the `rest` connector already
+    reads.
     """
-    opts: dict[str, Any] = source.options or {}
+    opts: dict[str, Any] = job.options or {}
     if companies := opts.get("companies"):
         return [str(c) for c in companies]
     if named := opts.get("from_universe"):
         try:
             path = universe_path(str(named), root)
         except ValueError as exc:
-            raise ValueError(f"source '{source.id}': {exc}") from None
+            raise ValueError(f"ingestion job '{job.id}': {exc}") from None
         return [str(s).strip() for s in pd.read_csv(path)["symbol"].tolist() if str(s).strip()]
     raise ValueError(
-        f"source '{source.id}': sec needs options.companies, or options.from_universe "
+        f"ingestion job '{job.id}': sec needs options.companies, or options.from_universe "
         f"naming a universe this project holds"
     )
 
 
 def _in_window(row: dict, frm: str | None, to: str | None) -> bool:
-    """Is this filing inside the period the source asked for?
+    """Is this filing inside the period the definition asked for?
 
     Matched on `reportDate` -- the fiscal period the document reports on -- and
     falling back to the filing date for the forms that report on an event rather
     than a period and so carry no `reportDate` at all.
 
-    A source with neither bound takes everything, which is what every source
+    A definition with neither bound takes everything, which is what every one
     written before this option did.
     """
     if not frm and not to:
@@ -255,28 +255,26 @@ def _in_window(row: dict, frm: str | None, to: str | None) -> bool:
     return not (to and when > to)
 
 
-def forms_of(source: Source) -> list[str]:
-    """The forms this source asks for. One, or several.
+def forms_of(job: IngestionJobDefinition) -> list[str]:
+    """The forms this definition asks for. One, or several.
 
     `form: 10-K` and `form: [10-K, 10-Q]` are both allowed, and the second is
-    what lets one source cover a whole pile. It has to be one source, because a
-    table has exactly one producer -- so "one form per source" would have meant
-    one form per corpus.
+    what lets one definition cover a whole pile.
     """
-    raw = (source.options or {}).get("form", "10-K")
+    raw = (job.options or {}).get("form", "10-K")
     many = raw if isinstance(raw, (list, tuple)) else [raw]
     return [str(f).strip() for f in many if str(f).strip()]
 
 
-def fetch(source: Source, root: Path, on_warn=None) -> pd.DataFrame:
-    opts: dict[str, Any] = source.options or {}
-    companies = companies_of(source, root)
-    forms = forms_of(source)
+def fetch(job: IngestionJobDefinition, root: Path, on_warn=None) -> pd.DataFrame:
+    opts: dict[str, Any] = job.options or {}
+    companies = companies_of(job, root)
+    forms = forms_of(job)
     years = int(opts.get("years", 5))
     frm, to = opts.get("from") or None, opts.get("to") or None
     cache = root / str(opts.get("cache", "./data/documents"))
 
-    headers = {"User-Agent": user_agent(source), "Accept-Encoding": "gzip, deflate"}
+    headers = {"User-Agent": user_agent(job), "Accept-Encoding": "gzip, deflate"}
     throttle = Throttle(float(opts.get("rate_per_second", RATE_PER_SECOND)))
     rows: list[dict] = []
 
@@ -304,7 +302,7 @@ def fetch(source: Source, root: Path, on_warn=None) -> pd.DataFrame:
                 rows.append({
                     "id": f["accessionNumber"],
                     "entity": cik,
-                    # The row's own form, not the source's list. A source asking
+                    # The row's own form, not the definition's list. One asking
                     # for two forms would otherwise label every row with one.
                     "doc_type": f.get("form"),
                     # The day the numbers became public, and the only date a

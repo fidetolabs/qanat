@@ -53,8 +53,8 @@ def test_dump_project_uses_yaml_names(tmp_path: Path):
     project, _root = load(tmp_path)
     data = dump_project(project)
     assert "project" in data
-    assert data["sources"][0]["to"]
-    assert data["steps"][0]["from"]
+    assert data["ingestion_job_definitions"][0]["to"]
+    assert data["transform_job_definitions"][0]["from"]
 
 
 def test_run_retention_from_project(tmp_path: Path):
@@ -79,7 +79,7 @@ def test_saving_a_step_keeps_the_rest_of_the_file(tmp_path: Path):
     silently deletes the block next to it."""
     from conftest import write_demo_project as write_project
 
-    from qanat.editor import save_step
+    from qanat.editor import save_transform
     from qanat.project import load
 
     write_project(tmp_path, "demo")
@@ -89,13 +89,13 @@ def test_saving_a_step_keeps_the_rest_of_the_file(tmp_path: Path):
     before, root = load(tmp_path)
     assert before.time_columns
 
-    save_step(before, root, {"id": "momentum", "from": ["normalized.prices"],
-                             "to": ["features.momentum"], "script": "steps/momentum.py",
+    save_transform(before, root, {"id": "momentum", "from": ["normalized.prices"],
+                             "to": ["features.momentum"], "script": "transforms/momentum.py",
                              "options": {"lookback": 30}}, create_script=False)
 
     after, _ = load(tmp_path)
     assert after.time_columns == before.time_columns
-    assert after.job("momentum").options["lookback"] == 30
+    assert after.definition("momentum").options["lookback"] == 30
 
 
 def test_saving_keeps_every_field_a_job_declares(tmp_path: Path):
@@ -108,16 +108,23 @@ def test_saving_keeps_every_field_a_job_declares(tmp_path: Path):
         "project": "p", "store": "./d.duckdb",
         "stages": [{"id": "raw", "kind": "raw"}, {"id": "f", "kind": "features"},
                    {"id": "w", "kind": "weights"}],
-        "sources": [{"id": "s", "to": ["raw.t"], "connector": "csv", "options": {"path": "./seed/x.csv"},
-                     "key": ["symbol", "ts"], "schedule": "*/5 * * * *"}],
-        "steps": [{"id": "a", "from": ["raw.t"], "to": ["w.a"], "script": "a.py",
-                   "when": ["raw.t"]}],
+        "ingestion_job_definitions": [
+            {"id": "s", "to": ["raw.t"], "connector": "csv",
+             "options": {"path": "./seed/x.csv"}, "key": ["symbol", "ts"]}],
+        "transform_job_definitions": [
+            {"id": "a", "from": ["raw.t"], "to": ["w.a"], "script": "a.py",
+             "when": ["raw.t"]}],
+        # The cadence is its own object now, so it is its own round trip.
+        "job_schedules": [{"id": "s_5m", "definition": "s", "cron": "*/5 * * * *"}],
     }
     before = Project.model_validate(spec)
     after = project_from_dict(dump_project(before))
 
-    assert after.job("s").key == ["symbol", "ts"], "a source lost its dedupe key"
-    assert after.job("a").when == ["raw.t"], "a step lost what it waits on"
+    assert after.definition("s").key == ["symbol", "ts"], \
+        "an ingestion job lost its dedupe key"
+    assert after.definition("a").when == ["raw.t"], "a transform lost what it waits on"
+    assert [(x.id, x.definition, x.cron) for x in after.job_schedules] == \
+        [("s_5m", "s", "*/5 * * * *")], "the cadence did not survive the round trip"
 
 
 COMMENTED = """\
@@ -133,7 +140,7 @@ stages:
   kind: features
 - id: weights
   kind: weights
-sources:
+ingestion_job_definitions:
 - id: bars                       # the only feed
   to:
   - raw.bars
@@ -141,13 +148,13 @@ sources:
   # landed exactly as it arrived, never edited
   options:
     series: bars
-steps:
+transform_job_definitions:
 - id: normalize
   from:
   - raw.bars
   to:
   - normalized.prices
-  script: steps/normalize.sql
+  script: transforms/normalize.sql
 """
 
 
@@ -164,12 +171,12 @@ def test_saving_keeps_the_comments_somebody_wrote(tmp_path):
     cannot leave alone with the file.
     """
     (tmp_path / "qanat.yaml").write_text(COMMENTED)
-    (tmp_path / "steps").mkdir()
-    (tmp_path / "steps" / "normalize.sql").write_text("SELECT 1")
+    (tmp_path / "transforms").mkdir()
+    (tmp_path / "transforms" / "normalize.sql").write_text("SELECT 1")
     before = (tmp_path / "qanat.yaml").read_text()
 
     project, root = load(tmp_path)
-    project.steps[0].options = {"lookback": 20}      # the smallest real edit
+    project.transform_job_definitions[0].options = {"lookback": 20}      # the smallest real edit
     save_project(project, root)
 
     after = (tmp_path / "qanat.yaml").read_text()
@@ -182,23 +189,23 @@ def test_saving_keeps_the_comments_somebody_wrote(tmp_path):
 def test_a_save_still_says_exactly_what_the_project_holds(tmp_path):
     """Comments are kept, but never at the cost of the data being right."""
     (tmp_path / "qanat.yaml").write_text(COMMENTED)
-    (tmp_path / "steps").mkdir()
-    (tmp_path / "steps" / "normalize.sql").write_text("SELECT 1")
+    (tmp_path / "transforms").mkdir()
+    (tmp_path / "transforms" / "normalize.sql").write_text("SELECT 1")
 
     project, root = load(tmp_path)
-    project.steps = []                                # removals have to land too
+    project.transform_job_definitions = []                                # removals have to land too
     save_project(project, root)
 
     reloaded, _ = load(root)
-    assert reloaded.steps == []
+    assert reloaded.transform_job_definitions == []
     assert dump_project(reloaded) == dump_project(project)
 
 
 def test_repeated_saves_do_not_drift(tmp_path):
     """An editor writes on every change, so save-load-save has to be a fixed point."""
     (tmp_path / "qanat.yaml").write_text(COMMENTED)
-    (tmp_path / "steps").mkdir()
-    (tmp_path / "steps" / "normalize.sql").write_text("SELECT 1")
+    (tmp_path / "transforms").mkdir()
+    (tmp_path / "transforms" / "normalize.sql").write_text("SELECT 1")
 
     project, root = load(tmp_path)
     save_project(project, root)
@@ -213,8 +220,8 @@ def test_it_still_saves_without_ruamel(tmp_path, monkeypatch):
     import qanat.project_io as pio
 
     (tmp_path / "qanat.yaml").write_text(COMMENTED)
-    (tmp_path / "steps").mkdir()
-    (tmp_path / "steps" / "normalize.sql").write_text("SELECT 1")
+    (tmp_path / "transforms").mkdir()
+    (tmp_path / "transforms" / "normalize.sql").write_text("SELECT 1")
     monkeypatch.setattr(pio, "_round_tripper", lambda: None)
 
     project, root = load(tmp_path)

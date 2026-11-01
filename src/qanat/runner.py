@@ -1,7 +1,13 @@
-"""Running one job -- a source poll, or a step.
+"""Running one job -- an ingestion poll, or a transform.
 
-Every run writes a row into `_qanat_runs` before it starts and after it ends, so
+**A job is one definition for one exact datetime, and an execution is one attempt
+at it.** Every execution writes a row before it starts and after it ends, so
 anything asking what happened is reading history rather than being told a story.
+Three attempts at the 07:00 poll are one job and three executions, which is what
+makes *"did the 07:00 poll succeed?"* a question with an object to ask.
+
+An ad-hoc call opens a job too, with no schedule behind it. That is the honest
+record of a hand-triggered pass, and it is first-class rather than an exception.
 """
 
 from __future__ import annotations
@@ -13,45 +19,71 @@ import random
 import re
 import traceback
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
 import pandas as pd
 
-from qanat import sources as source_adapters
+from qanat import connectors
 from qanat.context import Context
-from qanat.models import Project, Source, Step
+from qanat.models import (
+    Definition,
+    IngestionJobDefinition,
+    Project,
+    TransformJobDefinition,
+)
 from qanat.store import Store, phys
 
 _VAR = re.compile(r"\$\{([a-zA-Z0-9_]+)\}")
 
 
-def _record_applied(store: Store, root: Path, job: Source | Step) -> None:
-    """What this job looked like the last time it worked -- the basis `qanat plan`
-    compares against. Written only on success, so a failed run never becomes the
-    thing a later change is measured from."""
-    from qanat.plan import digest, job_spec
+def _record_applied(store: Store, root: Path, definition: Definition) -> None:
+    """What this definition looked like the last time it worked -- the basis
+    `qanat plan` compares against, and the version a row's lineage resolves to.
+    Written only on success, so a failed execution never becomes the thing a
+    later change is measured from."""
+    from qanat.plan import definition_spec, digest
 
-    spec = job_spec(job, root)
-    store.set_state(job.id, digest(spec), json.dumps(spec, sort_keys=True))
+    spec = definition_spec(definition, root)
+    store.set_state(definition.id, digest(spec), json.dumps(spec, sort_keys=True))
+
+
+def _open(store: Store, definition: Definition, kind: str, targets: list[str],
+          scheduled_for: Any = None, schedule_id: str | None = None) -> tuple[int, int]:
+    """The job for this instant, and a fresh execution of it.
+
+    `scheduled_for` unset means now, which is the ad-hoc path: each call is its
+    own job. The scheduler passes the cron instant instead, so firing the same
+    instant twice adds an attempt to the job that is already there.
+    """
+    when = scheduled_for if scheduled_for is not None else datetime.now(timezone.utc).replace(tzinfo=None)
+    job_id = store.open_job(definition.id, kind, when, schedule_id)
+    return job_id, store.start_execution(job_id, definition.id, kind, targets)
 
 
 @dataclass
 class RunResult:
-    job_id: str
+    definition_id: str
     status: str
     rows: int = 0
     error: str | None = None
     targets: tuple[str, ...] = ()
+    #: Which job this was an execution of, and which execution. Carried out so a
+    #: caller can hand a row's provenance back to `lineage` without a second read.
+    job_id: int | None = None
+    execution_id: int | None = None
 
     @property
     def ok(self) -> bool:
         return self.status == "ok"
 
 
-# --------------------------------------------------------------------- sources
-def run_source(store: Store, project: Project, root: Path, src: Source) -> RunResult:
-    run_id = store.start_run(src.id, "source", [src.ref])
+# ------------------------------------------------------------------- ingestion
+def run_ingestion(store: Store, project: Project, root: Path,
+                  src: IngestionJobDefinition, scheduled_for: Any = None,
+                  schedule_id: str | None = None) -> RunResult:
+    job_id, run_id = _open(store, src, "ingestion", [src.ref], scheduled_for, schedule_id)
     try:
         # What is the newest row this table already holds? An adapter that can
         # fetch incrementally uses it to ask only for what came after.
@@ -59,49 +91,52 @@ def run_source(store: Store, project: Project, root: Path, src: Source) -> RunRe
         if store.exists(src.ref):
             with contextlib.suppress(Exception):
                 since = store.max_time(src.ref, project.time_columns.get(src.ref))
-        df = source_adapters.fetch(
+        df = connectors.fetch(
             src, root, on_warn=lambda m: store.event("warn", src.id, m), since=since
         )
         if df is None or df.empty:
             # An empty answer leaves the table alone. It used to clear it in replace
             # mode, which was correct for that mode and is the reason the mode is
-            # gone: the rows a source landed are the ones nothing else can rebuild,
+            # gone: the rows an ingestion job landed are the ones nothing else can rebuild,
             # so a poll that returns nothing says "nothing new", never "there was
             # nothing".
             _record_applied(store, root, src)
-            store.event("warn", src.id, "source returned no rows")
-            store.end_run(run_id, "ok", 0)
-            return RunResult(src.id, "ok", 0, targets=(src.ref,))
+            store.event("warn", src.id, "the connector returned no rows")
+            store.end_execution(run_id, "ok", 0)
+            return RunResult(src.id, "ok", 0, targets=(src.ref,),
+                             job_id=job_id, execution_id=run_id)
         rows = store.write(src.ref, df, mode=src.mode, key=src.key)
         _record_applied(store, root, src)
         store.event("ok", src.id, f"landed {rows:,} rows in {src.ref}")
-        store.end_run(run_id, "ok", rows)
-        return RunResult(src.id, "ok", rows, targets=(src.ref,))
-    except Exception as exc:  # noqa: BLE001 -- a failing source must not stop the loop
+        store.end_execution(run_id, "ok", rows)
+        return RunResult(src.id, "ok", rows, targets=(src.ref,),
+                         job_id=job_id, execution_id=run_id)
+    except Exception as exc:  # noqa: BLE001 -- one failing job must not stop the loop
         msg = f"{type(exc).__name__}: {exc}"
         store.event("error", src.id, msg)
-        store.end_run(run_id, "failed", 0, msg)
-        return RunResult(src.id, "failed", 0, msg, (src.ref,))
+        store.end_execution(run_id, "failed", 0, msg)
+        return RunResult(src.id, "failed", 0, msg, (src.ref,),
+                         job_id=job_id, execution_id=run_id)
     except BaseException as exc:
-        # `sys.exit()` or Ctrl-C. Not an Exception, so it used to skip `end_run` and
+        # `sys.exit()` or Ctrl-C. Not an Exception, so it used to skip the close and
         # leave the row saying `running` for ever. Record it, then let it through.
         store.event("error", src.id, f"interrupted -- {type(exc).__name__}"[:400])
-        store.end_run(run_id, "interrupted", 0, str(exc)[:2000])
+        store.end_execution(run_id, "interrupted", 0, str(exc)[:2000])
         raise
 
 
-# ----------------------------------------------------------------------- steps
+# ------------------------------------------------------------------ transforms
 def _load_module(path: Path):
-    spec = importlib.util.spec_from_file_location(f"qanat_step_{path.stem}", path)
+    spec = importlib.util.spec_from_file_location(f"qanat_transform_{path.stem}", path)
     if spec is None or spec.loader is None:
-        raise ImportError(f"cannot import step script {path}")
+        raise ImportError(f"cannot import transform script {path}")
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
     return mod
 
 
 def _seed(seed: int | None) -> None:
-    """Pin every generator a step might reach for, so a screen repeats exactly."""
+    """Pin every generator a transform might reach for, so a screen repeats."""
     if seed is None:
         return
     random.seed(seed)
@@ -113,81 +148,81 @@ def _seed(seed: int | None) -> None:
         pass
 
 
-def _run_sql(store: Store, ctx: Context, step: Step, script: Path) -> int:
+def _run_sql(store: Store, ctx: Context, transform: TransformJobDefinition, script: Path) -> int:
     sql = script.read_text()
-    names: dict[str, Any] = {**step.options}
+    names: dict[str, Any] = {**transform.options}
     if ctx.as_of:
         names["as_of"] = ctx.as_of
     sql = _VAR.sub(lambda m: str(names.get(m.group(1), m.group(0))), sql)
-    if step.universe:
+    if transform.universe:
         store.con.register("universe", ctx.universe())
     try:
-        return store.sql_into(step.writes[0], sql.strip().rstrip(";"))
+        return store.sql_into(transform.writes[0], sql.strip().rstrip(";"))
     finally:
-        if step.universe:
+        if transform.universe:
             store.con.unregister("universe")
 
 
-def _run_python(store: Store, ctx: Context, step: Step, script: Path) -> int:
+def _run_python(store: Store, ctx: Context, transform: TransformJobDefinition, script: Path) -> int:
     mod = _load_module(script)
     if not hasattr(mod, "run"):
         raise AttributeError(f"{script.name} must define run(ctx)")
     out = mod.run(ctx)
 
     if isinstance(out, pd.DataFrame):
-        if len(step.writes) != 1:
+        if len(transform.writes) != 1:
             raise ValueError(
-                f"step '{step.id}' writes {len(step.writes)} tables, so run(ctx) must return "
+                f"transform '{transform.id}' writes {len(transform.writes)} tables, so run(ctx) must return "
                 "a dict of {table: dataframe}"
             )
-        out = {step.writes[0]: out}
+        out = {transform.writes[0]: out}
     if not isinstance(out, dict):
-        raise TypeError(f"step '{step.id}': run(ctx) must return a DataFrame or a dict of them")
+        raise TypeError(f"transform '{transform.id}': run(ctx) must return a DataFrame or a dict of them")
 
     total = 0
-    declared = {w.partition(".")[2]: w for w in step.writes}
+    declared = {w.partition(".")[2]: w for w in transform.writes}
     # Check the whole set before writing any of it. Validating as we went meant a
-    # step that failed halfway left the tables it had already written, so the graph
-    # was half updated while the step was marked failed.
-    unknown = [k for k in out if k not in step.writes and k not in declared]
+    # transform that failed halfway left the tables it had already written, so the graph
+    # was half updated while the transform was marked failed.
+    unknown = [k for k in out if k not in transform.writes and k not in declared]
     if unknown:
         raise KeyError(
-            f"step '{step.id}' returned '{unknown[0]}', which it did not declare in writes "
-            f"({', '.join(step.writes)})"
+            f"transform '{transform.id}' returned '{unknown[0]}', which it did not declare in writes "
+            f"({', '.join(transform.writes)})"
         )
-    missing_up_front = set(step.writes) - {k if k in step.writes else declared.get(k) for k in out}
+    missing_up_front = set(transform.writes) - {k if k in transform.writes else declared.get(k) for k in out}
     if missing_up_front:
         raise ValueError(
-            f"step '{step.id}' declared but did not write: {', '.join(sorted(missing_up_front))}"
+            f"transform '{transform.id}' declared but did not write: {', '.join(sorted(missing_up_front))}"
         )
     for key, df in out.items():
-        ref = key if key in step.writes else declared.get(key)
+        ref = key if key in transform.writes else declared.get(key)
         if ref is None:
             raise KeyError(
-                f"step '{step.id}' returned '{key}', which it did not declare in writes "
-                f"({', '.join(step.writes)})"
+                f"transform '{transform.id}' returned '{key}', which it did not declare in writes "
+                f"({', '.join(transform.writes)})"
             )
         total += store.write(ref, df)
     return total
 
 
-def _check_lookahead(store: Store, project: Project, step: Step, as_of: str) -> None:
-    """A screened step may not write a row stamped after the moment it ran.
+def _check_lookahead(store: Store, project: Project, transform: TransformJobDefinition, as_of: str) -> None:
+    """A screened transform may not write a row stamped after the moment it ran.
 
-    The as-of views already keep the future out of what a step reads. This catches
-    the other way in -- a step that built a timestamp itself, or read around the
-    views with raw SQL -- and it fails the step rather than warning, because a
+    The as-of views already keep the future out of what a transform reads. This catches
+    the other way in -- a transform that built a timestamp itself, or read around the
+    views with raw SQL -- and it fails the transform rather than warning, because a
     number computed from the future is worse than no number.
     """
     import pandas as pd
 
     cut = pd.Timestamp(as_of)
-    for ref in step.writes:
+    for ref in transform.writes:
         col = store.time_column(ref, project.time_columns.get(ref))
         if col is None:
             # Nothing to check against: this table has no clock, so the as-of views
             # do not filter it either. Silence made the guard look wider than it is.
-            store.event("warn", step.id, (
+            store.event("warn", transform.id, (
                 f"{ref} has no time column, so it was not checked for lookahead and the "
                 f"as-of views do not filter it. Set time_columns['{ref}'] if a column "
                 f"there carries the date under another name"
@@ -198,61 +233,66 @@ def _check_lookahead(store: Store, project: Project, step: Step, as_of: str) -> 
             continue
         if pd.Timestamp(newest) > cut:
             raise ValueError(
-                f"lookahead: '{step.id}' wrote {ref} with {col} = {newest}, "
+                f"lookahead: '{transform.id}' wrote {ref} with {col} = {newest}, "
                 f"which is after the as-of date {as_of}"
             )
 
 
-def run_step(
+def run_transform(
     store: Store,
     project: Project,
     root: Path,
-    step: Step,
+    transform: TransformJobDefinition,
     as_of: str | None = None,
     seed: int | None = None,
     universe: str | None = None,
+    scheduled_for: Any = None,
+    schedule_id: str | None = None,
 ) -> RunResult:
-    run_id = store.start_run(step.id, "step", list(step.writes))
-    ctx = Context(store, project, root, step, as_of=as_of, universe=universe)
-    script = root / step.script
+    job_id, run_id = _open(store, transform, "transform", list(transform.writes),
+                           scheduled_for, schedule_id)
+    ctx = Context(store, project, root, transform, as_of=as_of, universe=universe)
+    script = root / transform.script
     try:
-        missing = [r for r in step.reads if not store.exists(r)]
+        missing = [r for r in transform.reads if not store.exists(r)]
         if missing:
             raise LookupError(f"upstream table(s) not there yet: {', '.join(missing)}")
 
         _seed(seed)
         rows = (
-            _run_sql(store, ctx, step, script)
+            _run_sql(store, ctx, transform, script)
             if script.suffix == ".sql"
-            else _run_python(store, ctx, step, script)
+            else _run_python(store, ctx, transform, script)
         )
         if as_of:
-            _check_lookahead(store, project, step, as_of)
-        _record_applied(store, root, step)
-        store.event("ok", step.id, f"wrote {rows:,} rows to {', '.join(step.writes)}")
-        store.end_run(run_id, "ok", rows)
-        return RunResult(step.id, "ok", rows, targets=tuple(step.writes))
+            _check_lookahead(store, project, transform, as_of)
+        _record_applied(store, root, transform)
+        store.event("ok", transform.id, f"wrote {rows:,} rows to {', '.join(transform.writes)}")
+        store.end_execution(run_id, "ok", rows)
+        return RunResult(transform.id, "ok", rows, targets=tuple(transform.writes),
+                         job_id=job_id, execution_id=run_id)
     except Exception as exc:  # noqa: BLE001
         msg = f"{type(exc).__name__}: {exc}"
-        store.event("error", step.id, msg.splitlines()[0][:400])
-        store.end_run(run_id, "failed", 0, traceback.format_exc(limit=3)[:2000])
-        return RunResult(step.id, "failed", 0, msg, tuple(step.writes))
+        store.event("error", transform.id, msg.splitlines()[0][:400])
+        store.end_execution(run_id, "failed", 0, traceback.format_exc(limit=3)[:2000])
+        return RunResult(transform.id, "failed", 0, msg, tuple(transform.writes),
+                         job_id=job_id, execution_id=run_id)
     except BaseException as exc:
         # `sys.exit()` in a script, or Ctrl-C. These are not Exceptions, so they used
-        # to sail past `end_run` and leave the row saying `running` for ever, and
+        # to sail past the close and leave the row saying `running` for ever, and
         # every later reader believed it. Record, then re-raise.
         msg = f"{type(exc).__name__}: {exc}"
-        store.event("error", step.id, f"interrupted -- {msg}"[:400])
-        store.end_run(run_id, "interrupted", 0, msg[:2000])
+        store.event("error", transform.id, f"interrupted -- {msg}"[:400])
+        store.end_execution(run_id, "interrupted", 0, msg[:2000])
         raise
 
 
 # ------------------------------------------------------------------- the graph
-def order(project: Project) -> list[Step]:
-    """Steps, sorted so that a step runs after everything it reads."""
-    remaining = list(project.steps)
-    produced = {s.ref for s in project.sources}
-    out: list[Step] = []
+def order(project: Project) -> list[TransformJobDefinition]:
+    """Transforms, sorted so each one runs after everything it reads."""
+    remaining = list(project.transform_job_definitions)
+    produced = {d.ref for d in project.ingestion_job_definitions}
+    out: list[TransformJobDefinition] = []
     while remaining:
         ready = [s for s in remaining if all(r in produced for r in s.reads)]
         if not ready:
@@ -265,26 +305,32 @@ def order(project: Project) -> list[Step]:
     return out
 
 
-def run_job(
+def run_definition(
     store: Store,
     project: Project,
     root: Path,
-    job_id: str,
+    definition_id: str,
     as_of: str | None = None,
     seed: int | None = None,
     universe: str | None = None,
+    scheduled_for: Any = None,
+    schedule_id: str | None = None,
 ) -> RunResult:
-    job = project.job(job_id)
-    if job is None:
-        raise KeyError(f"no source or step called '{job_id}'")
-    if isinstance(job, Source):
+    """One definition, now. Either kind -- the definition says which it is."""
+    definition = project.definition(definition_id)
+    if definition is None:
+        raise KeyError(f"no job definition called '{definition_id}'")
+    if isinstance(definition, IngestionJobDefinition):
         if as_of:
             raise ValueError(
-                f"'{job_id}' is a source. A screen reads what already landed; "
-                "it never polls the outside world again"
+                f"'{definition_id}' is an ingestion job. A screen reads what already "
+                "landed; it never polls the outside world again"
             )
-        return run_source(store, project, root, job)
-    return run_step(store, project, root, job, as_of=as_of, seed=seed, universe=universe)
+        return run_ingestion(store, project, root, definition,
+                             scheduled_for=scheduled_for, schedule_id=schedule_id)
+    return run_transform(store, project, root, definition, as_of=as_of, seed=seed,
+                         universe=universe, scheduled_for=scheduled_for,
+                         schedule_id=schedule_id)
 
 
 def run_all(
@@ -293,44 +339,45 @@ def run_all(
     root: Path,
     as_of: str | None = None,
     seed: int | None = None,
-    sources: bool = True,
+    ingest: bool = True,
     universe: str | None = None,
     only: set[str] | None = None,
     on_job: Any = None,
 ) -> list[RunResult]:
-    """Poll every source, then run every step in dependency order. One pass.
+    """Every ingestion job, then every transform in dependency order. One pass.
 
-    A screen passes `sources=False`: the raw tables are the record of what arrived,
+    A screen passes `ingest=False`: the raw tables are the record of what arrived,
     and re-polling a live feed during a screen would overwrite the very history
     being measured.
     """
     results: list[RunResult] = []
-    if sources:
-        for s in project.sources:
-            results.append(run_source(store, project, root, s))
+    if ingest:
+        for d in project.ingestion_job_definitions:
+            results.append(run_ingestion(store, project, root, d))
             if on_job:
                 on_job(results[-1])
-    # Tables whose producer failed this pass. A step reading one of them would
+    # Tables whose writer failed this pass. A transform reading one of them would
     # recompute from the last good version, report `ok`, and stamp itself as applied
     # -- so one vendor failure left a store that looked green everywhere with
     # mixed-vintage data underneath.
     broken: set[str] = {w for r in results if not r.ok for w in r.targets}
-    for step in order(project):
-        if only is not None and step.id not in only:
+    for transform in order(project):
+        if only is not None and transform.id not in only:
             continue
-        stale_inputs = sorted(set(step.reads) & broken)
+        stale_inputs = sorted(set(transform.reads) & broken)
         if stale_inputs:
-            store.event("warn", step.id,
+            store.event("warn", transform.id,
                         f"skipped -- {', '.join(stale_inputs)} did not refresh this pass")
-            results.append(RunResult(step.id, "skipped", 0,
+            results.append(RunResult(transform.id, "skipped", 0,
                                      f"upstream did not refresh: {', '.join(stale_inputs)}",
-                                     tuple(step.writes)))
-            broken.update(step.writes)
+                                     tuple(transform.writes)))
+            broken.update(transform.writes)
             if on_job:
                 on_job(results[-1])
             continue
         results.append(
-            run_step(store, project, root, step, as_of=as_of, seed=seed, universe=universe)
+            run_transform(store, project, root, transform, as_of=as_of, seed=seed,
+                          universe=universe)
         )
         if not results[-1].ok:
             broken.update(results[-1].targets)
@@ -339,4 +386,5 @@ def run_all(
     return results
 
 
-__all__ = ["RunResult", "order", "phys", "run_all", "run_job", "run_source", "run_step"]
+__all__ = ["RunResult", "order", "phys", "run_all", "run_definition", "run_ingestion",
+           "run_transform"]

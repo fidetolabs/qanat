@@ -25,8 +25,8 @@ defend, which starts to matter the day this is hosted. And every tool definition
 is sent on every request, so an agent that wants filing rows should not carry
 thirty-odd definitions to use four.
 
-**`authoring` is the top rung and the default stops below it.** `save_step`,
-`remove_step` and `save_source` keep working, and the caller they serve is the
+**`authoring` is the top rung and the default stops below it.** The authoring
+tools keep working, and the caller they serve is the
 professional bringing a feed in through the HTTP, SQL or CSV connector. But the
 pipeline from a filing to a metric is the same in every project, so somebody
 screening filings has no use for the tools that rewire it -- and carrying them
@@ -184,7 +184,7 @@ def _known_table(s: Session, ref: str) -> str:
       scope="data")
 def _list_tables(s: Session, args: dict) -> Any:
     out = []
-    producers = s.project.producers()
+    writers = s.project.writers()
     for ref in s.project.tables():
         info = s.store.table_info(ref)
         stage = s.project.stage(ref.split(".")[0])
@@ -192,7 +192,9 @@ def _list_tables(s: Session, args: dict) -> Any:
             "ref": ref,
             "stage": ref.split(".")[0],
             "stage_kind": stage.kind if stage else None,
-            "producer": producers.get(ref),
+            # A list: several definitions may write one table, and a single
+            # `producer` string could only name one of them.
+            "written_by": writers.get(ref, []),
             "rows": info.rows if info else 0,
             "written": info is not None,
         })
@@ -256,8 +258,8 @@ def _lineage(s: Session, args: dict) -> Any:
 
     ref = _known_table(s, _need(args, "ref"))
     es = edges(s.project)
-    upstream = [{"from": a, "step": st} for a, b, st in es if b == ref]
-    downstream = [{"to": b, "step": st} for a, b, st in es if a == ref]
+    upstream = [{"from": a, "definition": d} for a, b, d in es if b == ref]
+    downstream = [{"to": b, "definition": d} for a, b, d in es if a == ref]
 
     reach, seen = [], {ref}
     frontier = [ref]
@@ -273,43 +275,55 @@ def _lineage(s: Session, args: dict) -> Any:
 
 
 @tool("list_steps",
-      "Every job in the graph -- sources and steps -- in dependency order. `stage` keeps only the "
-      "steps writing into one stage, which is how you find what produces a given table: there is "
-      "no separate name for those, the stage is what identifies them.",
+      "Every definition in the graph -- ingestion and transform -- in dependency order, "
+      "each with the cadences pointing at it. `stage` keeps only the transforms writing "
+      "into one stage, which is how you find what produces a given table: there is no "
+      "separate name for those, the stage is what identifies them.",
       {"properties": {
           "stage": {"type": "string",
-                    "description": "keep only steps writing into this stage, e.g. normalized"},
+                    "description": "keep only transforms writing into this stage, "
+                                   "e.g. normalized"},
       }, "required": []},
       scope="research")
 def _list_steps(s: Session, args: dict) -> Any:
     from qanat.runner import order
 
+    def cadences(did: str) -> list[dict[str, Any]]:
+        # A list, because a definition may carry several. The cadence is not a
+        # field on the definition any more, so this is a join rather than a read.
+        return [{"id": x.id, "cron": x.cron, "enabled": x.enabled}
+                for x in s.project.schedules_for(did)]
+
     stage = str(args.get("stage") or "").strip()
-    steps = [x for x in order(s.project)
-             if not stage or any(w.startswith(f"{stage}.") for w in x.writes)]
+    chosen = [x for x in order(s.project)
+              if not stage or any(w.startswith(f"{stage}.") for w in x.writes)]
     rows = [{"id": x.id, "from": x.reads, "to": x.writes, "script": x.script,
-             "universe": x.universe, "schedule": x.schedule, "options": x.options}
-            for x in steps]
+             "universe": x.universe, "schedules": cadences(x.id), "options": x.options}
+            for x in chosen]
     return {
-        "sources": [] if stage else [
+        "ingestion": [] if stage else [
             {"id": x.id, "to": x.writes, "connector": x.connector,
-             "schedule": x.schedule, "options": x.options} for x in s.project.sources],
-        "steps": rows,
+             "schedules": cadences(x.id), "options": x.options}
+            for x in s.project.ingestion_job_definitions],
+        "transforms": rows,
     }
 
 
-@tool("read_step", "The script a step runs.",
+@tool("read_step", "The script a transform runs.",
       {"properties": {"id": {"type": "string"}}, "required": ["id"]},
       scope="research")
 def _read_step(s: Session, args: dict) -> Any:
     sid = _need(args, "id")
-    step = next((x for x in s.project.steps if x.id == sid), None)
-    if step is None:
-        raise ToolError(f"no step '{sid}'. Steps: {', '.join(x.id for x in s.project.steps)}")
-    path = s.root / step.script
+    known = s.project.transform_job_definitions
+    definition = next((x for x in known if x.id == sid), None)
+    if definition is None:
+        raise ToolError(
+            f"no transform '{sid}'. Transforms: {', '.join(x.id for x in known)}")
+    path = s.root / definition.script
     if not path.is_file():
-        raise ToolError(f"step '{sid}' points at {step.script}, which is not on disk")
-    return {"id": sid, "script": step.script, "language": path.suffix.lstrip("."),
+        raise ToolError(
+            f"transform '{sid}' points at {definition.script}, which is not on disk")
+    return {"id": sid, "script": definition.script, "language": path.suffix.lstrip("."),
             "source": path.read_text()}
 
 
@@ -389,24 +403,30 @@ def _plan(s: Session, args: dict) -> Any:
       writes=True,
       scope="full")
 def _run(s: Session, args: dict) -> Any:
-    from qanat.runner import run_all, run_job
+    from qanat.runner import run_all, run_definition
 
     as_of, seed = args.get("as_of") or None, args.get("seed")
     if as_of:
         s.store.open_pit(as_of, s.project.time_columns)
     try:
         if args.get("job"):
-            results = [run_job(s.store, s.project, s.root, args["job"], as_of=as_of, seed=seed)]
+            results = [run_definition(s.store, s.project, s.root, args["job"],
+                                      as_of=as_of, seed=seed)]
         else:
-            results = run_all(s.store, s.project, s.root, as_of=as_of, seed=seed, sources=not as_of)
+            results = run_all(s.store, s.project, s.root, as_of=as_of, seed=seed,
+                              ingest=not as_of)
     finally:
         if as_of:
             s.store.close_pit()
     return {
         "as_of": as_of,
         "ok": all(r.ok for r in results),
-        "results": [{"job": r.job_id, "status": r.status, "rows": r.rows,
-                     "wrote": list(r.targets), "error": r.error} for r in results],
+        # `job` and `execution` ride out, because a caller that just landed rows
+        # and wants to know where they came from should not have to search a log
+        # for them.
+        "results": [{"definition": r.definition_id, "status": r.status, "rows": r.rows,
+                     "wrote": list(r.targets), "job": r.job_id,
+                     "execution": r.execution_id, "error": r.error} for r in results],
     }
 
 
@@ -712,7 +732,8 @@ def _check_number(s: Session, args: dict) -> Any:
 
 @tool("stale_tables",
       "Tables whose rows were computed by a job that has changed since. Nothing is deleted when "
-      "a step is edited -- the rows simply stop being current. Anything reading them is reading "
+      "a transform is edited -- the rows simply stop being current. Anything reading them is "
+      "reading "
       "yesterday's answer until the pipeline is run again.",
       {"properties": {}, "required": []},
       scope="data")
@@ -879,58 +900,89 @@ def _unsubscribe_filings(s: Session, args: dict) -> Any:
 
 
 
-@tool("list_runs", "Recent job runs, with status and row counts.",
+@tool("list_runs",
+      "Recent job executions, with status and row counts. Each one names the job it was "
+      "an attempt at, and the attempt number -- so three rows under one job id are three "
+      "tries at the same scheduled moment rather than three unrelated passes.",
       {"properties": {"limit": {"type": "integer", "default": 30}}},
       scope="full")
 def _list_runs(s: Session, args: dict) -> Any:
-    return {"runs": s.store.recent_runs(int(args.get("limit") or 30))}
+    return {"executions": s.store.recent_executions(int(args.get("limit") or 30))}
 
 
 # ---- author ------------------------------------------------------------------
+#: Behind an authoring tool, `schedule` is a cadence the caller asked for and
+#: the tool writes a `job_schedule` row for it. The argument stays because
+#: "make this run daily" is a thing a caller does; what changed is that it is
+#: no longer a field welded to the selection, so a second cadence is a second
+#: row and does not overwrite the first.
+def _cadence(s: Session, definition_id: str, cron: str) -> dict[str, Any]:
+    from qanat.editor import EditorError, save_schedule
+
+    sid = f"{definition_id}_cron"
+    try:
+        save_schedule(s.project, s.root, {"id": sid, "definition": definition_id,
+                                          "cron": cron, "enabled": True})
+    except EditorError as exc:
+        raise ToolError(str(exc)) from exc
+    return {"id": sid, "cron": cron}
+
+
 @tool("save_step",
-      "Add a step, or replace one that exists. `script` is written to disk when `source` is given. "
-      "`from` is a list and means it: a step may read several tables, across any stage earlier "
-      "than the one it writes.",
+      "Add a transform, or replace one that exists. `script` is written to disk when "
+      "`source` is given. `from` is a list and means it: a transform may read several "
+      "tables, across any stage earlier than the one it writes. `schedule` writes a "
+      "cadence row pointing at it -- several may point at one transform, and saving "
+      "one does not disturb the others.",
       {"properties": {
           "id": {"type": "string"},
           "from": {"type": "array", "items": {"type": "string"},
-                   "description": "every table this step may read. `ctx.read()` refuses anything "
-                                  "not named here, so this is the permission set as well as the "
-                                  "dependency list"},
+                   "description": "every table this transform may read. `ctx.read()` "
+                                  "refuses anything not named here, so this is the "
+                                  "permission set as well as the dependency list"},
           "to": {"type": "array", "items": {"type": "string"}},
           "script": {"type": "string", "description": "path relative to the project root"},
           "source": {"type": "string", "description": "the script body to write"},
           "universe": {"type": "string"},
-          "schedule": {"type": "string"},
+          "schedule": {"type": "string",
+                       "description": "a cron line. Stored as its own cadence row, so "
+                                      "this transform may carry more than one"},
           "options": {"type": "object"},
       }, "required": ["id", "to", "script"]},
       writes=True,
       scope="authoring")
 def _save_step(s: Session, args: dict) -> Any:
-    from qanat.editor import EditorError, save_step
+    from qanat.editor import EditorError, save_transform
 
     body = args.pop("source", None)
+    cron = args.pop("schedule", None)
     raw = {k: v for k, v in args.items() if v is not None}
     if body is not None:
         path = s.root / raw["script"]
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(body)
     try:
-        written = save_step(s.project, s.root, raw, create_script=body is None)
+        written = save_transform(s.project, s.root, raw, create_script=body is None)
     except EditorError as exc:
         raise ToolError(str(exc)) from exc
     s.reload()
-    return {"saved": raw["id"], "warnings": written}
+    out: dict[str, Any] = {"saved": raw["id"], "warnings": written}
+    if cron:
+        out["schedule"] = _cadence(s, raw["id"], str(cron))
+        s.reload()
+    return out
 
 
-@tool("remove_step", "Delete a step from the project file. The script on disk is left alone.",
+@tool("remove_step",
+      "Delete a transform from the project file, and the cadences pointing at it. The "
+      "script on disk is left alone.",
       {"properties": {"id": {"type": "string"}}, "required": ["id"]}, writes=True,
       scope="authoring")
 def _remove_step(s: Session, args: dict) -> Any:
-    from qanat.editor import EditorError, delete_step
+    from qanat.editor import EditorError, delete_transform
 
     try:
-        written = delete_step(s.project, s.root, _need(args, "id"))
+        written = delete_transform(s.project, s.root, _need(args, "id"))
     except EditorError as exc:
         raise ToolError(str(exc)) from exc
     s.reload()
@@ -939,7 +991,8 @@ def _remove_step(s: Session, args: dict) -> Any:
 
 @tool("save_universe",
       "Add or replace a universe: the symbols a portfolio may hold. Pass `symbols` and the csv "
-      "is written for you. A step that holds a basket holds itself to one, so a project with "
+      "is written for you. A transform that holds a basket holds itself to one, so a project "
+      "with "
       "none cannot install one until this has been called.",
       {"properties": {
           "id": {"type": "string", "description": "lower case, e.g. tech8"},
@@ -978,23 +1031,37 @@ def _save_universe(s: Session, args: dict) -> Any:
                     "to the csv when you know them"}
 
 
-@tool("save_source", "Add or replace a source.",
+@tool("save_source",
+      "Add or replace an ingestion job: what to fetch, and the one table it lands in. "
+      "`key` names the columns that identify one row -- a row that arrives again "
+      "unchanged is not stored twice, and one that arrives changed is written beside "
+      "the old one. `schedule` writes a cadence row pointing at this job.",
       {"properties": {"id": {"type": "string"},
                       "to": {"type": "array", "items": {"type": "string"}},
-                      "connector": {"type": "string", "enum": ["rest", "sql", "csv", "sec", "yfinance"]},
-                      "mode": {"type": "string", "enum": ["append", "replace"]},
-                      "schedule": {"type": "string"}, "options": {"type": "object"}},
+                      "connector": {"type": "string",
+                                    "enum": ["rest", "sql", "csv", "sec", "yfinance"]},
+                      "key": {"type": "array", "items": {"type": "string"}},
+                      "schedule": {"type": "string",
+                                   "description": "a cron line. Stored as its own cadence "
+                                                  "row, so this job may carry more than one"},
+                      "options": {"type": "object"}},
        "required": ["id", "to", "connector"]}, writes=True,
       scope="authoring")
 def _save_source(s: Session, args: dict) -> Any:
-    from qanat.editor import EditorError, save_source
+    from qanat.editor import EditorError, save_ingestion
 
+    cron = args.pop("schedule", None)
     try:
-        written = save_source(s.project, s.root, {k: v for k, v in args.items() if v is not None})
+        written = save_ingestion(s.project, s.root,
+                                 {k: v for k, v in args.items() if v is not None})
     except EditorError as exc:
         raise ToolError(str(exc)) from exc
     s.reload()
-    return {"saved": args["id"], "warnings": written}
+    out: dict[str, Any] = {"saved": args["id"], "warnings": written}
+    if cron:
+        out["schedule"] = _cadence(s, str(args["id"]), str(cron))
+        s.reload()
+    return out
 
 
 # ------------------------------------------------------------------- transport

@@ -1,21 +1,30 @@
 """Project mutations: one function per edit, each validated before it lands.
 
 The write tools in `mcp` are the callers. Nothing here writes to the store -- an
-edit changes `qanat.yaml` and, for a new step, the script file beside it.
+edit changes `qanat.yaml` and, for a new transform, the script file beside it.
 """
 
 from __future__ import annotations
 
 from pathlib import Path
 
-from qanat.models import Metric, Project, Source, Step, Universe
+from qanat.models import (
+    IngestionJobDefinition,
+    JobSchedule,
+    Metric,
+    Project,
+    TransformJobDefinition,
+    Universe,
+)
 from qanat.project import validate
 from qanat.project_io import (
-    remove_source,
-    remove_step,
+    remove_ingestion,
+    remove_schedule,
+    remove_transform,
     save_project,
-    upsert_source,
-    upsert_step,
+    upsert_ingestion,
+    upsert_schedule,
+    upsert_transform,
 )
 
 
@@ -24,18 +33,18 @@ class EditorError(Exception):
 
 
 STUB_SQL = """\
--- New step. Reads from upstream tables declared in `from:`.
+-- New transform. Reads the upstream tables declared in `from:`.
 SELECT *
 FROM {from_table}
 LIMIT 0
 """
 
 STUB_PY = '''\
-"""New step. Edit run(ctx) and return a DataFrame (or dict of DataFrames)."""
+"""New transform. Edit run(ctx) and return a DataFrame (or dict of them)."""
 
 
 def run(ctx):
-    raise NotImplementedError("edit this step")
+    raise NotImplementedError("edit this transform")
 '''
 
 
@@ -43,7 +52,7 @@ def _edit(project: Project, root: Path, change) -> list[str]:
     """Apply a change to a copy, and keep it only if the whole project still holds.
 
     Editing in place and validating afterwards meant a rejected edit stayed in
-    memory: every later read then reported errors about a step that is not in the
+    memory: every later read then reported errors about a definition not in the
     file, and every later edit failed against it until the process was restarted.
     One bad field took the whole editor down.
     """
@@ -58,52 +67,75 @@ def _edit(project: Project, root: Path, change) -> list[str]:
     return rep.warnings
 
 
-def save_source(project: Project, root: Path, raw: dict) -> list[str]:
-    source = Source.model_validate(raw)
-    return _edit(project, root, lambda d: upsert_source(d, source))
+def save_ingestion(project: Project, root: Path, raw: dict) -> list[str]:
+    definition = IngestionJobDefinition.model_validate(raw)
+    return _edit(project, root, lambda d: upsert_ingestion(d, definition))
 
 
-def save_step(project: Project, root: Path, raw: dict, create_script: bool = True) -> list[str]:
-    step = Step.model_validate(raw)
-    script = root / step.script
+def save_transform(project: Project, root: Path, raw: dict,
+                   create_script: bool = True) -> list[str]:
+    definition = TransformJobDefinition.model_validate(raw)
+    script = root / definition.script
     # The stub used to be written before anything was checked, so a request the API
     # rejected with a 400 still left a file on disk -- at whatever path was asked
     # for, including one outside the project. Validate first, write second.
     stub = None
     if create_script and not script.is_file():
         if script.suffix == ".sql":
-            from_table = step.reads[0].replace(".", "__") if step.reads else "raw__bars"
+            from_table = (definition.reads[0].replace(".", "__")
+                          if definition.reads else "raw__bars")
             stub = STUB_SQL.format(from_table=from_table)
         else:
             stub = STUB_PY
-        _check_inside(root, step)
+        _check_inside(root, definition)
         script.parent.mkdir(parents=True, exist_ok=True)
         script.write_text(stub)
     try:
-        return _edit(project, root, lambda d: upsert_step(d, step))
+        return _edit(project, root, lambda d: upsert_transform(d, definition))
     except Exception:
         if stub is not None and script.is_file() and script.read_text() == stub:
             script.unlink()          # a rejected edit leaves nothing behind
         raise
 
 
-def _check_inside(root: Path, step: Step) -> None:
-    """A step runs the file it names, so that file has to be inside the project."""
+def save_schedule(project: Project, root: Path, raw: dict) -> list[str]:
+    """Add or replace one cadence over one definition.
+
+    Several may point at the same definition, which is the whole reason a
+    schedule is a row. Replacing is matched on the schedule's own id, so saving
+    a weekly one does not touch the daily one beside it.
+    """
+    schedule = JobSchedule.model_validate(raw)
+    return _edit(project, root, lambda d: upsert_schedule(d, schedule))
+
+
+def delete_schedule(project: Project, root: Path, schedule_id: str) -> list[str]:
+    if project.schedule(schedule_id) is None:
+        raise EditorError(
+            f"no schedule '{schedule_id}'. Schedules: "
+            f"{', '.join(s.id for s in project.job_schedules) or '(none)'}"
+        )
+    return _edit(project, root, lambda d: remove_schedule(d, schedule_id))
+
+
+def _check_inside(root: Path, definition: TransformJobDefinition) -> None:
+    """A transform runs the file it names, so that file has to be in the project."""
     try:
-        inside = (root / step.script).resolve().is_relative_to(root.resolve())
+        inside = (root / definition.script).resolve().is_relative_to(root.resolve())
     except (OSError, ValueError):
         inside = False
     if not inside:
         raise EditorError(
-            f"step '{step.id}': script '{step.script}' is outside the project. A step runs "
-            "the file it names, so it has to be a path under the project directory"
+            f"transform '{definition.id}': script '{definition.script}' is outside the "
+            "project. A transform runs the file it names, so it has to be a path under "
+            "the project directory"
         )
 
 
 def save_universe(project: Project, root: Path, raw: dict) -> list[str]:
     """Add or replace a universe, writing its symbol file if symbols were given.
 
-    A step that holds a basket holds itself to one, and a project that declares
+    A transform that holds a basket holds itself to one, and a project that declares
     none was a dead end: the install refused, and told whoever asked to add one to
     `qanat.yaml` by hand -- which an agent reaching this project over MCP cannot
     do. The error named a fix that no tool offered.
@@ -134,8 +166,8 @@ def save_universe(project: Project, root: Path, raw: dict) -> list[str]:
     return _edit(project, root, change)
 
 
-def delete_step(project: Project, root: Path, step_id: str) -> list[str]:
-    return _edit(project, root, lambda d: remove_step(d, step_id))
+def delete_transform(project: Project, root: Path, definition_id: str) -> list[str]:
+    return _edit(project, root, lambda d: remove_transform(d, definition_id))
 
 
 def save_metric(project: Project, root: Path, metric: Metric) -> list[str]:
@@ -161,13 +193,13 @@ def delete_metric(project: Project, root: Path, mid: str,
     return _edit(project, root, change)
 
 
-def delete_source(project: Project, root: Path, source_id: str) -> list[str]:
-    """Stop a source. The rows it landed stay -- they are data, not wiring."""
-    if not any(s.id == source_id for s in project.sources):
+def delete_ingestion(project: Project, root: Path, definition_id: str) -> list[str]:
+    """Stop an ingestion job. The rows it landed stay -- data, not wiring."""
+    if not any(d.id == definition_id for d in project.ingestion_job_definitions):
         raise EditorError(
-            f"no source '{source_id}'. Sources: "
-            f"{', '.join(s.id for s in project.sources) or '(none)'}"
+            f"no ingestion job '{definition_id}'. Known: "
+            f"{', '.join(d.id for d in project.ingestion_job_definitions) or '(none)'}"
         )
-    return _edit(project, root, lambda d: remove_source(d, source_id))
+    return _edit(project, root, lambda d: remove_ingestion(d, definition_id))
 
 

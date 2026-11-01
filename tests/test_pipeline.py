@@ -26,19 +26,21 @@ def test_run_all_lands_every_table(tmp_path: Path):
     universe = set(store.query("SELECT symbol FROM raw__daily_prices")["symbol"])
     assert set(weights["symbol"]) <= universe
 
-    runs = store.recent_runs()
-    assert {r["job_id"] for r in runs} == {j.id for j in [*project.sources, *project.steps]}
+    runs = store.recent_executions()
+    assert {r["definition_id"] for r in runs} == {d.id for d in project.definitions}
+    # Every execution names the job it was an attempt at, and the attempt number.
+    assert all(r["job_id"] is not None and r["attempt"] == 1 for r in runs)
     store.close()
 
 
 def test_a_step_cannot_read_what_it_did_not_declare(tmp_path: Path):
     write_project(tmp_path, "demo")
-    (tmp_path / "steps" / "momentum.py").write_text(
+    (tmp_path / "transforms" / "momentum.py").write_text(
         "def run(ctx):\n    return ctx.read('raw.news')\n"
     )
     project, root = load(tmp_path)
     store = Store(project.store_url(root))
-    results = {r.job_id: r for r in run_all(store, project, root)}
+    results = {r.definition_id: r for r in run_all(store, project, root)}
     assert results["momentum"].status == "failed"
     assert "did not declare" in results["momentum"].error
     store.close()
@@ -65,8 +67,8 @@ def test_plan_sees_new_changed_and_orphan(tmp_path: Path):
     # 2. change an option and a script -> two updates, no new tables
     yaml = (tmp_path / "qanat.yaml").read_text().replace("lookback: 20", "lookback: 60")
     (tmp_path / "qanat.yaml").write_text(yaml)
-    (tmp_path / "steps" / "risk.sql").write_text(
-        (tmp_path / "steps" / "risk.sql").read_text() + "\n-- edited\n"
+    (tmp_path / "transforms" / "risk.sql").write_text(
+        (tmp_path / "transforms" / "risk.sql").read_text() + "\n-- edited\n"
     )
     project, root = load(tmp_path)
     p2 = plan(project, root, store)
@@ -152,9 +154,9 @@ def _wire_when(root: Path) -> None:
 
     f = root / "qanat.yaml"
     spec = yaml.safe_load(f.read_text())
-    for job in spec["sources"]:
+    for job in spec["ingestion_job_definitions"]:
         job.pop("schedule", None)
-    for step in spec["steps"]:
+    for step in spec["transform_job_definitions"]:
         step.pop("schedule", None)
         step["when"] = list(step["from"])
     f.write_text(yaml.safe_dump(spec, sort_keys=False))
@@ -180,7 +182,7 @@ def test_the_chain_reaches_the_last_table(tmp_path: Path):
     _wire_when(tmp_path)
     project, _ = load(tmp_path)
 
-    frontier = list(project.sources[0].writes)
+    frontier = list(project.ingestion_job_definitions[0].writes)
     seen, reached = set(frontier), set()
     while frontier:
         woken = [s for s in project.waiting_on(frontier) if s.id not in reached]
@@ -194,7 +196,7 @@ def test_the_chain_reaches_the_last_table(tmp_path: Path):
 
 def test_waking_actually_runs_the_step(tmp_path: Path):
     """The pure part says who. This is the part that starts them."""
-    from qanat.runner import run_source
+    from qanat.runner import run_ingestion
     from qanat.scheduler import Scheduler
 
     write_project(tmp_path, "demo")
@@ -203,13 +205,13 @@ def test_waking_actually_runs_the_step(tmp_path: Path):
     store = Store(project.store_url(root))
     sched = Scheduler(store, project, root)
 
-    source = project.sources[0]
-    assert run_source(store, project, root, source).ok
+    source = project.ingestion_job_definitions[0]
+    assert run_ingestion(store, project, root, source).ok
     woken = sched.wake(source.writes)
     assert woken
 
     assert sched.quiet(), "the woken steps never finished"
-    ran = {r["job_id"] for r in store.recent_runs()}
+    ran = {r["definition_id"] for r in store.recent_executions()}
     assert set(woken) <= ran, f"{set(woken) - ran} were woken but never ran"
     store.close()
 
@@ -218,10 +220,10 @@ def test_a_step_cannot_wait_on_a_table_it_does_not_read(tmp_path: Path):
     """The same rule as ctx.read(): if it is not declared, it does not exist."""
     import pytest
 
-    from qanat.models import Step
+    from qanat.models import TransformJobDefinition
 
     with pytest.raises(ValueError, match="which it does not read"):
-        Step.model_validate({"id": "m", "from": ["a.b"], "to": ["c.d"],
+        TransformJobDefinition.model_validate({"id": "m", "from": ["a.b"], "to": ["c.d"],
                              "script": "s.py", "when": ["x.y"]})
 
 
@@ -361,12 +363,12 @@ def test_a_source_declaring_mode_replace_is_refused_at_load(tmp_path: Path):
     (tmp_path / "qanat.yaml").write_text(
         "project: t\nstore: ./data\n"
         "stages:\n  - {id: raw, kind: raw}\n"
-        "sources:\n  - {id: b, to: [raw.b], connector: csv, mode: replace, "
+        "ingestion_job_definitions:\n  - {id: b, to: [raw.b], connector: csv, mode: replace, "
         "options: {path: ./seed/b.csv}}\n"
     )
     with pytest.raises(ProjectError) as exc:
         load(tmp_path)
-    assert "mode: replace is not allowed on a source" in str(exc.value)
+    assert "mode: replace is not allowed on an ingestion job" in str(exc.value)
     assert "mode: append" in str(exc.value), "the refusal has to name the fix"
 
 
@@ -377,6 +379,6 @@ def test_the_scaffolded_project_cannot_lose_a_row_it_did_not_fetch(tmp_path: Pat
 
     scaffold(tmp_path / "demo", "demo")
     project, _ = load(tmp_path / "demo")
-    src = next(s for s in project.sources if s.ref == "raw.documents")
+    src = next(s for s in project.ingestion_job_definitions if s.ref == "raw.documents")
     assert src.mode == "append"
     assert src.key, "an append with no key keeps a full copy of every poll"

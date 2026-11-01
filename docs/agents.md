@@ -18,7 +18,7 @@ and `screen`** — each was a second door onto a question a tool already answers
 is a second place the behaviour can quietly differ. Running one prints where it went.
 
 Going the other way, `save_step`, `save_source` and `save_universe` have no CLI at
-all. You author a step in your editor; an agent authors one through the API.
+all. You author a transform in your editor; an agent authors one through the API.
 
 Four commands have no tool. `init` and `prune` because an agent works inside a project that
 already exists and does not drop tables; `mcp` because it is the transport; `ls` because it is
@@ -60,14 +60,14 @@ that is to show the count beside it rather than to divide a p-value by it.
 ## `profile_table` answers the question `sample_table` cannot
 
 "How many symbols, over what dates, with how many holes" is the first thing anybody asks of a
-source they have just connected, and paging rows to find out works on a demo and falls over on a
+dataset they have just connected, and paging rows to find out works on a demo and falls over on a
 real panel -- five hundred names by ten years is a million rows moved so somebody can learn there
 are five hundred names. `profile_table` is aggregates: fill rate, distinct count, and the range
 each column spans. It costs a scan, and the answer is the same size whatever the table is.
 
 ## `save_universe` exists because the error used to name a fix nobody had
 
-A step that holds a basket holds itself to a universe, so the contract refuses a project that declares
+A transform that holds a basket holds itself to a universe, so the contract refuses a project that declares
 none. It used to say "add one to qanat.yaml" -- which an agent reaching this project over MCP
 cannot do, because there was no universe mutation anywhere. Give this one an id and some symbols
 and it writes the csv.
@@ -78,7 +78,7 @@ built on it is flattered by the names that survived. `qanat check` says so out l
 ## `sample_table` honours `as_of`
 
 Passing an as-of date reads the table through the same point-in-time view a screen uses, so an
-agent inspecting history sees what a step would have seen on that date. Without it, an agent
+agent inspecting history sees what a transform would have seen on that date. Without it, an agent
 reasoning about the past reasons about rows that had not happened yet.
 
 ## The reading surface is five tools and a rule each
@@ -205,8 +205,9 @@ sessions are open.
 
 ## `from:` is a list, and the tools treat it as one
 
-A step may read several tables, across any stage earlier than the one it writes -- `Step` is `n:m`,
-and the scaffold's own `portfolio` step reads three at once. `save_step` takes the whole list, and
+A transform may read several tables, across any stage earlier than the one it writes -- a
+transform job definition is `n:m`,
+and the scaffold's own `portfolio` transform reads three at once. `save_step` takes the whole list, and
 it is the permission set as much as the dependency list: `ctx.read()` refuses anything not named
 there. `save_step` takes one primary table and `also_reads` for the
 rest, because the shelf scripts rank on one price table and a later edit may not.

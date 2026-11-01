@@ -39,16 +39,18 @@ time_columns:
   raw.documents: published_at
   normalized.facts: as_of
 
-# ------------------------------------------------------------------ the sources --
-# Many sources may feed one stage; each writes its own table.
+# --------------------------------------------------------- the ingestion jobs --
+# What to fetch, and the one table it lands in. **No cadence here** -- how often
+# this runs is a `job_schedules:` row pointing at it, below, so one definition
+# can carry a daily and a weekly without being copied.
 #
-# `key:` names the columns that identify one row, and a source appends. A
-# filing that arrives again with the same values is not stored twice; one that
-# arrives with a changed value is written beside the old row rather than over
-# it. There is no `mode: replace` here -- it rewrote this table to only what
-# the selection returned, so every filing ingested outside that list was
-# deleted by a run that reported ok.
-sources:
+# `key:` names the columns that identify one row. A filing that arrives again
+# with the same values is not stored twice; one that arrives with a changed
+# value is written beside the old row rather than over it. There is no
+# `mode: replace` -- it rewrote this table to only what the selection returned,
+# so every filing ingested outside that list was deleted by a run that
+# reported ok.
+ingestion_job_definitions:
   - id: filings
     to: [raw.documents]
     connector: sec          # swap for rest, sql or csv when you have a feed
@@ -62,15 +64,29 @@ sources:
       user_agent: ${SEC_USER_AGENT}
       cache: ./data/documents
 
-# ------------------------------------------------------------------- the steps --
-# n:m -- `from` and `to` are both lists.
-steps:
+# -------------------------------------------------------------- the transforms --
+# Tables in, tables out, through a script. n:m -- `from` and `to` are both
+# lists. No cadence here either.
+transform_job_definitions:
   - id: parse_facts
     from: [raw.documents]
     to:   [normalized.facts]
-    script: steps/parse_facts.py
+    script: transforms/parse_facts.py
     options:
       reads: raw.documents
+
+# --------------------------------------------------------------- the schedules --
+# A cadence, as a row. Each one points at one definition by id and holds nothing
+# else: what to fetch is the definition's. Several may point at the same
+# definition, and a definition with none is ordinary -- it runs when you ask.
+#
+# Nothing is on a clock in a fresh project. Add a row here, or call
+# `subscribe_filings` and one is written for you:
+#
+# job_schedules:
+#   - id: filings_daily
+#     definition: filings
+#     cron: "0 6 * * *"
 
 # ------------------------------------------------------------------ the corpus --
 # Which tables hold the documents and the numbers pulled out of them. The
@@ -134,7 +150,7 @@ PARSE_FACTS_PY = '''\
 """Every tagged number in every filing, as rows of `facts`.
 
 `qanat.xbrl` does the reading. It knows inline XBRL and nothing about the SEC,
-so this step is just the join: open the gzip, parse it, and stamp each fact
+so this transform is just the join: open the gzip, parse it, and stamp each fact
 with the day the document became public.
 """
 
@@ -200,7 +216,12 @@ read out of it.
 
     qanat check      # does the pipeline obey the stage contract?
     qanat mcp        # serve this project to your agent
-    qanat schedule   # run every job on its clock, serving nothing
+    qanat schedule   # fire every schedule on its clock, serving nothing
+
+Nothing is on a clock yet. A cadence is a `job_schedules:` row pointing at a
+definition by id, and `subscribe_filings` writes one for you -- so asking for
+one company daily does not rewrite the selection somebody else's weekly poll
+is using.
 
 The SEC needs no account and no API key, only a contact address so it can tell
 who is making the requests. Filings are cached under `data/documents`, so only
@@ -213,7 +234,7 @@ a metric is a query over the facts, not another stage.
 FILES = {
     "qanat.yaml": QANAT_YAML,
     "README.md": README,
-    "steps/parse_facts.py": PARSE_FACTS_PY,
+    "transforms/parse_facts.py": PARSE_FACTS_PY,
 }
 
 

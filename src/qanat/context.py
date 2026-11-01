@@ -1,4 +1,4 @@
-"""What a step script is handed when it runs."""
+"""What a transform script is handed when it runs."""
 
 from __future__ import annotations
 
@@ -9,12 +9,12 @@ from typing import Any
 
 import pandas as pd
 
-from qanat.models import Project, Step
+from qanat.models import Project, TransformJobDefinition
 from qanat.store import Store, tables_named
 
-#: A schema-qualified reference in a step's SQL. `main.` and `qanat.` are the two
+#: A schema-qualified reference in a transform's SQL. `main.` and `qanat.` are the two
 #: names the store itself uses, and `qanat_pit.` names the as-of views directly.
-#: Any of them steps around the clock a screen puts in front of a step.
+#: Any of them reaches around the clock a screen puts in front of a transform.
 _SCHEMA_QUALIFIED = re.compile(
     r"\b(?:main|qanat|qanat_pit|information_schema|pg_catalog)\s*\.\s*\w+", re.IGNORECASE
 )
@@ -55,7 +55,7 @@ def members(df: pd.DataFrame, as_of: str | None) -> pd.DataFrame:
 
 
 class Context:
-    """The one argument every Python step receives.
+    """The one argument every Python transform receives.
 
         def run(ctx):
             bars = ctx.read("normalized.prices_1d")
@@ -67,20 +67,20 @@ class Context:
         store: Store,
         project: Project,
         root: Path,
-        step: Step,
+        transform: TransformJobDefinition,
         as_of: str | None = None,
         universe: str | None = None,
     ):
         self.store = store
         self.project = project
         self.root = root
-        self.step = step
-        self.options: dict[str, Any] = dict(step.options)
-        #: Set when this step is being screened. `ctx.read` will not return a row
+        self.transform = transform
+        self.options: dict[str, Any] = dict(transform.options)
+        #: Set when this transform is being screened. `ctx.read` will not return a row
         #: newer than this, and `ctx.now` is this instant rather than the wall clock,
         #: so the same screen twice gives the same numbers.
         self.as_of: str | None = as_of
-        #: A screen may hold the same step to a different universe than the file
+        #: A screen may hold the same transform to a different universe than the file
         #: names, so "does this work on large caps too" costs one argument, not an edit.
         self.universe_override: str | None = universe
         self.now: datetime = (
@@ -88,10 +88,10 @@ class Context:
         )
 
     def read(self, ref: str, limit: int | None = None) -> pd.DataFrame:
-        """Read a table this step declared in `reads`, as of the screen date if there is one."""
-        if ref not in self.step.reads:
+        """Read a table this transform declared in `reads`, as of the screen date if there is one."""
+        if ref not in self.transform.reads:
             raise KeyError(
-                f"step '{self.step.id}' did not declare '{ref}' in reads -- "
+                f"transform '{self.transform.id}' did not declare '{ref}' in reads -- "
                 "add it so the lineage stays true"
             )
         return self.store.read(ref, limit, as_of=self.as_of)
@@ -100,36 +100,36 @@ class Context:
         """Run SQL over the store. Tables are named `stage__table`.
 
         A bare name resolves through the as-of views while a screen is open, so this
-        reads the past like everything else. Naming a schema stepped around them --
+        reads the past like everything else. Naming a schema reached around them --
         `main.raw__bars` reached the whole history, and since a screen never
-        re-polls a source, the raw tables are the one place that history survives.
-        The step that did it earned 1292% against an honest 3.40%, and reported no
+        re-polls an ingestion job, the raw tables are the one place that history
+        survives. The transform that did it earned 1292% against an honest 3.40%, and reported no
         failure, warning or note.
         """
         if self.as_of is not None:
             bad = _SCHEMA_QUALIFIED.search(query)
             if bad:
                 raise ValueError(
-                    f"step '{self.step.id}': this query names the schema "
+                    f"transform '{self.transform.id}': this query names the schema "
                     f"('{bad.group(0).strip()}'), which reads around the as-of views and "
                     f"would see data from after {self.as_of}. Write the table name on its "
                     "own -- during a screen it resolves to the rows that existed then."
                 )
         undeclared = sorted(
             ref for ref in tables_named(query)
-            if ref in self.project.producers()
-            and ref not in self.step.reads and ref not in self.step.writes
+            if ref in self.project.writers()
+            and ref not in self.transform.reads and ref not in self.transform.writes
         )
         if undeclared:
             raise KeyError(
-                f"step '{self.step.id}' did not declare {', '.join(undeclared)} in reads -- "
+                f"transform '{self.transform.id}' did not declare {', '.join(undeclared)} in reads -- "
                 "add it so the lineage stays true. `ctx.read` has always said this; naming "
                 "the table in SQL went around it, and the graph then drew the wrong arrow"
             )
         return self.store.query(query)
 
     def universe(self, bid: str | None = None, as_of: str | None = None) -> pd.DataFrame:
-        """Which symbols this step is allowed to hold, **on the day it is deciding**.
+        """Which symbols this transform is allowed to hold, **on the day it is deciding**.
 
         A universe file may carry `from` and `to` columns. When it does, this returns
         only the members of that date, so a screen never holds a name before it
@@ -137,13 +137,13 @@ class Context:
         the list is static, and every number built on it carries survivorship bias --
         `qanat check` says so.
         """
-        bid = bid or self.universe_override or self.step.universe
+        bid = bid or self.universe_override or self.transform.universe
         if not bid:
-            raise ValueError(f"step '{self.step.id}' has no universe set")
+            raise ValueError(f"transform '{self.transform.id}' has no universe set")
         b = self.project.universe(bid)
         if b is None:
             raise KeyError(f"unknown universe '{bid}'")
         return members(pd.read_csv(self.root / b.symbols), as_of or self.as_of)
 
     def log(self, message: str, level: str = "info") -> None:
-        self.store.event(level, self.step.id, str(message))
+        self.store.event(level, self.transform.id, str(message))

@@ -17,12 +17,14 @@ uv run ruff check src tests audit              # audit too, not just src tests
 uv run pytest audit/batteries -m audit         # opt-in: slow, and one battery calls a live API
 ```
 
-**The command line is four verbs and that is deliberate.** `init`, `check`,
-`mcp`, `schedule`. `ls`, `graph`, `plan`, `prune`, `run`, `screen` and `serve`
-were removed in 0.10.0 -- each was a person's door onto a question a tool already
-answers, which is a second place the behaviour can quietly differ. Running one
-prints where it went. **`qanat mcp` serves; `qanat schedule` runs the clock and
-serves nothing; `qanat mcp --http --schedule` is one machine doing both.**
+**The command line is five verbs and that is deliberate.** `init`, `check`,
+`migrate`, `mcp`, `schedule`. `ls`, `graph`, `plan`, `prune`, `run`, `screen` and
+`serve` were removed in 0.10.0 -- each was a person's door onto a question a tool
+already answers, which is a second place the behaviour can quietly differ.
+Running one prints where it went. **`qanat mcp` serves; `qanat schedule` runs the
+clock and serves nothing; `qanat mcp --http --schedule` is one machine doing
+both.** **`qanat migrate` rewrites a project written in the old vocabulary** --
+it runs on a file that cannot be loaded yet, so no tool could reach it.
 
 `CONTRIBUTING.md` has setup, the architecture table and how to add a connector. Read it instead of
 reading `src/` — it is two dozen modules and you need two of them.
@@ -44,7 +46,12 @@ stays true.** The table is the contract; the test is the enforcement.
 | **Every field the project model holds is written back to the file.** Anything missing from `dump_project` is deleted by the next edit. | `test_every_field_the_model_holds_is_written_back` · `test_metrics.py` |
 | **No filter is stored here.** A filter is one caller's research criteria and a scope is not an identity, so it arrives with the call and leaves with the answer. | `test_nothing_on_this_surface_stores_a_filter` · `test_metrics.py` |
 | **The store is Parquet files read by DuckDB, at both doors.** One shape everywhere — not a DuckDB file, not a server database. A reader is never blocked by a writer, and an append writes one new file. | `test_a_reader_is_not_blocked_by_a_writer` · `test_an_append_writes_one_new_file_and_leaves_the_rest` · `test_parquet_store.py` |
-| **A step reads only what it declared.** The stage contract in `docs/contract.md` is deliberate; changing it needs discussion. | `test_a_step_cannot_read_what_it_did_not_declare` · `test_pipeline.py` |
+| **A transform reads only what it declared.** The stage contract in `docs/contract.md` is deliberate; changing it needs discussion. | `test_a_step_cannot_read_what_it_did_not_declare` · `test_pipeline.py` |
+| **A definition names no cadence and a schedule names no selection.** Either one carrying the other's fields is refused at load — that pairing is what made "Microsoft daily, Apple weekly" unanswerable. | `test_a_definition_carrying_a_cadence_is_refused_at_load` · `test_a_schedule_carrying_a_selection_is_refused` · `test_job_model.py` |
+| **A retried job is one job and several executions.** Three attempts at the 07:00 poll are one `_qanat_job` row and three `_qanat_job_execution` rows, so "did the 07:00 poll succeed?" has an object to ask. | `test_a_definition_that_fails_twice_then_succeeds_is_one_job` · `test_job_model.py` |
+| **`source` and `step` are retired, and refused rather than aliased.** `source` survives only as the per-row provenance column. | `test_the_word_step_is_gone_from_the_engine` · `test_the_word_source_survives_only_as_row_provenance` · `test_job_model.py` |
+| **An ingestion job may not replace what it already landed.** `mode: replace` rewrote the table to only what the poll returned, deleting every row landed outside the selection. | `test_a_source_declaring_mode_replace_is_refused_at_load` · `test_pipeline.py` |
+| **The clock deletes nothing.** Retention is declared in the project and applied by `plan`'s `prune` flag, which lists the rows first. | `test_the_clock_deletes_nothing` · `test_mcp.py` |
 | **No SEC request goes out without a contact.** Refused before the request, not after. | `test_a_missing_contact_is_refused_before_any_request` · `test_sec.py` |
 | **A split is kept as an event, not only as an adjustment.** A split made every old price wrong once already — see 0.7.0. | `test_a_split_is_kept_as_an_event_not_only_as_an_adjustment` · `test_sec.py` |
 | **The HTTP surface checks Host and token.** | `test_a_host_we_do_not_answer_to_is_refused` · `test_a_token_is_required_when_one_is_set` · `test_mcp_http.py` |

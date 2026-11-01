@@ -80,7 +80,7 @@ def test_the_drawing_names_every_table_and_every_step(tmp_path: Path):
 
     for ref in project.tables():
         assert ref.partition(".")[2] in text, f"{ref} is not in the picture"
-    for job in project.jobs:
+    for job in project.definitions:
         assert job.id in text, f"{job.id} is not on any arrow"
     for stage in project.stages:
         assert stage.id in text
@@ -148,7 +148,7 @@ def test_a_stage_whose_kind_is_not_a_known_word_still_gets_a_colour():
     assert "normalized" in plain(lit), "and the legend names the stages the project has"
 
 
-def test_it_gives_up_the_step_names_before_it_overflows_the_terminal():
+def test_it_gives_up_the_names_before_it_overflows_the_terminal():
     g = a_graph(
         [("raw", "raw"), ("weights", "weights")],
         [("raw.a", "land", 1, "ok"), ("weights.w", "a_step_with_a_very_long_name", 1, "ok")],
@@ -159,7 +159,7 @@ def test_it_gives_up_the_step_names_before_it_overflows_the_terminal():
 
     narrow = plain(render(g, ".", ink=Ink("off"), g=UNICODE, width=40))
     assert "a_step_with_a_very_long_name" not in narrow
-    assert "step names hidden" in narrow
+    assert "names hidden" in narrow
     assert max(len(x) for x in narrow.splitlines() if "·" not in x and "/" not in x) <= 40
 
 

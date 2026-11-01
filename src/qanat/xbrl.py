@@ -2,7 +2,7 @@
 
 Inline XBRL is a tagging standard, not an SEC one, so this module knows nothing
 about EDGAR, 10-Ks or CIKs. It takes bytes and returns facts. Which regulator
-asked for the document is the source adapter's business.
+asked for the document is the connector's business.
 
     from qanat.xbrl import read_facts
     facts = read_facts(html_bytes)

@@ -16,10 +16,26 @@ try:
     from importlib.metadata import version as _version
 
     __version__ = _version("qanat-fdtl")
-except PackageNotFoundError:  # a source checkout that was never installed
+except PackageNotFoundError:  # a checkout that was never installed
     __version__ = "0.0.0+dev"
 
-from qanat.models import Project, Source, Stage, Step, Universe
+from qanat.models import (
+    IngestionJobDefinition,
+    JobSchedule,
+    Project,
+    Stage,
+    TransformJobDefinition,
+    Universe,
+)
 from qanat.store import Store
 
-__all__ = ["Project", "Source", "Stage", "Step", "Store", "Universe", "__version__"]
+__all__ = [
+    "IngestionJobDefinition",
+    "JobSchedule",
+    "Project",
+    "Stage",
+    "Store",
+    "TransformJobDefinition",
+    "Universe",
+    "__version__",
+]

@@ -15,8 +15,8 @@ from pathlib import Path
 import httpx
 import pytest
 
-from qanat.models import Source
-from qanat.sources import sec
+from qanat.connectors import sec
+from qanat.models import IngestionJobDefinition
 
 UA = "qanat tests nobody@example.com"
 
@@ -91,9 +91,9 @@ def patched(monkeypatch):
     return install
 
 
-def source(**options) -> Source:
+def source(**options) -> IngestionJobDefinition:
     base = {"companies": ["AAPL"], "form": "10-K", "years": 2, "user_agent": UA}
-    return Source(id="filings", to=["raw.documents"], connector="sec",
+    return IngestionJobDefinition(id="filings", to=["raw.documents"], connector="sec",
                   options={**base, **options})
 
 
@@ -101,7 +101,7 @@ def source(**options) -> Source:
 def test_a_missing_contact_is_refused_before_any_request(tmp_path: Path):
     """The SEC refuses anonymous requests, so failing here with an explanation
     beats failing there with a 403."""
-    s = Source(id="filings", to=["raw.documents"], connector="sec",
+    s = IngestionJobDefinition(id="filings", to=["raw.documents"], connector="sec",
                options={"companies": ["AAPL"]})
     with pytest.raises(ValueError, match="contact"):
         sec.fetch(s, tmp_path)
@@ -123,7 +123,7 @@ def test_an_unset_environment_variable_says_which_one(tmp_path: Path, monkeypatc
 def test_the_environment_variable_is_used_when_the_option_is_absent(tmp_path, monkeypatch, patched):
     monkeypatch.setenv("SEC_USER_AGENT", UA)
     patched([filing("0000320193-25-000079", "2025-10-31", "2025-09-27")])
-    s = Source(id="filings", to=["raw.documents"], connector="sec",
+    s = IngestionJobDefinition(id="filings", to=["raw.documents"], connector="sec",
                options={"companies": ["AAPL"], "years": 1})
     assert len(sec.fetch(s, tmp_path)) == 1
 
@@ -236,14 +236,14 @@ def test_an_unknown_ticker_is_named_in_the_error(tmp_path, patched):
 
 
 def test_no_companies_is_an_error_rather_than_an_empty_table(tmp_path):
-    s = Source(id="filings", to=["raw.documents"], connector="sec",
+    s = IngestionJobDefinition(id="filings", to=["raw.documents"], connector="sec",
                options={"user_agent": UA})
     with pytest.raises(ValueError, match="companies"):
         sec.fetch(s, tmp_path)
 
 
 def test_the_connector_is_registered(tmp_path):
-    from qanat.sources import ADAPTERS
+    from qanat.connectors import ADAPTERS
     assert ADAPTERS["sec"] is sec.fetch
     assert "synthetic" not in ADAPTERS
 
@@ -254,7 +254,7 @@ def test_a_split_is_kept_as_an_event_not_only_as_an_adjustment():
     the price that traded. Keeping the split lets the real one be rebuilt."""
     import pandas as pd
 
-    from qanat.sources.yfinance_source import SOURCE
+    from qanat.connectors.yfinance_connector import SOURCE
 
     assert SOURCE == "yfinance"
     # the arithmetic the filing_prices step does: multiply by the splits that
@@ -300,8 +300,8 @@ def test_the_connector_asks_only_for_what_came_after(monkeypatch):
     few names that is wasteful; at a few thousand it is what gets refused."""
     import pandas as pd
 
-    from qanat.models import Source
-    from qanat.sources import yfinance_source as yfs
+    from qanat.connectors import yfinance_connector as yfs
+    from qanat.models import IngestionJobDefinition
 
     asked = {}
 
@@ -316,7 +316,7 @@ def test_the_connector_asks_only_for_what_came_after(monkeypatch):
                                  "Stock Splits": [0.0], "Dividends": [0.0]}, index=idx)
 
     monkeypatch.setattr(yfs, "_require", lambda: type("M", (), {"Ticker": FakeTicker}))
-    src = Source(id="p", to=["raw.prices"], connector="yfinance",
+    src = IngestionJobDefinition(id="p", to=["raw.prices"], connector="yfinance",
                  options={"companies": ["A"], "from": "2021-01-01"})
 
     yfs.fetch(src, Path("."), since=None)
@@ -329,7 +329,7 @@ def test_the_connector_asks_only_for_what_came_after(monkeypatch):
 def test_the_dispatcher_only_passes_since_to_adapters_that_take_it():
     """`csv` and `rest` have no upstream to ask, so handing them a `since`
     would be a TypeError on every poll."""
-    from qanat.sources import ADAPTERS
+    from qanat.connectors import ADAPTERS
 
     assert getattr(ADAPTERS["yfinance"], "wants_since", False)
     assert not getattr(ADAPTERS["csv"], "wants_since", False)

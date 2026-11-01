@@ -4,10 +4,10 @@
 draws that same answer on a character grid, so a table that says 41,402 rows here
 is the count `lineage` and `list_tables` report over MCP, not a second opinion.
 
-**The table is the node and the step is the edge**, and the only thing a node's
+**The table is the node and the transform is the edge**, and the only thing a node's
 colour says is which stage it belongs to.
 
-Columns are layers, not stages. A features stage is allowed to chain -- one step
+Columns are layers, not stages. A features stage may chain -- one transform
 reading `features.a` and writing `features.b` -- and drawn a column per stage
 that edge would have to leave the column and come back into it. So a stage owns
 as many columns as its longest chain, and the rule across the top says which
@@ -353,7 +353,7 @@ def model(g: dict[str, Any]) -> Model:
         parents[b].append(a)
 
     # Layers: a stage's first column is one past the last column of the stage
-    # before it, and a step that chains inside a features stage pushes its own
+    # before it, and a transform that chains inside a features stage pushes its own
     # target one column further right.
     layer: dict[str, int] = {}
     base = 0
@@ -587,7 +587,7 @@ def legend(m: Model, g: Glyphs, ink: Ink) -> list[str]:
     )
     if any(n.stale for n in m.nodes.values()):
         word = f"{ink.of(GOLD)}stale\033[0m" if ink.on else "stale"
-        marks += f"   {word} · the step that wrote it has changed since"
+        marks += f"   {word} · the transform that wrote it has changed since"
     out.append(f"{' ' * INDENT}{marks}")
     return out
 
@@ -622,7 +622,7 @@ def render(
     tail = (f"{len(graph.get('stages', []))} stages · {len(real)} tables · {rows:,} rows · "
             f"{len(graph.get('jobs', []))} jobs")
     if dropped:
-        tail += " · step names hidden, the terminal is too narrow"
+        tail += " · names hidden, the terminal is too narrow"
     return "\n".join([head, *body, "", *legend(m, g, ink), "",
                       f"{' ' * INDENT}{ink.of(FAINT, dim=True)}{tail}" + ("\033[0m" if ink.on else ""),
                       ""])
@@ -670,29 +670,35 @@ def _status_of(last: dict[str, Any] | None, running: bool) -> str:
 def build_graph(
     store: Store, project: Project, root: Path, sched: Scheduler | None
 ) -> dict[str, Any]:
-    last = store.last_run_by_job()
-    sched_state = sched.status() if sched else {}
-    producers = project.producers()
+    last = store.last_execution_by_definition()
+    by_definition = sched.by_definition() if sched else {}
+    writers = project.writers()
 
     jobs = []
-    for j in project.jobs:
-        st = sched_state.get(j.id, {})
+    for j in project.definitions:
+        mine = by_definition.get(j.id, [])
         lr = last.get(j.id)
         jobs.append({
             "id": j.id,
-            "kind": "source" if j in project.sources else "step",
+            "kind": ("ingestion" if j in project.ingestion_job_definitions
+                     else "transform"),
             "connector": getattr(j, "connector", None),
             "script": getattr(j, "script", None),
             "from": list(j.reads),
             "to": list(j.writes),
             "universe": getattr(j, "universe", None),
-            "schedule": j.schedule,
+            # Several cadences over one definition, which is why this is a list.
+            # A single `schedule` string could only show one of them, and the
+            # drawing would be telling the truth about one and nothing about the
+            # rest.
+            "schedules": [{"id": x["schedule"], "cron": x["cron"],
+                           "next_at": x["next_at"]} for x in mine],
             "when": list(getattr(j, "when", [])),
             "mode": getattr(j, "mode", None),
             "options": getattr(j, "options", {}),
-            "next_at": st.get("next_at"),
-            "status": _status_of(lr, bool(st.get("running"))),
-            "last_run": lr,
+            "next_at": min((x["next_at"] for x in mine if x["next_at"]), default=None),
+            "status": _status_of(lr, any(x.get("running") for x in mine)),
+            "last_execution": lr,
         })
     by_id = {j["id"]: j for j in jobs}
 
@@ -701,12 +707,18 @@ def build_graph(
         info = store.table_info(ref)
         stage_id = ref.split(".")[0]
         lay = project.stage(stage_id)
-        owner = producers.get(ref)
+        # Every definition that writes this table, because several may. The
+        # first one is what the drawing points an arrow from; the rest are named
+        # rather than hidden, since a table with two writers is a thing a reader
+        # has to know about.
+        owners = writers.get(ref, [])
+        owner = owners[0] if owners else None
         tables.append({
             "ref": ref,
             "stage": stage_id,
             "stage_kind": lay.kind if lay else "",
             "name": ref.partition(".")[2],
+            "written_by": owners,
             "producer": owner,
             "producer_kind": by_id.get(owner, {}).get("kind"),
             "producer_connector": by_id.get(owner, {}).get("connector"),
@@ -746,7 +758,7 @@ def build_graph(
     ok = sum(1 for t in tables if t["status"] == "ok")
     bad = sum(1 for t in tables if t["status"] == "failed")
     # Nothing projects a pnl table any more: the package prices no baskets,
-    # so the graph holds only tables a source or a step wrote.
+    # so the graph holds only tables a definition wrote.
 
     return {
         "project": project.name,
@@ -761,7 +773,7 @@ def build_graph(
         "retention": dict(project.retention),
         "tables": tables,
         "jobs": jobs,
-        "edges": [{"from": a, "to": b, "step": s} for a, b, s in graph_edges(project)],
+        "edges": [{"from": a, "to": b, "definition": d} for a, b, d in graph_edges(project)],
         # the order jobs actually run in. Reported rather than guessed at from the
         # shape, so what a reader sees is the run and not a picture of it
         "run_order": [j.id for j in run_order(project)],
@@ -770,12 +782,12 @@ def build_graph(
             "healthy": ok,
             "failing": bad,
             "rows": sum(t["rows"] for t in tables),
-            "scheduled": len(sched_state),
+            "scheduled": sum(len(v) for v in by_definition.values()),
             "drift": len(pl.changes),
             # Worker starvation used to be visible only as a stream of warn events
             # nobody was reading. Four stuck jobs stop the scheduler dead.
             "workers": getattr(sched, "workers", 0) if sched else 0,
-            "busy": sum(1 for s in sched_state.values() if s.get("running")),
+            "busy": sum(1 for v in by_definition.values() if any(x.get("running") for x in v)),
         },
         "plan": {
             "changes": [

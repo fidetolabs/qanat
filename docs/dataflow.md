@@ -10,9 +10,9 @@ project you are standing in.
 | Station | Does | Rows out | Owned by |
 | --- | --- | --- | --- |
 | 0 · choose | ask EDGAR what exists, label what can be parsed | — | `filings.py` |
-| 1 · ingest | fetch the primary document for the ones chosen | — | `sources/sec.py` |
+| 1 · ingest | fetch the primary document for the ones chosen | — | `connectors/sec.py` |
 | 2 · land | one small row per filing, the body gzipped beside it | 40 | `raw.documents` |
-| 3 · normalize | three steps read the same body three ways | 44,048 | `normalized.*` |
+| 3 · normalize | three transforms read the same body three ways | 44,048 | `normalized.*` |
 | 4 · metric | SQL over the facts, with the date substituted in | 0 | `qanat.yaml` |
 | 5 · serve | 33 tools over MCP, in four nested scopes | 0 | `mcp.py` |
 
@@ -86,12 +86,12 @@ without the core knowing what a SIC code is.
 | `body_path` · `body_bytes` · `body_sha256` | where the gzip is, how big, and what it hashes to uncompressed |
 
 The row is small enough to scan and the body is 2–5 MB of HTML, so the body is a file on disk and
-not a column. **A `raw` stage is never written by a step:** if a row was wrong when it arrived it
+not a column. **A `raw` stage is never written by a transform:** if a row was wrong when it arrived it
 stays wrong there, and every point-in-time read in the system rests on that record.
 
 ## 3 · Normalize
 
-Three steps, each naming what it reads and what it writes. `ctx.read()` refuses any table the step
+Three transforms, each naming what it reads and what it writes. `ctx.read()` refuses any table it
 did not declare, and naming one in SQL does not get around it.
 
 **`parse_facts` → `normalized.facts`, 43,104 rows** across 1,440 distinct concepts and six taxonomy
@@ -141,12 +141,12 @@ year ends 31 August and the filing lands 8 October. **So the column a screen fil
 weeks before anyone could.
 
 It is enforced by shadowing rather than by convention. `open_pit` builds one view per table,
-filtered on that table's own time column, and puts the view schema on the search path — so a step or
+filtered on that table's own time column, and puts the view schema on the search path — so a transform or
 a metric that names the table gets the view and cannot reach around the filter. A table with no
 clock declared is the same at every date, which is right for a lookup and wrong for anything that
 arrives. `time_columns` names the column per table, and the example names five.
 
-**The dates protect a step, not you.** A step cannot see past its date; you and your agent still
+**The dates protect a transform, not you.** A transform cannot see past its date; you and your agent still
 can, while you are deciding what to try.
 
 ## 4 · Metric extraction
@@ -189,7 +189,7 @@ corpus reloaded. Same inputs, same id — so an id that moved means something un
 record that cannot tell those apart is not a record. There is no wall clock in it: the same screen
 twice is the same answer, and when a caller asked is the caller's own fact to record.
 
-**The count is there because a list is a claim.** `coverage` is the same instinct one step earlier: a
+**The count is there because a list is a claim.** `coverage` is the same instinct one stage earlier: a
 read as of a date sees the rows published on or before it, so before the oldest row there is nothing
 to read, and a screen there returns a list of nobody — which is not the same answer as nobody
 passing. A window starting before the corpus is refused with the range it does hold.
@@ -253,7 +253,7 @@ about which is right.
 agent. The product has two ways of knowing a number, with different reliability, and `check_number`
 is the only test a reading has.
 
-No tool computes a metric, a rank or a verdict. Those are steps in the engine, reached through `run`
+No tool computes a metric, a rank or a verdict. Those are transforms in the engine, reached through `run`
 and `screen`. The reading surface reads, and your agent is the screen.
 
 ## What this does not cover

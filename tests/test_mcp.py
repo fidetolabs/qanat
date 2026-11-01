@@ -209,12 +209,12 @@ def test_list_steps_filters_by_stage(tmp_path: Path):
     assert all(r.ok for r in run_all(session.store, session.project, session.root))
 
     everything = _call(session, "list_steps")
-    assert everything["sources"], "unfiltered, the sources come too"
+    assert everything["ingestion"], "unfiltered, the ingestion jobs come too"
 
     only = _call(session, "list_steps", {"stage": "features"})
-    assert only["sources"] == [], "a stage filter is about steps, so sources drop out"
-    ids = {s["id"] for s in only["steps"]}
-    expected = {st.id for st in session.project.steps
+    assert only["ingestion"] == [], "a stage filter is about transforms, so ingestion drops out"
+    ids = {s["id"] for s in only["transforms"]}
+    expected = {st.id for st in session.project.transform_job_definitions
                 if any(w.startswith("features.") for w in st.writes)}
     assert ids == expected and ids
 
@@ -230,7 +230,7 @@ def test_the_picture_and_the_agent_agree_about_what_is_stale(tmp_path: Path):
     from qanat.graph import build_graph
 
     session = _session(tmp_path)
-    script = tmp_path / "steps" / "normalize.sql"
+    script = tmp_path / "transforms" / "normalize.sql"
     script.write_text(script.read_text() + "\n-- moved\n")
     session.reload()
 
@@ -250,7 +250,7 @@ def test_the_picture_and_the_agent_agree_about_what_is_stale(tmp_path: Path):
 
 
 # ------------------------------------------------- the surface stops offering it
-def test_the_cli_is_four_verbs_and_nothing_else():
+def test_the_cli_is_five_verbs_and_nothing_else():
     """It was ten. Six of them were a person's door onto a question a tool
     already answers, which is a second place the behaviour can differ."""
     from qanat.cli import build_parser
@@ -259,7 +259,7 @@ def test_the_cli_is_four_verbs_and_nothing_else():
     for action in build_parser()._actions:
         if getattr(action, "choices", None):
             verbs |= set(action.choices)
-    assert verbs == {"init", "check", "mcp", "schedule"}
+    assert verbs == {"init", "check", "migrate", "mcp", "schedule"}
 
 
 def test_every_removed_command_names_what_replaced_it():

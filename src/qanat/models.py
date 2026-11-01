@@ -1,18 +1,32 @@
 """What a project is made of.
 
-Eight words, and each one means exactly one thing:
+Nine words, and each one means exactly one thing:
 
-    stage      an ordered stage that holds tables
-    table      one dataset inside a stage, addressed `stage.table`
-    source     brings a table in from outside, through a connector
-    connector  how a source connects: rest, sql, csv, sec, yfinance
-    step       a script that turns tables into tables
-    universe     the symbols a portfolio is allowed to hold
-    job        a source or a step -- anything that runs
-    run        one execution of a job
+    stage       an ordered stage that holds tables
+    table       one dataset inside a stage, addressed `stage.table`
+    connector   how an ingestion job reaches outside: rest, sql, csv, sec, yfinance
+    universe    the symbols a portfolio is allowed to hold
 
-In YAML a job says `from:` and `to:`. In Python those are `.reads` and `.writes`,
-because `from` is a keyword. That is the only place a word has two spellings.
+    ingestion_job_definition   what to fetch, and which table it lands in
+    transform_job_definition   which tables go in, which come out, and the script
+    job_schedule               one cron line, over one definition
+    job                        one definition, for one exact datetime
+    job_execution              one attempt at one job
+
+**A definition names no cadence and a schedule names no selection.** They were
+one object called `source`, with `schedule:` welded on as a field, so the three
+edits a person thinks of as separate -- *what to fetch*, *how often*, *which
+table* -- were one edit, and "Microsoft daily, Apple weekly" had no answer.
+
+**`source` and `step` are gone.** `source` meant four things: a config
+declaration, an adapter module, the `connector:` value, and a provenance string
+on a row. Only the last was ever unambiguous and it is the only one that keeps
+the word. `step` named a position in a sequence and said nothing about a table
+going in and a table coming out, which is the only thing one does.
+
+In YAML a definition says `from:` and `to:`. In Python those are `.reads` and
+`.writes`, because `from` is a keyword. That is the only place a word has two
+spellings.
 """
 
 from __future__ import annotations
@@ -32,7 +46,7 @@ from pydantic import (
 )
 
 #: What a stage declares about itself. `raw` is the only value the platform
-#: acts on: a landed stage, written by sources and never by a step. Everything
+#: acts on: a landed stage, written by ingestion and never by a transform. Everything
 #: else is a name the user chose, and `check` enforces properties rather than
 #: names. This was an enum of five until the five described one workflow.
 StageKind = str
@@ -42,7 +56,8 @@ Connector = Literal["rest", "sql", "csv", "sec", "yfinance"]
 MetricOrigin = Literal["shipped", "defined"]
 #: How a job lands its rows. `replace` is still how a derived table is rebuilt --
 #: it is a function of what is upstream of it, so rewriting it loses nothing. A
-#: source is the other case: its rows are the thing nothing else can rebuild, and
+#: An ingestion job is the other case: its rows are the thing nothing else can
+#: rebuild, and
 #: `replace` there deletes every row outside the current selection as the normal
 #: outcome of a successful poll. `Source` refuses it; see `Source._no_replace`.
 WriteMode = Literal["append", "replace"]
@@ -101,13 +116,40 @@ class Universe(Base):
     symbols: str
 
 
-class Source(Base):
-    """One table, brought in from outside. Many sources may feed one stage."""
+#: What a definition is refused for carrying, and the object that holds it
+#: instead. Refused rather than moved: a file that says `schedule:` was written
+#: expecting one cadence welded to one selection, and quietly reading it as a
+#: schedule row would be a different pipeline than the one on the page.
+_CADENCE = ("schedule", "cron", "every")
+
+
+def _no_cadence(raw: Any, what: str) -> Any:
+    if not isinstance(raw, dict):
+        return raw
+    found = [k for k in _CADENCE if k in raw]
+    if found:
+        raise ValueError(
+            f"a {what} names no cadence, and this one says `{found[0]}:`. How often a "
+            f"definition runs is a `job_schedules:` entry pointing at it -- "
+            f"{{id: <name>, definition: {raw.get('id', '<this one>')!s}, cron: ...}} -- so "
+            f"one definition can carry a daily and a weekly without being copied, and so "
+            f"changing the cadence is not an edit to the selection"
+        )
+    return raw
+
+
+class IngestionJobDefinition(Base):
+    """What to fetch, and the one table it lands in. **No cadence.**
+
+    Many ingestion jobs may feed one stage, and after
+    `many-schedules-many-definitions` several may feed one table -- every row
+    carries the execution that wrote it, so the store can still say which pass
+    landed which row.
+    """
 
     id: str = Field(pattern=_NAME)
     writes: list[str] = Field(validation_alias=AliasChoices("to", "writes"))
     connector: Connector
-    schedule: str | None = None
     #: Append, and only append. The field stays so a config that says `replace`
     #: is refused by name rather than quietly meaning something else now.
     mode: WriteMode = "append"
@@ -119,17 +161,22 @@ class Source(Base):
     timeout: str | None = None
     options: dict[str, Any] = Field(default_factory=dict)
 
+    @model_validator(mode="before")
+    @classmethod
+    def _cadence_elsewhere(cls, raw: Any) -> Any:
+        return _no_cadence(raw, "definition")
+
     @field_validator("writes")
     @classmethod
     def _one_table(cls, v: list[str]) -> list[str]:
         if len(v) != 1:
-            raise ValueError("a source writes exactly one table")
+            raise ValueError("an ingestion job definition writes exactly one table")
         return _qualified(v)
 
     @field_validator("mode")
     @classmethod
     def _no_replace(cls, v: str) -> str:
-        """A source may not replace what it already landed.
+        """An ingestion job may not replace what it already landed.
 
         `replace` rewrites the table to **only what this poll returned**, so every
         row landed outside the current selection is deleted -- silently, as the
@@ -143,8 +190,8 @@ class Source(Base):
         """
         if v == "replace":
             raise ValueError(
-                "mode: replace is not allowed on a source. It rewrites the table to only "
-                "what this poll returned, so every row landed outside the current "
+                "mode: replace is not allowed on an ingestion job. It rewrites the table "
+                "to only what this poll returned, so every row landed outside the current "
                 "selection is deleted by a run that reports ok. Use `mode: append` with "
                 "`key:` naming the columns that identify one row -- a row that arrives "
                 "again with the same values is not stored twice, and one that arrives with "
@@ -165,24 +212,30 @@ class Source(Base):
         return []
 
 
-class Step(Base):
-    """A script that turns tables in one or more stages into tables in a later one.
+class TransformJobDefinition(Base):
+    """Tables in, tables out, through a script. **No cadence.**
 
-    n:m -- `from` and `to` are both lists.
+    n:m -- `from` and `to` are both lists. The word is `transform` rather than
+    `step` because `step` named a position in a sequence, and a position says
+    nothing about a table going in and a table coming out.
     """
 
     id: str = Field(pattern=_NAME)
     reads: list[str] = Field(default_factory=list, validation_alias=AliasChoices("from", "reads"))
     writes: list[str] = Field(default_factory=list, validation_alias=AliasChoices("to", "writes"))
     script: str
-    schedule: str | None = None
-    # Tables whose new rows should run this step. A clock is a guess about when
-    # the data arrives; this is the arrival itself. Both may be set, and a step
-    # that sets neither runs when you ask for it.
+    # Tables whose new rows should run this transform. A clock is a guess about
+    # when the data arrives; this is the arrival itself. Both may be set, and a
+    # transform on neither runs when you ask for it.
     when: list[str] = Field(default_factory=list)
     universe: str | None = None
     timeout: str | None = None
     options: dict[str, Any] = Field(default_factory=dict)
+
+    @model_validator(mode="before")
+    @classmethod
+    def _cadence_elsewhere(cls, raw: Any) -> Any:
+        return _no_cadence(raw, "definition")
 
     @field_validator("reads", "writes", "when")
     @classmethod
@@ -190,14 +243,75 @@ class Step(Base):
         return _qualified(v)
 
     @model_validator(mode="after")
-    def _waits_on_what_it_reads(self) -> Step:
+    def _waits_on_what_it_reads(self) -> TransformJobDefinition:
         stray = [t for t in self.when if t not in self.reads]
         if stray:
             raise ValueError(
-                f"step '{self.id}' waits on {', '.join(stray)}, which it does not read. "
+                f"transform '{self.id}' waits on {', '.join(stray)}, which it does not read. "
                 f"Add it to `from:`, or wait on one of {', '.join(self.reads) or '(nothing)'}"
             )
         return self
+
+
+#: What a schedule is refused for carrying. A cadence over a *different*
+#: selection is a second definition, not a field on the clock -- and a schedule
+#: that could narrow the selection would put the two concerns back in one object
+#: from the other side.
+_SELECTION = ("companies", "forms", "form", "from", "to", "reads", "writes",
+              "connector", "script", "options", "years", "key", "mode",
+              "universe", "when")
+
+
+class JobSchedule(Base):
+    """One cron line over one definition. **No selection.**
+
+    A cadence used to be a string field on the definition, so one definition
+    could have exactly one, and "Microsoft daily, Apple weekly" meant editing the
+    selection of four companies into two definitions by hand. A row instead: a
+    definition may carry none, one, or several, and disabling one disturbs
+    neither the others nor the definition.
+
+    Zero schedules is the ordinary case, not a gap. A definition on no clock runs
+    when somebody asks for it, which is how the `check` project works.
+    """
+
+    id: str = Field(pattern=_NAME)
+    #: The definition this fires. Either kind -- the kind is the definition's,
+    #: and a schedule does not need to know it.
+    definition: str = Field(pattern=_NAME)
+    cron: str
+    #: Off without being deleted, because a subscription somebody paused is not a
+    #: subscription somebody never had.
+    enabled: bool = True
+
+    @model_validator(mode="before")
+    @classmethod
+    def _selection_elsewhere(cls, raw: Any) -> Any:
+        if not isinstance(raw, dict):
+            return raw
+        found = [k for k in _SELECTION if k in raw]
+        if found:
+            raise ValueError(
+                f"a schedule names no selection, and this one says `{found[0]}:`. What to "
+                f"fetch is the definition's, and a schedule points at one by id. Two "
+                f"cadences over one selection are two schedules over one definition; two "
+                f"selections are two definitions"
+            )
+        return raw
+
+    @field_validator("cron")
+    @classmethod
+    def _valid_cron(cls, v: str) -> str:
+        from croniter import croniter
+
+        if not croniter.is_valid(v):
+            raise ValueError(f"'{v}' is not a valid cron expression")
+        return v
+
+
+#: Either kind. The four objects are the same for both, and most of the engine
+#: does not care which it has -- it asks the definition what it reads and writes.
+Definition = IngestionJobDefinition | TransformJobDefinition
 
 
 class Corpus(Base):
@@ -279,8 +393,11 @@ class Project(Base):
     store: str = "./data/qanat.duckdb"
     stages: list[Stage]
     universes: list[Universe] = Field(default_factory=list)
-    sources: list[Source] = Field(default_factory=list)
-    steps: list[Step] = Field(default_factory=list)
+    ingestion_job_definitions: list[IngestionJobDefinition] = Field(default_factory=list)
+    transform_job_definitions: list[TransformJobDefinition] = Field(default_factory=list)
+    #: Cadence, as rows. Several may point at one definition; a definition with
+    #: none is ordinary and runs when asked.
+    job_schedules: list[JobSchedule] = Field(default_factory=list)
     metrics: list[Metric] = Field(default_factory=list)
     retention: dict[str, str] = Field(default_factory=dict)
     time_columns: dict[str, str] = Field(default_factory=dict)
@@ -330,21 +447,43 @@ class Project(Base):
         """Each definition once, in the order the file declares them."""
         return list(dict.fromkeys(x.id for x in self.metrics))
 
+    # ---- definitions ---------------------------------------------------------
     @property
-    def jobs(self) -> list[Source | Step]:
-        return [*self.sources, *self.steps]
+    def definitions(self) -> list[Definition]:
+        """Everything that runs, both kinds, in file order."""
+        return [*self.ingestion_job_definitions, *self.transform_job_definitions]
 
-    def job(self, jid: str) -> Source | Step | None:
-        return next((j for j in self.jobs if j.id == jid), None)
+    def definition(self, did: str) -> Definition | None:
+        return next((d for d in self.definitions if d.id == did), None)
 
-    def waiting_on(self, refs: Sequence[str]) -> list[Step]:
-        """The steps that asked to run when one of these tables gets new rows."""
+    def waiting_on(self, refs: Sequence[str]) -> list[TransformJobDefinition]:
+        """The transforms that asked to run when one of these tables gets rows."""
         touched = set(refs)
-        return [s for s in self.steps if s.when and touched.intersection(s.when)]
+        return [d for d in self.transform_job_definitions
+                if d.when and touched.intersection(d.when)]
 
-    def producers(self) -> dict[str, str]:
-        """table -> the id of the job that writes it."""
-        return {ref: j.id for j in self.jobs for ref in j.writes}
+    # ---- schedules -----------------------------------------------------------
+    def schedules_for(self, did: str) -> list[JobSchedule]:
+        """Every cadence over one definition. Several is ordinary; none is too."""
+        return [s for s in self.job_schedules if s.definition == did]
+
+    def schedule(self, sid: str) -> JobSchedule | None:
+        return next((s for s in self.job_schedules if s.id == sid), None)
+
+    # ---- tables --------------------------------------------------------------
+    def writers(self) -> dict[str, list[str]]:
+        """table -> every definition id that writes it.
+
+        A list, not one id. `producers()` was a dict keyed on the table, so a
+        second definition writing the same table disappeared from it silently --
+        which is why `check` had to refuse that outright, and why the refusal
+        could only be lifted once every row named the execution that wrote it.
+        """
+        out: dict[str, list[str]] = {}
+        for d in self.definitions:
+            for ref in d.writes:
+                out.setdefault(ref, []).append(d.id)
+        return out
 
     def tables(self) -> list[str]:
-        return list(self.producers())
+        return list(self.writers())

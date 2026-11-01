@@ -24,7 +24,7 @@ one that says it was unsure**, and a caller that can read `rule` can decide how
 much to trust an answer. Until detection is good, that is the honest interface.
 
 `FORM_10K` is the SEC's vocabulary, not the platform's. It lives here as data a
-source adapter supplies, which is what keeps `spans` itself general: a document,
+connector supplies, which is what keeps `spans` itself general: a document,
 a section name, two offsets.
 
 ## One vocabulary per form, and no guessing when there is none

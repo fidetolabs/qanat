@@ -14,7 +14,7 @@ from pathlib import Path
 import pandas as pd
 import pytest
 
-from qanat.models import Step
+from qanat.models import TransformJobDefinition
 from qanat.store import Store
 
 
@@ -82,7 +82,7 @@ def test_f01_a_table_name_is_a_name(ref):
     """The table half of a reference was never validated, and it is interpolated
     into DDL: `qanat check` passed, then the step dropped a real table."""
     with pytest.raises(ValueError):
-        Step(id="x", reads=[], writes=[ref], script="x.sql")
+        TransformJobDefinition(id="x", reads=[], writes=[ref], script="x.sql")
 
 
 # --------------------------------------------------------------- the arithmetic
@@ -135,15 +135,15 @@ def test_w13_a_float_widens_the_column_instead_of_being_rounded(tmp_path: Path):
 def test_w07_the_csv_connector_can_keep_a_zero_padded_ticker(tmp_path: Path):
     """`pd.read_csv` with no options turned KRX 005930 into 5930, and the universe
     file -- which lists it as text -- then joined to nothing."""
-    from qanat.models import Source
-    from qanat.sources import fetch
+    from qanat.connectors import fetch
+    from qanat.models import IngestionJobDefinition
 
     (tmp_path / "t.csv").write_text("date,symbol\n2024-01-01,005930\n")
-    src = Source(id="k", writes=["raw.k"], connector="csv",
+    src = IngestionJobDefinition(id="k", writes=["raw.k"], connector="csv",
                  options={"path": "./t.csv", "dtype": {"symbol": "str"}})
     assert list(fetch(src, tmp_path)["symbol"]) == ["005930"]
 
-    bad = Source(id="k", writes=["raw.k"], connector="csv",
+    bad = IngestionJobDefinition(id="k", writes=["raw.k"], connector="csv",
                  options={"path": "./t.csv", "dtypo": {}})
     with pytest.raises(ValueError, match="does not know the option"):
         fetch(bad, tmp_path)
@@ -152,7 +152,7 @@ def test_w07_the_csv_connector_can_keep_a_zero_padded_ticker(tmp_path: Path):
 def test_r05_r06_the_shapes_the_public_web_actually_returns():
     """A single object could not be landed at all, and `records:` had no way to
     reach element 1 of a `[metadata, rows]` body."""
-    from qanat.sources.rest import _flatten, dig
+    from qanat.connectors.rest import _flatten, dig
 
     one = {"data": {"amount": "79235.53", "base": "BTC", "currency": "USD"}}
     assert len(_flatten(one, {"records": "data"})) == 1
@@ -160,7 +160,7 @@ def test_r05_r06_the_shapes_the_public_web_actually_returns():
     two = [{"page": 1}, [{"date": "2024", "value": 1}, {"date": "2023", "value": 2}]]
     assert len(dig(two, "1")) == 2
 
-    with pytest.raises(KeyError, match="no step"):
+    with pytest.raises(KeyError, match="no segment"):
         dig({"a": 1}, "nope")
 
 
@@ -168,10 +168,10 @@ def test_w15_an_unset_env_var_says_which_one():
     """It became an empty string, producing `Illegal header value b'Bearer '` or a
     request sent with a blank key -- and sometimes the actively wrong "rest needs
     options.url" when the option was set and the variable was not."""
-    from qanat.models import Source
-    from qanat.sources.rest import MissingEnv, _body
+    from qanat.connectors.rest import MissingEnv, _body
+    from qanat.models import IngestionJobDefinition
 
-    src = Source(id="px", writes=["raw.p"], connector="rest",
+    src = IngestionJobDefinition(id="px", writes=["raw.p"], connector="rest",
                  options={"url": "https://example.invalid/${QANAT_NOT_SET_ANYWHERE}"})
     with pytest.raises(MissingEnv, match="QANAT_NOT_SET_ANYWHERE"):
         _body(src, None)
@@ -182,25 +182,25 @@ def _project(tmp_path: Path, steps: str, files: dict) -> tuple:
     """The smallest legal project, plus whatever steps a test wants to break."""
     from qanat.project import load
 
-    (tmp_path / "steps").mkdir(exist_ok=True)
+    (tmp_path / "transforms").mkdir(exist_ok=True)
     (tmp_path / "seed").mkdir(exist_ok=True)
     (tmp_path / "seed/b.csv").write_text("date,symbol,close\n2024-01-01,A,1.0\n")
-    (tmp_path / "steps/norm.sql").write_text("SELECT * FROM raw__b")
-    (tmp_path / "steps/sorter.py").write_text(
+    (tmp_path / "transforms/norm.sql").write_text("SELECT * FROM raw__b")
+    (tmp_path / "transforms/sorter.py").write_text(
         "import pandas as pd\ndef run(ctx):\n    return pd.DataFrame("
         "{'symbol': ['A'], 'weight': [1.0], 'as_of': ['2024-01-01']})\n")
     for name, body in files.items():
-        (tmp_path / "steps" / name).write_text(body)
+        (tmp_path / "transforms" / name).write_text(body)
     (tmp_path / "qanat.yaml").write_text(
         "project: t\nstore: ./data/q.duckdb\n"
         "stages:\n  - {id: raw, kind: raw}\n  - {id: f, kind: features}\n"
         "  - {id: weights, kind: weights}\n"
-        "sources:\n  - {id: b, to: [raw.b], connector: csv, key: [date, symbol], "
+        "ingestion_job_definitions:\n  - {id: b, to: [raw.b], connector: csv, key: [date, symbol], "
         "options: {path: ./seed/b.csv}}\n"
-        "steps:\n"
-        "  - {id: norm, from: [raw.b], to: [f.prices], script: steps/norm.sql}\n"
+        "transform_job_definitions:\n"
+        "  - {id: norm, from: [raw.b], to: [f.prices], script: transforms/norm.sql}\n"
         f"{steps}"
-        "  - {id: sorter_h, from: [f.prices], to: [weights.h], script: steps/sorter.py}\n"
+        "  - {id: sorter_h, from: [f.prices], to: [weights.h], script: transforms/sorter.py}\n"
     )
     return load(tmp_path)
 
@@ -213,8 +213,8 @@ def test_g01_a_loop_between_steps_is_refused(tmp_path: Path):
 
     p, root = _project(
         tmp_path,
-        "  - {id: fa, from: [f.b], to: [f.a], script: steps/fa.sql}\n"
-        "  - {id: fb, from: [f.a], to: [f.b], script: steps/fb.sql}\n",
+        "  - {id: fa, from: [f.b], to: [f.a], script: transforms/fa.sql}\n"
+        "  - {id: fb, from: [f.a], to: [f.b], script: transforms/fb.sql}\n",
         {"fa.sql": "SELECT * FROM f__b", "fb.sql": "SELECT * FROM f__a"},
     )
     rep = validate(p, root)
@@ -227,10 +227,10 @@ def test_g02_one_table_has_one_producer(tmp_path: Path):
     from qanat.project import validate
 
     p, root = _project(
-        tmp_path, "  - {id: sorter_g, from: [f.prices], to: [weights.h], script: steps/sorter.py}\n", {}
+        tmp_path, "  - {id: sorter_g, from: [f.prices], to: [weights.h], script: transforms/sorter.py}\n", {}
     )
     rep = validate(p, root)
-    assert any("one producer" in e for e in rep.errors), rep.errors
+    assert any("one table has one writer" in e.lower() for e in rep.errors), rep.errors
 
 
 def test_g04_a_var_with_no_option_behind_it_is_refused(tmp_path: Path):
@@ -240,7 +240,7 @@ def test_g04_a_var_with_no_option_behind_it_is_refused(tmp_path: Path):
 
     p, root = _project(
         tmp_path,
-        "  - {id: filt, from: [f.prices], to: [f.q], script: steps/f.sql, options: {other: A}}\n",
+        "  - {id: filt, from: [f.prices], to: [f.q], script: transforms/f.sql, options: {other: A}}\n",
         {"f.sql": "SELECT * FROM f__prices WHERE symbol = '${sym}'"},
     )
     rep = validate(p, root)
@@ -254,7 +254,7 @@ def test_f02_a_script_outside_the_project_is_refused(tmp_path: Path):
 
     p, root = _project(tmp_path, "", {})
     (tmp_path.parent / "outside.py").write_text("def run(ctx):\n    return None\n")
-    p.steps[-1].script = "../outside.py"
+    p.transform_job_definitions[-1].script = "../outside.py"
     rep = validate(p, root)
     assert any("outside the project" in e for e in rep.errors), rep.errors
 
@@ -263,13 +263,13 @@ def test_f07_a_rejected_edit_leaves_the_project_alone(tmp_path: Path):
     """The edit was applied and validated afterwards, so a rejected one stayed in
     memory: every later read then reported errors about a step that is not in the
     file, and every later edit failed against it until the process was restarted."""
-    from qanat.editor import EditorError, save_step
+    from qanat.editor import EditorError, save_transform
     from qanat.project import validate
 
     p, root = _project(tmp_path, "", {})
     with pytest.raises(EditorError):
-        save_step(p, root, {"id": "bogus", "from": ["nope.nothing"], "to": ["f.b1"],
-                            "script": "steps/sorter.py"}, create_script=False)
+        save_transform(p, root, {"id": "bogus", "from": ["nope.nothing"], "to": ["f.b1"],
+                            "script": "transforms/sorter.py"}, create_script=False)
     assert validate(p, root).ok, "the rejected step must not still be in the project"
     assert "bogus" not in (root / "qanat.yaml").read_text()
 
@@ -282,13 +282,13 @@ def test_g03_a_step_whose_upstream_failed_is_skipped(tmp_path: Path):
 
     p, root = _project(
         tmp_path,
-        "  - {id: fa, from: [f.prices], to: [f.a], script: steps/fa.py}\n"
-        "  - {id: fb, from: [f.a], to: [f.b], script: steps/fb.sql}\n",
+        "  - {id: fa, from: [f.prices], to: [f.a], script: transforms/fa.py}\n"
+        "  - {id: fb, from: [f.a], to: [f.b], script: transforms/fb.sql}\n",
         {"fa.py": "def run(ctx):\n    raise RuntimeError('the vendor file was truncated')\n",
          "fb.sql": "SELECT * FROM f__a"},
     )
     store = Store(p.store_url(root))
-    out = {r.job_id: r for r in run_all(store, p, root)}
+    out = {r.definition_id: r for r in run_all(store, p, root)}
     assert out["fa"].status == "failed"
     assert out["fb"].status == "skipped", "fb reads what fa did not refresh"
     store.close()
@@ -304,8 +304,8 @@ def test_g05_a_sql_step_cannot_read_a_table_it_did_not_declare(tmp_path: Path):
 
     p, root = _project(
         tmp_path,
-        "  - {id: fa, from: [f.prices], to: [f.a], script: steps/fa.sql}\n"
-        "  - {id: sneak, from: [f.prices], to: [f.b], script: steps/sneak.sql}\n",
+        "  - {id: fa, from: [f.prices], to: [f.a], script: transforms/fa.sql}\n"
+        "  - {id: sneak, from: [f.prices], to: [f.b], script: transforms/sneak.sql}\n",
         {"fa.sql": "SELECT * FROM f__prices",
          "sneak.sql": "SELECT p.*, a.* FROM f__prices p JOIN f__a a USING (symbol)"},
     )
@@ -316,16 +316,21 @@ def test_g05_a_sql_step_cannot_read_a_table_it_did_not_declare(tmp_path: Path):
 def test_g05_ctx_sql_is_held_to_the_same_rule(tmp_path: Path):
     """The Python side of the same hole."""
     from qanat.context import Context
-    from qanat.models import Project, Source, Stage, Step
+    from qanat.models import (
+        IngestionJobDefinition,
+        Project,
+        Stage,
+        TransformJobDefinition,
+    )
 
     project = Project(
         name="t",
         stages=[Stage(id="raw", kind="raw"), Stage(id="w", kind="weights")],
-        sources=[Source(id="b", writes=["raw.bars"], connector="csv")],
-        steps=[Step(id="a", reads=[], writes=["w.h"], script="a.py")],
+        ingestion_job_definitions=[IngestionJobDefinition(id="b", writes=["raw.bars"], connector="csv")],
+        transform_job_definitions=[TransformJobDefinition(id="a", reads=[], writes=["w.h"], script="a.py")],
     )
     store = Store(tmp_path / "t.duckdb")
-    ctx = Context(store, project, tmp_path, project.steps[0])
+    ctx = Context(store, project, tmp_path, project.transform_job_definitions[0])
     with pytest.raises(KeyError, match="raw.bars"):
         ctx.sql("SELECT * FROM raw__bars")
     store.close()
@@ -354,7 +359,7 @@ def test_f13_a_job_that_runs_too_long_gives_its_worker_back(tmp_path: Path):
     from qanat.store import Store as S
 
     p, root = _project(tmp_path, "", {})
-    p.steps[-1].timeout = "1s"
+    p.transform_job_definitions[-1].timeout = "1s"
     store = S(p.store_url(root))
     sched = Scheduler(store, p, root, workers=2)
     assert sched.limit("sorter_h") == 1.0
@@ -362,10 +367,11 @@ def test_f13_a_job_that_runs_too_long_gives_its_worker_back(tmp_path: Path):
     with sched._lock:
         sched._inflight.add("sorter_h")
         sched._deadline["sorter_h"] = time.time() - 0.1   # already overdue
-    store.start_run("sorter_h", "step", ["weights.h"])
+    store.start_execution(store.open_job("sorter_h", "transform", "2024-01-01"),
+                          "sorter_h", "transform", ["weights.h"])
     assert sched.reap() == ["sorter_h"]
     assert "sorter_h" not in sched._inflight
-    left = store.query("SELECT count(*) c FROM _qanat_runs WHERE status = 'running'")["c"][0]
+    left = store.query("SELECT count(*) c FROM _qanat_job_execution WHERE status = 'running'")["c"][0]
     assert int(left) == 0
     store.close()
 
@@ -389,7 +395,7 @@ def test_f13_a_timeout_that_is_not_a_duration_is_caught_at_check_time(tmp_path: 
     from qanat.project import validate
 
     p, root = _project(tmp_path, "", {})
-    p.steps[-1].timeout = "soon"
+    p.transform_job_definitions[-1].timeout = "soon"
     assert any("timeout must look like" in e for e in validate(p, root).errors)
 
 

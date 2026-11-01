@@ -102,16 +102,16 @@ stages:
     description: typed, deduplicated, one key set
   - id: features
     kind: features
-    description: operator outputs -- a feature step may read another feature step
+    description: operator outputs -- a feature transform may read another feature transform
 
-# ---------------------------------------------------------------- the sources --
-# Many sources may feed one stage; each writes its own table.
-sources:
+# ------------------------------------------------------- the ingestion jobs --
+# What to fetch, and the one table it lands in. No cadence here -- that is a
+# `job_schedules:` row pointing at the id.
+ingestion_job_definitions:
   - id: daily_prices
     to: [raw.daily_prices]
     connector: csv
     key: [symbol, ts]
-    schedule: "*/2 * * * *"
     options:
       path: ./seed/daily_prices.csv
       parse_dates: [ts]
@@ -120,50 +120,57 @@ sources:
     to: [raw.news]
     connector: csv
     key: [symbol, ts]
-    schedule: "*/5 * * * *"
     options:
       path: ./seed/news.csv
       parse_dates: [ts]
 
-# ------------------------------------------------------------------ the steps --
+# ----------------------------------------------------------- the transforms --
 # n:m -- `from` and `to` are both lists.
-steps:
+transform_job_definitions:
   - id: normalize
     from: [raw.daily_prices]
     to:   [normalized.prices]
-    script: steps/normalize.sql
-    schedule: "*/2 * * * *"
+    script: transforms/normalize.sql
 
   - id: momentum
     from: [normalized.prices]
     to:   [features.momentum]
-    script: steps/momentum.py
-    schedule: "*/3 * * * *"
+    script: transforms/momentum.py
     options:
       lookback: 20
 
   - id: risk
     from: [normalized.prices]
     to:   [features.risk]
-    script: steps/risk.sql
-    schedule: "*/3 * * * *"
+    script: transforms/risk.sql
     options:
       window: 60
 
   - id: tone
     from: [raw.news]
     to:   [features.tone]
-    script: steps/tone.sql
-    schedule: "*/5 * * * *"
+    script: transforms/tone.sql
 
   - id: portfolio
     from: [features.momentum, features.risk, features.tone]
     to:   [features.target]
-    script: steps/portfolio.py
+    script: transforms/portfolio.py
     universe: demo8
-    schedule: "*/5 * * * *"
     options:
       top_n: 4
+
+# ------------------------------------------------------------ the schedules --
+# One cron line each, over one definition. `daily_prices` carries two, which is
+# the thing a field on the definition could not express.
+job_schedules:
+  - {id: daily_prices_2m,  definition: daily_prices, cron: "*/2 * * * *"}
+  - {id: daily_prices_30m, definition: daily_prices, cron: "*/30 * * * *"}
+  - {id: news_5m,          definition: news,         cron: "*/5 * * * *"}
+  - {id: normalize_2m,     definition: normalize,    cron: "*/2 * * * *"}
+  - {id: momentum_3m,      definition: momentum,     cron: "*/3 * * * *"}
+  - {id: risk_3m,          definition: risk,         cron: "*/3 * * * *"}
+  - {id: tone_5m,          definition: tone,         cron: "*/5 * * * *"}
+  - {id: portfolio_5m,     definition: portfolio,    cron: "*/5 * * * *"}
 
 """
 
@@ -293,11 +300,11 @@ def run(ctx):
 FILES = {
     "qanat.yaml": QANAT_YAML,
     "universes/demo8.csv": SYMBOLS,
-    "steps/normalize.sql": NORMALIZE_SQL,
-    "steps/risk.sql": RISK_SQL,
-    "steps/tone.sql": TONE_SQL,
-    "steps/momentum.py": MOMENTUM_PY,
-    "steps/portfolio.py": PORTFOLIO_PY,
+    "transforms/normalize.sql": NORMALIZE_SQL,
+    "transforms/risk.sql": RISK_SQL,
+    "transforms/tone.sql": TONE_SQL,
+    "transforms/momentum.py": MOMENTUM_PY,
+    "transforms/portfolio.py": PORTFOLIO_PY,
 }
 
 SYMBOL_LIST = ["AAPL", "MSFT", "NVDA", "AMZN", "META", "JPM", "XOM", "SPY"]

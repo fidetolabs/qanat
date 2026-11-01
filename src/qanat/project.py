@@ -3,10 +3,10 @@
 The contract is the opinion of this tool. It is what stops a pipeline from
 becoming a pile of tables nobody can explain:
 
-  1. `raw` is landed and never edited -- no step may write into a raw stage.
-  2. Data only ever moves forward. A step may read from its own stage (a feature
-     chain) but never from a later one.
-  3. Every table read has a producer, and every table has exactly one.
+  1. `raw` is landed and never edited -- no transform may write into a raw stage.
+  2. Data only ever moves forward. A transform may read from its own stage (a
+     feature chain) but never from a later one.
+  3. Every table read is written by something.
   4. Every row carries both dates, and a screen filters on the public one.
 
 **It is four properties and no names**, which `docs/contract.md` has said for
@@ -30,7 +30,7 @@ import yaml
 
 from qanat.models import Project
 
-#: `${name}` in a .sql step body -- the same pattern the runner substitutes with.
+#: `${name}` in a .sql transform body -- the pattern the runner substitutes with.
 _VAR = re.compile(r"\$\{([a-zA-Z0-9_]+)\}")
 
 
@@ -73,6 +73,20 @@ def load(path: str | os.PathLike[str] | None = None) -> tuple[Project, Path]:
         f = f / "qanat.yaml"
     with f.open() as fh:
         raw = yaml.safe_load(fh) or {}
+    from qanat.migrate import OLD_KEYS, looks_old
+
+    if looks_old(raw):
+        said = ", ".join(f"`{k}:`" for k in OLD_KEYS if k in raw)
+        raise ProjectError(
+            f"{f.name} is written in the old vocabulary: it says {said}.\n"
+            "  `sources:` is now `ingestion_job_definitions:` and `steps:` is "
+            "`transform_job_definitions:`,\n"
+            "  and the `schedule:` field on either one is a `job_schedules:` row pointing "
+            "at it by id --\n"
+            "  which is what lets one definition carry a daily and a weekly.\n"
+            f"  Run `qanat migrate {f.parent}` to rewrite it. It keeps a copy of this file "
+            "beside the new one."
+        )
     try:
         return Project.model_validate(raw), f.parent
     except ValidationError as exc:
@@ -115,46 +129,57 @@ def validate(p: Project, root: Path) -> Report:
                     f"the features stage '{other.id}' comes before '{nz.id}'. Nothing is "
                     "computed from rows that have not been typed yet")
 
-    producers = p.producers()
+    writers = p.writers()
 
-    # One table, one producer. `producers()` is a dict, so a second job writing
-    # the same table used to disappear from it silently, and then nothing could
-    # say which run made the rows in it.
-    writers: dict[str, list[str]] = {}
-    for j in p.jobs:
-        for ref in j.writes:
-            writers.setdefault(ref, []).append(j.id)
+    # One table, one writer. **Still here, and it is the thing row-level
+    # provenance replaces rather than something to relax first.** Its stated
+    # reason is that otherwise nothing can say which execution made the rows in
+    # a table -- so dropping it before every row carries that would leave the
+    # store unable to answer the question the rule was protecting.
     for ref, who in sorted(writers.items()):
         if len(who) > 1:
             r.errors.append(
                 f"'{ref}' is written by {' and '.join(sorted(who))}. One table has one "
-                "producer, or nothing can say which run made the rows in it"
+                "writer, or nothing can say which execution made the rows in it"
             )
 
-    # ---- sources --------------------------------------------------------------
+    # ---- one id space ---------------------------------------------------------
+    # Definitions and schedules share it, because `plan` tracks drift on both and
+    # keys that memory on the id. A schedule called `filings` beside a definition
+    # called `filings` would have one of them reporting the other's history.
     seen_ids: set[str] = set()
-    for s in p.sources:
-        if s.id in seen_ids:
-            r.errors.append(f"duplicate job id '{s.id}'")
-        seen_ids.add(s.id)
+    for obj in [*p.definitions, *p.job_schedules]:
+        if obj.id in seen_ids:
+            r.errors.append(
+                f"duplicate id '{obj.id}'. Definitions and schedules share one id space")
+        seen_ids.add(obj.id)
+
+    # ---- ingestion job definitions --------------------------------------------
+    for s in p.ingestion_job_definitions:
         if s.stage not in stage_ids:
-            r.errors.append(f"source '{s.id}' writes to unknown stage '{s.stage}'")
+            r.errors.append(
+                f"ingestion job '{s.id}' writes to unknown stage '{s.stage}'")
         if not s.key:
             r.warnings.append(
-                f"source '{s.id}' has no `key:`, so every poll keeps a full copy of whatever "
-                f"the feed answers. Name the columns that identify one row -- a row that "
-                f"arrives again unchanged is then not stored twice, and one that arrives with "
-                f"a changed value is written beside the old one"
+                f"ingestion job '{s.id}' has no `key:`, so every poll keeps a full copy of "
+                f"whatever the feed answers. Name the columns that identify one row -- a row "
+                f"that arrives again unchanged is then not stored twice, and one that arrives "
+                f"with a changed value is written beside the old one"
             )
 
-    # ---- steps ----------------------------------------------------------------
-    for st in p.steps:
-        if st.id in seen_ids:
-            r.errors.append(f"duplicate job id '{st.id}'")
-        seen_ids.add(st.id)
+    # ---- schedules -------------------------------------------------------------
+    for sch in p.job_schedules:
+        if p.definition(sch.definition) is None:
+            r.errors.append(
+                f"schedule '{sch.id}' fires '{sch.definition}', which is not a definition in "
+                f"this project. Known: "
+                f"{', '.join(d.id for d in p.definitions) or '(none)'}"
+            )
 
+    # ---- transform job definitions --------------------------------------------
+    for st in p.transform_job_definitions:
         if not st.writes:
-            r.errors.append(f"step '{st.id}' writes nothing")
+            r.errors.append(f"transform '{st.id}' writes nothing")
         script = root / st.script
         try:
             inside = script.resolve().is_relative_to(root.resolve())
@@ -162,24 +187,24 @@ def validate(p: Project, root: Path) -> Report:
             inside = False
         if not inside:
             r.errors.append(
-                f"step '{st.id}': script '{st.script}' is outside the project. A step runs "
+                f"transform '{st.id}': script '{st.script}' is outside the project. A transform runs "
                 "the file it names, so it has to be a path under the project directory"
             )
         elif not script.is_file():
-            r.errors.append(f"step '{st.id}': script not found at {st.script}")
+            r.errors.append(f"transform '{st.id}': script not found at {st.script}")
         elif script.suffix not in (".sql", ".py"):
-            r.errors.append(f"step '{st.id}': script must be .sql or .py, got {script.suffix}")
+            r.errors.append(f"transform '{st.id}': script must be .sql or .py, got {script.suffix}")
         elif script.suffix == ".sql" and len(st.writes) != 1:
-            r.errors.append(f"step '{st.id}': a .sql step writes exactly one table")
+            r.errors.append(f"transform '{st.id}': a .sql transform writes exactly one table")
 
         if st.universe and p.universe(st.universe) is None:
-            r.errors.append(f"step '{st.id}' uses unknown universe '{st.universe}'")
+            r.errors.append(f"transform '{st.id}' uses unknown universe '{st.universe}'")
         if not st.universe and script.is_file() and script.suffix == ".py":
             try:
                 if "ctx.universe(" in script.read_text():
                     r.errors.append(
-                        f"step '{st.id}' calls ctx.universe() but has no `universe:` set. "
-                        f"A step that holds a basket does, so this fails on the first run "
+                        f"transform '{st.id}' calls ctx.universe() but has no `universe:` set. "
+                        f"A transform that holds a basket does, so this fails on the first run "
                         f"with 'has no universe set'"
                     )
             except OSError:
@@ -188,20 +213,20 @@ def validate(p: Project, root: Path) -> Report:
         for ref in st.reads:
             lid = ref.split(".")[0]
             if lid not in stage_ids:
-                r.errors.append(f"step '{st.id}' reads unknown stage '{lid}'")
-            if ref not in producers:
-                r.errors.append(f"step '{st.id}' reads '{ref}', which nothing produces")
+                r.errors.append(f"transform '{st.id}' reads unknown stage '{lid}'")
+            if ref not in writers:
+                r.errors.append(f"transform '{st.id}' reads '{ref}', which nothing produces")
 
         for ref in st.writes:
             lid = ref.partition(".")[0]
             lay = p.stage(lid)
             if lay is None:
-                r.errors.append(f"step '{st.id}' writes unknown stage '{lid}'")
+                r.errors.append(f"transform '{st.id}' writes unknown stage '{lid}'")
                 continue
             # rule 1
             if lay.kind == "raw":
                 r.errors.append(
-                    f"step '{st.id}' writes into raw stage '{lid}'. "
+                    f"transform '{st.id}' writes into raw stage '{lid}'. "
                     "raw is landed as it arrived and never edited"
                 )
             # rule 2
@@ -210,29 +235,16 @@ def validate(p: Project, root: Path) -> Report:
                 si = p.stage_index(src.split(".")[0])
                 if si > ti:
                     r.errors.append(
-                        f"step '{st.id}' reads '{src}' from a later stage than it writes "
+                        f"transform '{st.id}' reads '{src}' from a later stage than it writes "
                         f"('{ref}'). Data only moves forward"
                     )
                 elif si == ti and lay.kind != "features":
                     r.errors.append(
-                        f"step '{st.id}' reads and writes the same stage '{lid}'. "
+                        f"transform '{st.id}' reads and writes the same stage '{lid}'. "
                         "only a features stage may chain"
                     )
             if ref in st.reads:
-                r.errors.append(f"step '{st.id}' reads and writes the same table '{ref}'")
-
-        if st.schedule:
-            from croniter import croniter
-
-            if not croniter.is_valid(st.schedule):
-                r.errors.append(f"step '{st.id}': '{st.schedule}' is not a valid cron expression")
-
-    for s in p.sources:
-        if s.schedule:
-            from croniter import croniter
-
-            if not croniter.is_valid(s.schedule):
-                r.errors.append(f"source '{s.id}': '{s.schedule}' is not a valid cron expression")
+                r.errors.append(f"transform '{st.id}' reads and writes the same table '{ref}'")
 
     for b in p.universes:
         if not (root / b.symbols).is_file():
@@ -240,12 +252,12 @@ def validate(p: Project, root: Path) -> Report:
 
     from qanat.retention import parse_duration
 
-    for job in p.jobs:
-        if job.timeout:
+    for definition in p.definitions:
+        if definition.timeout:
             try:
-                parse_duration(job.timeout, "timeout")
+                parse_duration(definition.timeout, "timeout")
             except ValueError as exc:
-                r.errors.append(f"job '{job.id}': {exc}")
+                r.errors.append(f"definition '{definition.id}': {exc}")
     if p.job_timeout:
         try:
             parse_duration(p.job_timeout, "job_timeout")
@@ -293,11 +305,11 @@ def validate(p: Project, root: Path) -> Report:
     # ---- the graph has to be a graph ------------------------------------------
     # `runner.order()` gives up on a cycle and appends what is left in file order,
     # with a comment saying `qanat check` reports it. It did not. On an empty store
-    # the run fails with a confusing LookupError; on a populated one every step
+    # the run fails with a confusing LookupError; on a populated one every transform
     # reports ok and the values grow on every pass, so the answer depends on how
     # many times the pipeline was run.
-    remaining = list(p.steps)
-    produced = {s.ref for s in p.sources}
+    remaining = list(p.transform_job_definitions)
+    produced = {d.ref for d in p.ingestion_job_definitions}
     while True:
         ready = [s for s in remaining if all(rd in produced for rd in s.reads)]
         if not ready:
@@ -305,17 +317,17 @@ def validate(p: Project, root: Path) -> Report:
         for s in ready:
             produced.update(s.writes)
             remaining.remove(s)
-    stuck = [s for s in remaining if all(rd in producers for rd in s.reads)]
+    stuck = [s for s in remaining if all(rd in writers for rd in s.reads)]
     if stuck:
         r.errors.append(
-            "these steps depend on each other in a loop, so nothing can run first: "
+            "these transforms depend on each other in a loop, so nothing can run first: "
             + ", ".join(sorted(s.id for s in stuck))
         )
 
-    # ---- a ${name} in a .sql step needs an option behind it --------------------
+    # ---- a ${name} in a .sql transform needs an option behind it --------------------
     # Left unresolved the text stays in the query as a valid string literal that
     # matches nothing, so a typo in a YAML key empties the table and reports ok.
-    for st in p.steps:
+    for st in p.transform_job_definitions:
         f = root / st.script
         if f.suffix != ".sql" or not f.is_file():
             continue
@@ -327,14 +339,14 @@ def validate(p: Project, root: Path) -> Report:
 
         stray = sorted(
             ref for ref in tables_named(body)
-            if ref in producers and ref not in st.reads and ref not in st.writes
+            if ref in writers and ref not in st.reads and ref not in st.writes
         )
         if stray:
             r.errors.append(
-                f"step '{st.id}': {Path(st.script).name} reads {', '.join(stray)} without "
+                f"transform '{st.id}': {Path(st.script).name} reads {', '.join(stray)} without "
                 f"declaring {'it' if len(stray) == 1 else 'them'} in `from:`. The graph is "
-                f"drawn from what a step declares, so an undeclared read is an arrow nobody "
-                f"can see -- and `qanat plan` will not mark this step stale when that table "
+                f"drawn from what a transform declares, so an undeclared read is an arrow nobody "
+                f"can see -- and `qanat plan` will not mark this transform stale when that table "
                 f"changes"
             )
 
@@ -343,13 +355,13 @@ def validate(p: Project, root: Path) -> Report:
                 continue
             if name not in st.options:
                 r.errors.append(
-                    f"step '{st.id}': {Path(st.script).name} uses ${{{name}}}, which is not in "
+                    f"transform '{st.id}': {Path(st.script).name} uses ${{{name}}}, which is not in "
                     f"its options ({', '.join(sorted(st.options)) or 'none set'})"
                 )
         if "as_of" in st.options:
             r.warnings.append(
-                f"step '{st.id}' sets an option called 'as_of'. A screen overwrites it with "
-                "the date being screened, so this step means something different under "
+                f"transform '{st.id}' sets an option called 'as_of'. A screen overwrites it with "
+                "the date being screened, so this transform means something different under "
                 "a screen than under an ordinary run"
             )
 
@@ -368,7 +380,7 @@ def validate(p: Project, root: Path) -> Report:
 
     # ---- soft advice ----------------------------------------------------------
     #: A metric reads a table the way SQL does, by its physical name. Counting
-    #: only steps as readers meant the terminal table of every correct filings
+    #: only transforms as readers meant the terminal table of every correct filings
     #: pipeline was reported as read by nothing -- the thing a metric is for.
     from qanat.metrics import tables_read
 
@@ -384,18 +396,18 @@ def validate(p: Project, root: Path) -> Report:
         read_by_metric.update(
             ref for ref in (p.corpus.documents, p.corpus.spans, p.corpus.facts) if ref)
 
-    for ref, who in producers.items():
-        read_by = [st.id for st in p.steps if ref in st.reads]
+    for ref, who in writers.items():
+        read_by = [st.id for st in p.transform_job_definitions if ref in st.reads]
         if not read_by and ref not in read_by_metric:
-            r.warnings.append(f"'{ref}' (from {who}) is never read by anything")
+            r.warnings.append(f"'{ref}' (from {', '.join(who)}) is never read by anything")
 
     return r
 
 
 def edges(p: Project) -> list[tuple[str, str, str]]:
-    """(from_table, to_table, step_id) for every path a row can take."""
+    """(from_table, to_table, definition_id) for every path a row can take."""
     out = []
-    for st in p.steps:
+    for st in p.transform_job_definitions:
         for a in st.reads:
             for b in st.writes:
                 out.append((a, b, st.id))

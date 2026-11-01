@@ -17,7 +17,7 @@ import httpx
 import pytest
 
 from qanat import filings
-from qanat.models import Project, Source
+from qanat.models import IngestionJobDefinition, Project
 from qanat.store import Store
 
 UA = "qanat tests nobody@example.com"
@@ -142,7 +142,7 @@ def edgar(monkeypatch):
         return real(*a, **kw)
 
     monkeypatch.setattr(filings.httpx, "Client", client)
-    monkeypatch.setattr("qanat.sources.sec.httpx.Client", client)
+    monkeypatch.setattr("qanat.connectors.sec.httpx.Client", client)
     monkeypatch.setattr(filings.sec.Throttle, "wait", lambda self: None)
     return seen
 
@@ -153,7 +153,7 @@ def a_project(root: Path) -> tuple[Project, Store]:
         "project": "filings",
         "store": "./data/qanat.duckdb",
         "stages": [{"id": "raw", "kind": "raw"}],
-        "sources": [{
+        "ingestion_job_definitions": [{
             "id": "filings", "to": ["raw.documents"], "connector": "sec",
             "mode": "append", "key": ["id"],
             "options": {"companies": ["AAPL"], "user_agent": UA,
@@ -242,9 +242,9 @@ def test_a_period_with_no_filing_in_it_gets_an_empty_list(project, edgar):
 
 def test_find_writes_nothing_and_leaves_no_run_row(project, edgar):
     p, store, root = project
-    before = len(store.recent_runs(100))
+    before = len(store.recent_executions(100))
     filings.find(store, p, ["AAPL"])
-    assert len(store.recent_runs(100)) == before, "find left a run row"
+    assert len(store.recent_executions(100)) == before, "find left a run row"
     assert not store.exists("raw.documents"), "find wrote to the corpus"
     assert not (root / "data" / "documents").exists(), "find fetched a body"
     assert not any("/Archives/" in u for u in edgar), "find fetched a document"
@@ -411,8 +411,8 @@ def test_the_sec_connector_reads_a_universe(tmp_path, edgar):
     `save_universe` writes `./universes/<id>.csv`, which is what makes a
     universe addressable by the name it was saved under.
     """
+    from qanat.connectors import sec
     from qanat.editor import save_universe
-    from qanat.sources import sec
 
     project, store = a_project(tmp_path)
     try:
@@ -420,11 +420,11 @@ def test_the_sec_connector_reads_a_universe(tmp_path, edgar):
         save_universe(project, tmp_path,
                       {"id": "two", "index": "Two", "symbols": "./universes/two.csv",
                        "symbols_list": ["AAPL", "TM"]})
-        src = Source(id="filings", to=["raw.documents"], connector="sec",
+        src = IngestionJobDefinition(id="filings", to=["raw.documents"], connector="sec",
                      options={"from_universe": "two", "user_agent": UA})
         assert sec.companies_of(src, tmp_path) == ["AAPL", "TM"]
 
-        by_path = Source(id="filings", to=["raw.documents"], connector="sec",
+        by_path = IngestionJobDefinition(id="filings", to=["raw.documents"], connector="sec",
                          options={"from_universe": "./universes/two.csv", "user_agent": UA})
         assert sec.companies_of(by_path, tmp_path) == ["AAPL", "TM"]
     finally:
@@ -432,9 +432,9 @@ def test_the_sec_connector_reads_a_universe(tmp_path, edgar):
 
 
 def test_a_sec_source_with_neither_list_says_what_to_pass(tmp_path):
-    from qanat.sources import sec
+    from qanat.connectors import sec
 
-    src = Source(id="filings", to=["raw.documents"], connector="sec",
+    src = IngestionJobDefinition(id="filings", to=["raw.documents"], connector="sec",
                  options={"user_agent": UA})
     with pytest.raises(ValueError, match="from_universe"):
         sec.companies_of(src, tmp_path)
@@ -468,7 +468,7 @@ def a_written_project(root: Path) -> tuple[Project, Store]:
         stages:
           - id: raw
             kind: raw
-        sources:
+        ingestion_job_definitions:
           - id: filings
             to: [raw.documents]
             connector: sec
@@ -516,7 +516,7 @@ def test_a_subscription_survives_a_reload_and_reads_back(written, edgar):
     p, store, root = written
     out = filings.subscribe(p, root, ["AAPL", "MSFT"], forms=["10-K"],
                             every="daily", hour=7)
-    assert out["schedule"] == "0 7 * * *"
+    assert out["cron"] == "0 7 * * *"
 
     from qanat.project import load
 
@@ -525,7 +525,7 @@ def test_a_subscription_survives_a_reload_and_reads_back(written, edgar):
     mine = next(r for r in back["subscriptions"] if r["id"] == out["subscribed"])
     assert mine["companies"] == ["AAPL", "MSFT"]
     assert mine["forms"] == ["10-K"]
-    assert mine["schedule"] == "0 7 * * *"
+    assert mine["cron"] == "0 7 * * *"
     assert mine["every"] == "daily"
     assert mine["next_due"], "a subscription with no next time is not a subscription"
 
@@ -540,8 +540,10 @@ def test_list_steps_reads_the_cron_line_the_tool_wrote(written, edgar):
     session = Session(str(root))
     try:
         listed = next(x for x in TOOLS if x["name"] == "list_steps")["handler"](session, {})
-        mine = next(s for s in listed["sources"] if s["id"] == out["subscribed"])
-        assert mine["schedule"] == "0 3 1 * *"
+        mine = next(s for s in listed["ingestion"] if s["id"] == out["definition"])
+        # The cadences are joined on, not read off the definition -- there may be
+        # several, which is why this is a list.
+        assert [x["cron"] for x in mine["schedules"]] == ["0 3 1 * *"]
         assert mine["options"]["form"] == "10-Q"
     finally:
         session.close()
@@ -552,9 +554,14 @@ def test_the_same_selection_is_the_same_subscription(written, edgar):
     p, _store, root = written
     first = filings.subscribe(p, root, ["AAPL"], forms=["10-K"], hour=6)
     again = filings.subscribe(p, root, ["AAPL"], forms=["10-K"], hour=9)
-    assert first["subscribed"] == again["subscribed"] == "filings"
-    assert len(p.sources) == 1, "a second poll on the same table is not allowed"
-    assert p.sources[0].schedule == "0 9 * * *", "the second call replaced the first"
+    # Same selection, same definition. A different hour is a *different* cadence,
+    # so it is a second schedule over the one definition rather than an edit to
+    # the first -- which is the whole point of splitting them.
+    assert first["definition"] == again["definition"] == "filings"
+    assert first["subscribed"] != again["subscribed"]
+    assert len(p.ingestion_job_definitions) == 1, "a second poll on the same table is not allowed"
+    assert [s.cron for s in p.schedules_for("filings")] == ["0 6 * * *", "0 9 * * *"], \
+        "the second call added a cadence instead of replacing the first"
 
 
 def test_a_form_nothing_can_parse_is_refused_at_subscribe_time(written, edgar):
@@ -595,16 +602,16 @@ def test_the_scheduler_is_reported_when_one_is_running(written, edgar):
 def test_a_subscription_ingests_what_appears_after_it_and_not_outside_its_period(
         written, edgar, monkeypatch):
     """The selection points forward, and the period still bounds it."""
-    from qanat.runner import run_source
-    from qanat.sources import sec
+    from qanat.connectors import sec
+    from qanat.runner import run_ingestion
 
     p, store, root = written
     out = filings.subscribe(p, root, ["AAPL"], forms=["10-K"],
                             frm="2025-01-01", to="2025-12-31", years=10)
-    src = next(s for s in p.sources if s.id == out["subscribed"])
+    src = next(s for s in p.ingestion_job_definitions if s.id == out["definition"])
 
     monkeypatch.setattr(sec.Throttle, "wait", lambda self: None)
-    first = run_source(store, p, root, src)
+    first = run_ingestion(store, p, root, src)
     assert first.ok
     # Two 10-Ks report on a 2025 period; the 2020 one is outside the window.
     landed = store.rows("raw.documents", columns="id")["id"].tolist()
@@ -615,7 +622,7 @@ def test_a_subscription_ingests_what_appears_after_it_and_not_outside_its_period
     FILINGS.append(("0000320193-25-000013", "2025-12-20", "2025-09-27", "10-K"))
     BODIES["0000320193-25-000013"] = tagged("us-gaap", "Revenues")
     try:
-        second = run_source(store, p, root, src)
+        second = run_ingestion(store, p, root, src)
         assert second.ok
         after = store.rows("raw.documents", columns="id")["id"].tolist()
         assert "0000320193-25-000013" in after
@@ -626,25 +633,26 @@ def test_a_subscription_ingests_what_appears_after_it_and_not_outside_its_period
 
 
 def test_unsubscribing_leaves_the_rows_alone(written, edgar, monkeypatch):
-    from qanat.runner import run_source
-    from qanat.sources import sec
+    from qanat.connectors import sec
+    from qanat.runner import run_ingestion
 
     p, store, root = written
     out = filings.subscribe(p, root, ["AAPL"], forms=["10-K"], frm="2025-01-01")
-    src = next(s for s in p.sources if s.id == out["subscribed"])
+    src = next(s for s in p.ingestion_job_definitions if s.id == out["definition"])
     monkeypatch.setattr(sec.Throttle, "wait", lambda self: None)
-    run_source(store, p, root, src)
+    run_ingestion(store, p, root, src)
     before = store.table_info("raw.documents").rows
     assert before > 0
 
     filings.unsubscribe(p, root, out["subscribed"])
-    assert not any(s.id == out["subscribed"] for s in p.sources)
+    assert not any(s.id == out["subscribed"] for s in p.job_schedules), \
+        "the cadence stopped"
     assert store.table_info("raw.documents").rows == before
 
 
 def test_unsubscribing_something_that_is_not_subscribed_says_so(written):
     p, _store, root = written
-    with pytest.raises(filings.FilingsError, match="no source"):
+    with pytest.raises(filings.FilingsError, match="no subscription"):
         filings.unsubscribe(p, root, "sub_nothing")
 
 
@@ -665,28 +673,28 @@ def test_one_subscription_per_corpus_because_a_table_has_one_producer(written, e
     """
     p, _store, root = written
     out = filings.subscribe(p, root, ["AAPL"], forms=["10-K", "10-Q"], hour=4)
-    assert out["subscribed"] == "filings", "it took over the existing producer"
+    assert out["definition"] == "filings", "it took over the existing definition"
     assert out["forms"] == ["10-K", "10-Q"]
-    assert len(p.sources) == 1
+    assert len(p.ingestion_job_definitions) == 1
 
+    from qanat.connectors import sec
     from qanat.project import validate
-    from qanat.sources import sec
 
     assert validate(p, root).ok, "the project still holds against the contract"
-    assert sec.forms_of(p.sources[0]) == ["10-K", "10-Q"]
+    assert sec.forms_of(p.ingestion_job_definitions[0]) == ["10-K", "10-Q"]
 
 
 def test_a_subscription_over_two_forms_lands_both_and_labels_each_one(
         written, edgar, monkeypatch):
     """`doc_type` is the row's own form, not the source's list."""
-    from qanat.runner import run_source
-    from qanat.sources import sec
+    from qanat.connectors import sec
+    from qanat.runner import run_ingestion
 
     p, store, root = written
     filings.subscribe(p, root, ["AAPL"], forms=["10-K", "10-Q"],
                       frm="2025-01-01", years=10)
     monkeypatch.setattr(sec.Throttle, "wait", lambda self: None)
-    assert run_source(store, p, root, p.sources[0]).ok
+    assert run_ingestion(store, p, root, p.ingestion_job_definitions[0]).ok
 
     kinds = store.rows("raw.documents", columns="doc_type")["doc_type"].tolist()
     assert sorted(set(kinds)) == ["10-K", "10-Q"]
@@ -703,7 +711,7 @@ def test_a_corpus_fed_by_another_connector_is_not_taken_over(tmp_path, edgar):
         stages:
           - id: raw
             kind: raw
-        sources:
+        ingestion_job_definitions:
           - id: docs
             to: [raw.documents]
             connector: csv
@@ -717,7 +725,7 @@ def test_a_corpus_fed_by_another_connector_is_not_taken_over(tmp_path, edgar):
     project, _ = load(tmp_path)
     store = Store(project.store_url(tmp_path))
     try:
-        with pytest.raises(filings.FilingsError, match="csv source"):
+        with pytest.raises(filings.FilingsError, match="csv connector"):
             filings.subscribe(project, tmp_path, ["AAPL"], forms=["10-K"])
     finally:
         store.close()
@@ -739,7 +747,7 @@ def test_no_sec_request_goes_out_of_find_filings_without_a_contact(project, monk
     refuses an anonymous request anyway.
     """
     p, store, _root = project
-    p.sources[0].options.pop("user_agent", None)
+    p.ingestion_job_definitions[0].options.pop("user_agent", None)
     monkeypatch.delenv("SEC_USER_AGENT", raising=False)
 
     asked: list[str] = []
@@ -754,24 +762,24 @@ def test_a_subscriptions_last_run_reports_the_rows_it_landed(written, edgar, mon
     """It read `rows` and the runs table calls it `rows_out`, so every pass that
     had landed rows reported None -- in the one tool whose whole job is saying
     honestly what has and has not happened."""
-    from qanat.runner import run_source
-    from qanat.sources import sec
+    from qanat.connectors import sec
+    from qanat.runner import run_ingestion
 
     p, store, root = written
     filings.subscribe(p, root, ["AAPL"], forms=["10-K"], frm="2025-01-01")
     monkeypatch.setattr(sec.Throttle, "wait", lambda self: None)
-    result = run_source(store, p, root, p.sources[0])
+    result = run_ingestion(store, p, root, p.ingestion_job_definitions[0])
     assert result.rows > 0
 
     mine = filings.subscriptions(store, p)["subscriptions"][0]
-    assert mine["last_run"]["status"] == "ok"
-    assert mine["last_run"]["rows"] == result.rows, "the rows it actually landed"
-    assert mine["last_run"]["ended_at"], "and when it finished"
+    assert mine["last_execution"]["status"] == "ok"
+    assert mine["last_execution"]["rows"] == result.rows, "the rows it actually landed"
+    assert mine["last_execution"]["ended_at"], "and when it finished"
 
 
 def test_a_subscription_that_has_never_run_says_so(written, edgar):
     p, store, root = written
     filings.subscribe(p, root, ["AAPL"], forms=["10-K"])
     mine = filings.subscriptions(store, p)["subscriptions"][0]
-    assert mine["last_run"] is None
+    assert mine["last_execution"] is None
     assert mine["next_due"], "and still says when it is due"

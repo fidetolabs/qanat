@@ -7,8 +7,8 @@ from pathlib import Path
 
 import pytest
 
-from qanat.models import Source
-from qanat.sources import rest
+from qanat.connectors import rest
+from qanat.models import IngestionJobDefinition
 
 #: every path the test server was asked for, in order
 ASKED: list[str] = []
@@ -43,8 +43,8 @@ def feed():
     srv.shutdown()
 
 
-def _source(url: str, **options) -> Source:
-    return Source.model_validate({
+def _source(url: str, **options) -> IngestionJobDefinition:
+    return IngestionJobDefinition.model_validate({
         "id": "px", "to": ["raw.chart"], "connector": "rest",
         "options": {"url": url, **options},
     })

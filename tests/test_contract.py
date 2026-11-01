@@ -20,14 +20,14 @@ BASE = {
         {"id": "features", "kind": "features"},
         {"id": "picks", "kind": "whatever-this-project-calls-it"},
     ],
-    "sources": [{"id": "s", "to": ["raw.bars"], "connector": "csv", "options": {"path": "./seed/x.csv"}}],
+    "ingestion_job_definitions": [{"id": "s", "to": ["raw.bars"], "connector": "csv", "options": {"path": "./seed/x.csv"}}],
 }
 
 
 @pytest.fixture
 def root(tmp_path: Path) -> Path:
-    (tmp_path / "steps").mkdir()
-    (tmp_path / "steps" / "x.py").write_text("def run(ctx):\n    return {}\n")
+    (tmp_path / "transforms").mkdir()
+    (tmp_path / "transforms" / "x.py").write_text("def run(ctx):\n    return {}\n")
     return tmp_path
 
 
@@ -44,42 +44,42 @@ def test_starter_project_holds(tmp_path: Path):
 
 
 def test_raw_is_never_edited(root: Path):
-    spec = {**BASE, "steps": [
-        {"id": "bad", "from": ["raw.bars"], "to": ["raw.bars2"], "script": "steps/x.py"}]}
+    spec = {**BASE, "transform_job_definitions": [
+        {"id": "bad", "from": ["raw.bars"], "to": ["raw.bars2"], "script": "transforms/x.py"}]}
     rep = check(spec, root)
     assert any("never edited" in e for e in rep.errors)
 
 
 def test_data_only_moves_forward(root: Path):
-    spec = {**BASE, "steps": [
-        {"id": "a", "from": ["raw.bars"], "to": ["features.f"], "script": "steps/x.py"},
-        {"id": "b", "from": ["picks.target"], "to": ["features.g"], "script": "steps/x.py"},
-        {"id": "c", "from": ["features.f"], "to": ["picks.target"], "script": "steps/x.py"},
+    spec = {**BASE, "transform_job_definitions": [
+        {"id": "a", "from": ["raw.bars"], "to": ["features.f"], "script": "transforms/x.py"},
+        {"id": "b", "from": ["picks.target"], "to": ["features.g"], "script": "transforms/x.py"},
+        {"id": "c", "from": ["features.f"], "to": ["picks.target"], "script": "transforms/x.py"},
     ]}
     rep = check(spec, root)
     assert any("only moves forward" in e for e in rep.errors)
 
 
 def test_every_read_has_a_producer(root: Path):
-    spec = {**BASE, "steps": [
-        {"id": "a", "from": ["raw.nope"], "to": ["picks.target"], "script": "steps/x.py"}]}
+    spec = {**BASE, "transform_job_definitions": [
+        {"id": "a", "from": ["raw.nope"], "to": ["picks.target"], "script": "transforms/x.py"}]}
     assert any("which nothing produces" in e for e in check(spec, root).errors)
 
 
 def test_feature_stage_may_chain(root: Path):
-    spec = {**BASE, "steps": [
-        {"id": "a", "from": ["raw.bars"], "to": ["features.f1"], "script": "steps/x.py"},
-        {"id": "b", "from": ["features.f1"], "to": ["features.f2"], "script": "steps/x.py"},
-        {"id": "c", "from": ["features.f2"], "to": ["picks.target"], "script": "steps/x.py"},
+    spec = {**BASE, "transform_job_definitions": [
+        {"id": "a", "from": ["raw.bars"], "to": ["features.f1"], "script": "transforms/x.py"},
+        {"id": "b", "from": ["features.f1"], "to": ["features.f2"], "script": "transforms/x.py"},
+        {"id": "c", "from": ["features.f2"], "to": ["picks.target"], "script": "transforms/x.py"},
     ]}
     assert check(spec, root).ok
 
 
 def test_sql_step_writes_one_table(root: Path):
-    (root / "steps" / "y.sql").write_text("SELECT 1")
-    spec = {**BASE, "steps": [
-        {"id": "a", "from": ["raw.bars"], "to": ["features.f", "features.g"], "script": "steps/y.sql"},
-        {"id": "b", "from": ["features.f"], "to": ["picks.target"], "script": "steps/x.py"},
+    (root / "transforms" / "y.sql").write_text("SELECT 1")
+    spec = {**BASE, "transform_job_definitions": [
+        {"id": "a", "from": ["raw.bars"], "to": ["features.f", "features.g"], "script": "transforms/y.sql"},
+        {"id": "b", "from": ["features.f"], "to": ["picks.target"], "script": "transforms/x.py"},
     ]}
     assert any("writes exactly one table" in e for e in check(spec, root).errors)
 
@@ -95,9 +95,9 @@ def test_no_stage_kind_carries_an_ordering_rule_any_more(root: Path):
         {"id": "raw", "kind": "raw"},
         {"id": "pnl", "kind": "pnl"},
         {"id": "weights", "kind": "weights"},
-    ], "steps": [
-        {"id": "a", "from": ["raw.bars"], "to": ["pnl.anything"], "script": "steps/x.py"},
-        {"id": "b", "from": ["pnl.anything"], "to": ["weights.two"], "script": "steps/x.py"},
+    ], "transform_job_definitions": [
+        {"id": "a", "from": ["raw.bars"], "to": ["pnl.anything"], "script": "transforms/x.py"},
+        {"id": "b", "from": ["pnl.anything"], "to": ["weights.two"], "script": "transforms/x.py"},
     ]}
     rep = check(spec, root)
     assert rep.ok, rep.errors

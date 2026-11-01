@@ -9,7 +9,14 @@ from typing import Any
 
 import yaml
 
-from qanat.models import Metric, Project, Source, Stage, Step
+from qanat.models import (
+    IngestionJobDefinition,
+    JobSchedule,
+    Metric,
+    Project,
+    Stage,
+    TransformJobDefinition,
+)
 
 
 def dump_project(project: Project) -> dict[str, Any]:
@@ -26,10 +33,14 @@ def dump_project(project: Project) -> dict[str, Any]:
         {"id": s.id, "kind": s.kind, **({"description": s.description} if s.description else {})}
         for s in project.stages
     ]
-    if project.sources:
-        data["sources"] = [_dump_source(s) for s in project.sources]
-    if project.steps:
-        data["steps"] = [_dump_step(st) for st in project.steps]
+    if project.ingestion_job_definitions:
+        data["ingestion_job_definitions"] = [
+            _dump_ingestion(d) for d in project.ingestion_job_definitions]
+    if project.transform_job_definitions:
+        data["transform_job_definitions"] = [
+            _dump_transform(d) for d in project.transform_job_definitions]
+    if project.job_schedules:
+        data["job_schedules"] = [_dump_schedule(s) for s in project.job_schedules]
     if project.metrics:
         data["metrics"] = [_dump_metric(m) for m in project.metrics]
     if project.retention:
@@ -42,11 +53,11 @@ def dump_project(project: Project) -> dict[str, Any]:
         data["returns"] = project.returns.model_dump()
     if project.corpus is not None:
         data["corpus"] = project.corpus.model_dump()
-    # Anything the model holds has to be written back, or saving one step quietly
-    # deletes the rest of the file. That comment was here and three fields were
-    # missing from the dict under it: `metrics`, `returns` and `corpus`. The
+    # Anything the model holds has to be written back, or saving one definition
+    # quietly deletes the rest of the file. That comment was here and three fields
+    # were missing from the dict under it: `metrics`, `returns` and `corpus`. The
     # round-tripper deletes any key the new dict does not carry, so one
-    # `save_step` on a filings project removed every metric definition, the
+    # definition save on a filings project removed every metric definition, the
     # price table a screen reads and the three tables the reading tools read --
     # and the dump then matched the file it had just emptied, so the safety
     # check passed. `test_every_field_the_model_holds_is_written_back` is what
@@ -54,42 +65,43 @@ def dump_project(project: Project) -> dict[str, Any]:
     return data
 
 
-def _dump_source(s: Source) -> dict[str, Any]:
+def _dump_ingestion(d: IngestionJobDefinition) -> dict[str, Any]:
     row: dict[str, Any] = {
-        "id": s.id,
-        "to": list(s.writes),
-        "connector": s.connector,
+        "id": d.id,
+        "to": list(d.writes),
+        "connector": d.connector,
     }
-    if s.schedule:
-        row["schedule"] = s.schedule
-    if s.key:
-        row["key"] = list(s.key)
-    if s.mode != "append":
-        row["mode"] = s.mode
-    if s.timeout:
-        row["timeout"] = s.timeout
-    if s.options:
-        row["options"] = s.options
+    if d.key:
+        row["key"] = list(d.key)
+    if d.timeout:
+        row["timeout"] = d.timeout
+    if d.options:
+        row["options"] = d.options
     return row
 
 
-def _dump_step(st: Step) -> dict[str, Any]:
+def _dump_transform(d: TransformJobDefinition) -> dict[str, Any]:
     row: dict[str, Any] = {
-        "id": st.id,
-        "from": list(st.reads),
-        "to": list(st.writes),
-        "script": st.script,
+        "id": d.id,
+        "from": list(d.reads),
+        "to": list(d.writes),
+        "script": d.script,
     }
-    if st.schedule:
-        row["schedule"] = st.schedule
-    if st.when:
-        row["when"] = list(st.when)
-    if st.universe:
-        row["universe"] = st.universe
-    if st.timeout:
-        row["timeout"] = st.timeout
-    if st.options:
-        row["options"] = st.options
+    if d.when:
+        row["when"] = list(d.when)
+    if d.universe:
+        row["universe"] = d.universe
+    if d.timeout:
+        row["timeout"] = d.timeout
+    if d.options:
+        row["options"] = d.options
+    return row
+
+
+def _dump_schedule(s: JobSchedule) -> dict[str, Any]:
+    row: dict[str, Any] = {"id": s.id, "definition": s.definition, "cron": s.cron}
+    if not s.enabled:
+        row["enabled"] = s.enabled
     return row
 
 
@@ -139,8 +151,8 @@ def _merge(old: Any, new: Any) -> Any:
     cannot carry them. Writing the new values *into* the tree that was parsed from
     the file keeps every comment attached to a key or a block that is still there.
 
-    Lists are matched on `id` -- a step, a stage, a source -- so editing one step
-    leaves the comments on its neighbours alone. Anything without an `id` is
+    Lists are matched on `id` -- a definition, a stage, a schedule -- so editing
+    one leaves the comments on its neighbours alone. Anything without an `id` is
     replaced wholesale, which is right for the scalar lists in this file.
     """
     if isinstance(new, dict) and hasattr(old, "keys"):
@@ -162,7 +174,7 @@ def _merge(old: Any, new: Any) -> Any:
             prior = kept.get(item.get("id")) if isinstance(item, dict) else None
             out.append(_merge(prior, item) if prior is not None else item)
         # Mutate in place: a fresh list would drop the comments ruamel stores
-        # against the sequence itself, which is where a note above a step lives.
+        # against the sequence itself, which is where a note above a definition lives.
         old[:] = out
         return old
 
@@ -250,28 +262,49 @@ def mutate_stage(project: Project, stage: Stage, *, insert_before: str | None = 
 
 
 def remove_stage(project: Project, stage_id: str) -> None:
-    for s in project.sources:
+    for s in project.ingestion_job_definitions:
         if s.stage == stage_id:
-            raise ValueError(f"source '{s.id}' writes to stage '{stage_id}'")
-    for st in project.steps:
+            raise ValueError(f"ingestion job '{s.id}' writes to stage '{stage_id}'")
+    for st in project.transform_job_definitions:
         for ref in [*st.reads, *st.writes]:
             if ref.split(".")[0] == stage_id:
-                raise ValueError(f"step '{st.id}' still uses stage '{stage_id}'")
+                raise ValueError(f"transform '{st.id}' still uses stage '{stage_id}'")
     project.stages = [s for s in project.stages if s.id != stage_id]
     project.retention = {k: v for k, v in project.retention.items() if not k.startswith(f"{stage_id}.")}
 
 
-def upsert_source(project: Project, source: Source) -> None:
-    project.sources = [s for s in project.sources if s.id != source.id] + [source]
+def upsert_ingestion(project: Project, definition: IngestionJobDefinition) -> None:
+    project.ingestion_job_definitions = [
+        d for d in project.ingestion_job_definitions if d.id != definition.id
+    ] + [definition]
 
 
-def remove_source(project: Project, source_id: str) -> None:
-    project.sources = [s for s in project.sources if s.id != source_id]
+def remove_ingestion(project: Project, definition_id: str) -> None:
+    """Drop the definition. Its schedules go with it -- a cadence over a
+    definition that is not there fires nothing and reads as live."""
+    project.ingestion_job_definitions = [
+        d for d in project.ingestion_job_definitions if d.id != definition_id]
+    project.job_schedules = [
+        s for s in project.job_schedules if s.definition != definition_id]
 
 
-def upsert_step(project: Project, step: Step) -> None:
-    project.steps = [s for s in project.steps if s.id != step.id] + [step]
+def upsert_transform(project: Project, definition: TransformJobDefinition) -> None:
+    project.transform_job_definitions = [
+        d for d in project.transform_job_definitions if d.id != definition.id
+    ] + [definition]
 
 
-def remove_step(project: Project, step_id: str) -> None:
-    project.steps = [s for s in project.steps if s.id != step_id]
+def remove_transform(project: Project, definition_id: str) -> None:
+    project.transform_job_definitions = [
+        d for d in project.transform_job_definitions if d.id != definition_id]
+    project.job_schedules = [
+        s for s in project.job_schedules if s.definition != definition_id]
+
+
+def upsert_schedule(project: Project, schedule: JobSchedule) -> None:
+    project.job_schedules = [
+        s for s in project.job_schedules if s.id != schedule.id] + [schedule]
+
+
+def remove_schedule(project: Project, schedule_id: str) -> None:
+    project.job_schedules = [s for s in project.job_schedules if s.id != schedule_id]

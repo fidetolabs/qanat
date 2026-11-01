@@ -39,8 +39,9 @@ It does four things:
 | **transform** | clean it, and work out what you define from it |
 | **serve** | hand it back to your agent over MCP |
 
-A scheduler keeps the ingesting and transforming going. A source pulls on its
-own clock, and a step starts when the table it reads is ready.
+A scheduler keeps the ingesting and transforming going. An ingestion job pulls on
+whatever clock a schedule row gives it, and a transform starts when the table it
+reads is ready.
 
 ## Why the dates matter
 
@@ -69,7 +70,7 @@ filings rather than the whole corpus again.
 **Layers.** Data moves forward through them. The first layer holds what arrived
 and nobody edits it. The ones after hold what you worked out. You name them.
 
-**Steps.** A `.sql` file, or a `.py` file with a `run(ctx)`. A step says which
+**Transforms.** A `.sql` file, or a `.py` file with a `run(ctx)`. One says which
 tables it reads and writes, and it can only read what it declared.
 
 **Sources.** Five connectors: SEC EDGAR, Yahoo Finance, HTTP, SQL and CSV.
@@ -176,25 +177,34 @@ stages:
 time_columns:
   raw.documents: published_at
 
-sources:
+# What to fetch, and the one table it lands in. No cadence here.
+ingestion_job_definitions:
   - id: filings
     to: [raw.documents]
     connector: sec
+    key: [id]
     options:
       companies: [AAPL, MSFT]
       form: 10-K
       years: 5
       user_agent: ${SEC_USER_AGENT}
 
-steps:
+# Tables in, tables out, through a script. No cadence here either.
+transform_job_definitions:
   - id: parse_facts
     from: [raw.documents]
     to:   [normalized.facts]
-    script: steps/parse_facts.py
+    script: transforms/parse_facts.py
     options: { reads: raw.documents }
+
+# How often, as its own row. Several may point at one definition, so asking for
+# one company daily does not rewrite a selection somebody else's weekly poll
+# is using.
+job_schedules:
+  - { id: filings_daily, definition: filings, cron: "0 6 * * *" }
 ```
 
-A step in Python:
+A transform in Python:
 
 ```python
 def run(ctx):
@@ -202,13 +212,13 @@ def run(ctx):
     return df
 ```
 
-`ctx.read()` refuses any table the step did not declare, so a missing dependency
-is an error you see instead of a wrong number you don't.
+`ctx.read()` refuses any table the transform did not declare, so a missing
+dependency is an error you see instead of a wrong number you don't.
 
 **You choose the layers and what they are called.** Qanat enforces four
-properties and no names: a landed layer is never written by a step, a step
-reads and writes only what it declared, the graph has no cycles, and every row
-carries both dates. `raw` and `normalized` above are a worked example, not a
+properties and no names: a landed layer is never written by a transform, a
+transform reads and writes only what it declared, the graph has no cycles, and
+every row carries both dates. `raw` and `normalized` above are a worked example, not a
 required shape.
 
 **A pipeline stops at clean dated facts.** There is no metrics layer and no
@@ -328,7 +338,7 @@ the next is started.
 **You write the formulas and pick the numbers.** Qanat works out what you asked
 for and reports what came out. Choosing a threshold is your job.
 
-**The dates protect a step, not you.** A step cannot see past its date. You and
+**The dates protect a transform, not you.** A transform cannot see past its date. You and
 your agent still can, while you are deciding what to try.
 
 **It cannot place an order,** and no agent it serves ever will.

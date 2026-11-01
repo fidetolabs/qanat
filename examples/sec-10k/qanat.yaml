@@ -41,8 +41,10 @@ time_columns:
   normalized.filing_prices: as_of
   normalized.spans: as_of
 
-# ------------------------------------------------------------------ the source --
-sources:
+# --------------------------------------------------------- the ingestion job --
+# What to fetch and where it lands. The cadence, if any, is a `job_schedules:`
+# row pointing at this id -- not a field here.
+ingestion_job_definitions:
   - id: filings
     to: [raw.documents]
     connector: sec
@@ -176,25 +178,25 @@ metrics:
       FROM ni JOIN rev ON rev.subject = ni.subject AND rev.rn = 1
       WHERE ni.rn = 1
 
-# ------------------------------------------------------------------- the steps --
-steps:
+# -------------------------------------------------------------- the transforms --
+transform_job_definitions:
   - id: parse_facts
     from: [raw.documents]
     to:   [normalized.facts]
-    script: steps/parse_facts.py
+    script: transforms/parse_facts.py
     options:
       reads: raw.documents
 
   - id: filing_prices
     from: [raw.documents, raw.prices]
     to:   [normalized.filing_prices]
-    script: steps/filing_prices.py
+    script: transforms/filing_prices.py
     options:
       reads: raw.documents
 
   - id: split_sections
     from: [raw.documents]
     to:   [normalized.spans]
-    script: steps/split_sections.py
+    script: transforms/split_sections.py
     options:
       reads: raw.documents

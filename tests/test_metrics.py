@@ -25,17 +25,17 @@ stages:
     kind: raw
   - id: normalized
     kind: normalized
-sources:
+ingestion_job_definitions:
   - id: land
     to: [raw.docs]
     connector: csv
     options:
       path: ./seed/docs.csv
-steps:
+transform_job_definitions:
   - id: shape
     from: [raw.docs]
     to:   [normalized.facts]
-    script: steps/shape.sql
+    script: transforms/shape.sql
 corpus:
   documents: raw.docs
   facts: normalized.facts
@@ -51,10 +51,10 @@ def project(tmp_path: Path):
 
     store_line = "./data" if STORE_KIND == "parquet" else "./data/qanat.duckdb"
     (tmp_path / "seed").mkdir(parents=True, exist_ok=True)
-    (tmp_path / "steps").mkdir(parents=True, exist_ok=True)
+    (tmp_path / "transforms").mkdir(parents=True, exist_ok=True)
     (tmp_path / "data").mkdir(parents=True, exist_ok=True)
     (tmp_path / "qanat.yaml").write_text(YAML.format(store=store_line))
-    (tmp_path / "steps" / "shape.sql").write_text(SHAPE)
+    (tmp_path / "transforms" / "shape.sql").write_text(SHAPE)
     pd.DataFrame({
         "subject": ["AAPL", "MSFT"],
         "value": [10.0, 20.0],
@@ -143,10 +143,10 @@ def test_a_table_declared_and_not_yet_written_is_a_warning_not_a_refusal(tmp_pat
 
     store_line = "./data" if STORE_KIND == "parquet" else "./data/qanat.duckdb"
     (tmp_path / "seed").mkdir(parents=True, exist_ok=True)
-    (tmp_path / "steps").mkdir(parents=True, exist_ok=True)
+    (tmp_path / "transforms").mkdir(parents=True, exist_ok=True)
     (tmp_path / "data").mkdir(parents=True, exist_ok=True)
     (tmp_path / "qanat.yaml").write_text(YAML.format(store=store_line))
-    (tmp_path / "steps" / "shape.sql").write_text(SHAPE)
+    (tmp_path / "transforms" / "shape.sql").write_text(SHAPE)
     (tmp_path / "seed" / "docs.csv").write_text("subject,value,as_of\n")
 
     pr, root = load(tmp_path)
@@ -347,9 +347,9 @@ def test_every_field_the_model_holds_is_written_back(tmp_path):
         "store": "./data/qanat.duckdb",
         "stages": [{"id": "raw", "kind": "raw"}],
         "universes": [{"id": "u", "index": "U", "symbols": "./universes/u.csv"}],
-        "sources": [{"id": "s", "to": ["raw.a"], "connector": "csv",
+        "ingestion_job_definitions": [{"id": "s", "to": ["raw.a"], "connector": "csv",
                      "options": {"path": "./x.csv"}}],
-        "steps": [{"id": "t", "from": ["raw.a"], "to": ["raw.b"], "script": "s.sql"}],
+        "transform_job_definitions": [{"id": "t", "from": ["raw.a"], "to": ["raw.b"], "script": "s.sql"}],
         "metrics": [{"id": "pe", "sql": "SELECT 1 AS subject, 2 AS value",
                      "version": 2, "unit": "ratio", "origin": "shipped"}],
         "retention": {"raw.a": "30d"},
@@ -382,10 +382,10 @@ def test_saving_a_step_does_not_delete_the_metrics_beside_it(project):
     pr, store, root = project
     metrics.define(store, pr, root, mid="pe", sql=GOOD)
 
-    from qanat.editor import save_step
+    from qanat.editor import save_transform
 
-    save_step(pr, root, {"id": "extra", "from": ["raw.docs"], "to": ["normalized.more"],
-                         "script": "steps/extra.sql"})
+    save_transform(pr, root, {"id": "extra", "from": ["raw.docs"], "to": ["normalized.more"],
+                         "script": "transforms/extra.sql"})
     fresh, _ = load(root)
     assert fresh.metric("pe") is not None, "save_step deleted the metric block"
     assert fresh.corpus is not None and fresh.corpus.facts == "normalized.facts"

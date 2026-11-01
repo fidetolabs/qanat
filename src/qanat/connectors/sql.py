@@ -14,21 +14,21 @@ from pathlib import Path
 
 import pandas as pd
 
-from qanat.models import Source
-from qanat.sources.rest import expand
+from qanat.connectors.rest import expand
+from qanat.models import IngestionJobDefinition
 
 
-def fetch(source: Source, root: Path, on_warn=None) -> pd.DataFrame:
-    o = source.options
+def fetch(job: IngestionJobDefinition, root: Path, on_warn=None) -> pd.DataFrame:
+    o = job.options
     dsn = expand(o.get("dsn"))
     query = o.get("query")
     if not dsn or not query:
-        raise ValueError(f"source '{source.id}': sql needs options.dsn and options.query")
+        raise ValueError(f"ingestion job '{job.id}': sql needs options.dsn and options.query")
     try:
         from sqlalchemy import create_engine
     except ImportError:
         raise ImportError(
-            "the sql source needs SQLAlchemy: pip install 'qanat[sql]'"
+            "the sql connector needs SQLAlchemy: pip install 'qanat[sql]'"
         ) from None
     engine = create_engine(dsn)
     with engine.connect() as con:

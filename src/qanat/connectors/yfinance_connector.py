@@ -83,7 +83,7 @@ from typing import Any
 
 import pandas as pd
 
-from qanat.models import Source
+from qanat.models import IngestionJobDefinition
 
 SOURCE = "yfinance"
 
@@ -99,15 +99,15 @@ def _require():
     return yfinance
 
 
-def fetch(source: Source, root: Path, on_warn=None, since: str | None = None) -> pd.DataFrame:
+def fetch(job: IngestionJobDefinition, root: Path, on_warn=None, since: str | None = None) -> pd.DataFrame:
     yf = _require()
-    opts: dict[str, Any] = source.options or {}
+    opts: dict[str, Any] = job.options or {}
     companies = opts.get("companies") or []
     if not companies:
-        raise ValueError(f"source '{source.id}': yfinance needs options.companies")
+        raise ValueError(f"ingestion job '{job.id}': yfinance needs options.companies")
     start, end = opts.get("from"), opts.get("to")
     if not start:
-        raise ValueError(f"source '{source.id}': yfinance needs options.from")
+        raise ValueError(f"ingestion job '{job.id}': yfinance needs options.from")
 
     # Close the gap the last poll left, rather than downloading the whole
     # history again. `options.from` is where a cold table starts; `since` is
@@ -180,6 +180,6 @@ def fetch(source: Source, root: Path, on_warn=None, since: str | None = None) ->
     return out.sort_values(["subject", "date"]).reset_index(drop=True)
 
 
-#: Tells `sources.fetch` this adapter takes a `since`. Without it the
+#: Tells `connectors.fetch` this adapter takes a `since`. Without it the
 #: dispatcher calls the old two-argument shape and the fetch stays full.
 fetch.wants_since = True

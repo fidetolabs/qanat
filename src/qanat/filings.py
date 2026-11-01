@@ -1,7 +1,7 @@
 """Which filings exist, which ones can be parsed, and landing the chosen ones.
 
 Picking the filings is one of the two things somebody using this platform does,
-and it used to mean writing a source declaration: an id, a target table and a
+and it used to mean writing a declaration by hand: an id, a target table and a
 connector, restated every time the list of companies changed. Finding is a
 question about the world, not about a pipeline, so it gets its own answer here.
 
@@ -68,8 +68,8 @@ from typing import Any
 import httpx
 import pandas as pd
 
-from qanat.models import Project, Source
-from qanat.sources import sec
+from qanat.connectors import sec
+from qanat.models import IngestionJobDefinition, Project
 from qanat.store import Store
 
 #: The three answers the cheap test can give. `statements` means facts are
@@ -237,7 +237,7 @@ def every_of(schedule: str | None) -> str | None:
     return None
 
 
-def subscription_id(form: list[str], companies: list[str]) -> str:
+def definition_id_for(form: list[str], companies: list[str]) -> str:
     """A name a person can read, for a corpus that does not have one yet."""
     slug = re.sub(r"[^a-z0-9]+", "", "".join(form).lower()) or "any"
     head = [re.sub(r"[^a-z0-9]+", "", str(c).lower()) for c in companies[:2]]
@@ -245,6 +245,17 @@ def subscription_id(form: list[str], companies: list[str]) -> str:
     if len(companies) > 2:
         name += f"_p{len(companies) - 2}"
     return name[:60]
+
+
+def schedule_id_for(definition_id: str, every: str, hour: int) -> str:
+    """One id per (definition, cadence), which is what makes a second cadence a
+    second row rather than an edit to the first."""
+    return f"{definition_id}_{str(every).strip().lower()}_h{int(hour):02d}"[:60]
+
+
+#: The fields of a selection. Changing any of them changes what gets landed, so
+#: a call that changes one has replaced the selection and has to say so.
+_SELECTION_FIELDS = ("companies", "form", "years", "from", "to")
 
 
 def subscribe(
@@ -261,23 +272,24 @@ def subscribe(
 ) -> dict[str, Any]:
     """Point the same selection forward: when a matching filing appears, land it.
 
-    This is a narrow writer over machinery that already exists. A source has
-    carried a cron `schedule` since the scheduler did, and `list_steps` reads it
-    back; what was missing was any way to set one without writing a source
-    declaration, and any way to learn whether a clock is reading it.
+    **Two objects, written separately.** The selection is an
+    `ingestion_job_definition`; the cadence is a `job_schedule` row pointing at
+    it. That split is the whole reason this call stopped being destructive: the
+    cadence used to be a string field on the selection, so one definition could
+    hold exactly one, and asking for "this company daily" meant rewriting the
+    selection somebody else's weekly poll was using.
 
-    **There is one subscription per corpus, and that is the contract talking
-    rather than a simplification.** One table has one producer -- otherwise no
-    run row can say which pass landed a given document -- so the subscription
-    *is* the source that feeds the documents table. Calling this again changes
-    that selection instead of starting a second one, which is why `forms` is a
-    list: a whole pile in one subscription, rather than one form per corpus.
+    Calling again with the same companies and a different hour adds a schedule
+    and leaves the first one alone. Calling again with **different companies**
+    still replaces the selection, because the documents table has one producer
+    until row-level provenance lands -- and `replaced` now says so instead of
+    reporting `false` while overwriting four names.
 
     **A form outside the ingested pile is refused here rather than later.** A
     subscription that fills a table with documents nothing can parse is worse
     than no subscription, and the refusal costs one call instead of a month.
     """
-    from qanat.editor import EditorError, save_source
+    from qanat.editor import EditorError, save_ingestion, save_schedule
 
     if not companies:
         raise FilingsError("a subscription needs at least one company, by ticker or CIK")
@@ -297,19 +309,20 @@ def subscribe(
                 f"today, so subscribing to {form} would fill a table with documents "
                 f"nothing parses. find_filings reads any form without storing it"
             )
-    schedule = cron_for(every, hour)
+    cron = cron_for(every, hour)
     ref = documents_table(project)
 
-    # The producer of the documents table, if there is one. Reusing its id is
-    # what makes this an edit to the selection rather than a second source
-    # writing the same table, which `check` refuses outright.
-    prior = next((s for s in project.sources if s.ref == ref), None)
+    # The definition that writes the documents table, if there is one. Reusing
+    # its id is what makes this an edit to the selection rather than a second
+    # definition writing the same table.
+    prior = next((d for d in project.ingestion_job_definitions if d.ref == ref), None)
     if prior is not None and prior.connector != "sec":
         raise FilingsError(
-            f"{ref} is fed by '{prior.id}', which is a {prior.connector} source. A "
+            f"{ref} is fed by '{prior.id}', which is a {prior.connector} connector. A "
             f"subscription is an EDGAR poll, so it cannot take over that table"
         )
-    name = prior.id if prior is not None else subscription_id(wanted, [str(c) for c in companies])
+    name = prior.id if prior is not None else definition_id_for(
+        wanted, [str(c) for c in companies])
 
     options: dict[str, Any] = {
         "companies": [str(c) for c in companies],
@@ -324,40 +337,79 @@ def subscribe(
         if prior and carry in prior.options:
             options[carry] = prior.options[carry]
 
+    # **Measured against the selection, not against whether a clock existed.**
+    # `replaced` used to test `prior.schedule`, so a call that overwrote four
+    # companies with one reported `replaced: false` -- it was answering "did this
+    # already have a cadence", which is not what the word means.
+    changed = []
+    if prior is not None:
+        for field in _SELECTION_FIELDS:
+            was, now = prior.options.get(field), options.get(field)
+            if was != now:
+                changed.append({"field": field, "was": was, "now": now})
+
     try:
-        warnings = save_source(project, root, {
+        warnings = save_ingestion(project, root, {
             "id": name, "to": [ref], "connector": "sec", "mode": "append",
-            "key": ["id"], "schedule": schedule, "options": options,
+            "key": ["id"], "options": options,
+        })
+        sid = schedule_id_for(name, every, hour)
+        warnings += save_schedule(project, root, {
+            "id": sid, "definition": name, "cron": cron, "enabled": True,
         })
     except EditorError as exc:
         raise FilingsError(str(exc)) from exc
 
+    others = [s.id for s in project.schedules_for(name) if s.id != sid]
     return {
-        "subscribed": name,
+        "subscribed": sid,
+        "definition": name,
         "table": ref,
-        "replaced": prior is not None and bool(prior.schedule),
+        "replaced": bool(changed),
+        "replaced_selection": changed or None,
+        "other_schedules": others,
         "companies": options["companies"],
         "forms": wanted,
         "from": frm,
         "to": to,
         "every": every,
         "hour": int(hour),
-        "schedule": schedule,
+        "cron": cron,
         "warnings": warnings,
         "note": "call list_subscriptions to see whether anything is running this",
     }
 
 
 def unsubscribe(project: Project, root: Path, sid: str) -> dict[str, Any]:
-    """Stop a subscription. The rows it already landed are left alone."""
-    from qanat.editor import EditorError, delete_source
+    """Stop a subscription. The rows it already landed are left alone.
+
+    Takes a schedule id, which is what a subscription is. A definition id is
+    also accepted and stops every cadence over it -- that is what somebody who
+    learned the old vocabulary will reach for, and refusing it would only make
+    them guess.
+    """
+    from qanat.editor import EditorError, delete_ingestion, delete_schedule
 
     try:
-        warnings = delete_source(project, root, sid)
+        if project.schedule(sid) is not None:
+            warnings = delete_schedule(project, root, sid)
+            return {"unsubscribed": sid, "what": "schedule", "warnings": warnings,
+                    "note": "the documents it landed are still in the corpus"}
+        mine = [s.id for s in project.schedules_for(sid)]
+        if mine or project.definition(sid) is not None:
+            warnings: list[str] = []
+            for one in mine:
+                warnings += delete_schedule(project, root, one)
+            warnings += delete_ingestion(project, root, sid)
+            return {"unsubscribed": sid, "what": "definition",
+                    "schedules_stopped": mine, "warnings": warnings,
+                    "note": "the documents it landed are still in the corpus"}
     except EditorError as exc:
         raise FilingsError(str(exc)) from exc
-    return {"unsubscribed": sid, "warnings": warnings,
-            "note": "the documents it landed are still in the corpus"}
+    raise FilingsError(
+        f"no subscription '{sid}'. Subscriptions: "
+        f"{', '.join(s.id for s in project.job_schedules) or '(none)'}"
+    )
 
 
 def subscriptions(
@@ -365,7 +417,12 @@ def subscriptions(
 ) -> dict[str, Any]:
     """What is subscribed, when each is due -- and whether a clock is attached.
 
-    **The second half is the one this exists for.** A subscription nothing runs
+    **One row per schedule, each naming its definition.** It used to be one row
+    per corpus, which could only ever report one cadence -- so a definition
+    polled daily and weekly read as whichever of the two the field happened to
+    hold.
+
+    **The clock half is the one this exists for.** A subscription nothing runs
     is worse than no subscription, because the caller was told it would happen.
 
     Over stdio this server is the client's child, so a thread it started would
@@ -380,39 +437,47 @@ def subscriptions(
 
     from croniter import croniter
 
-    last = store.last_run_by_job()
+    last = store.last_execution_by_definition()
     running = sched.status() if sched is not None else {}
     now = datetime.now(timezone.utc)
 
     rows = []
-    for src in project.sources:
-        if src.connector != "sec" or not src.schedule:
+    for schedule in project.job_schedules:
+        definition = project.definition(schedule.definition)
+        if definition is None or getattr(definition, "connector", None) != "sec":
             continue
-        opts = src.options or {}
-        was = last.get(src.id)
-        due = running.get(src.id, {}).get("next_at")
-        if due is None:
+        opts = definition.options or {}
+        was = last.get(definition.id)
+        due = running.get(schedule.id, {}).get("next_at")
+        if due is None and schedule.enabled:
             try:
-                due = croniter(src.schedule, now).get_next(datetime).isoformat(
+                due = croniter(schedule.cron, now).get_next(datetime).isoformat(
                     sep=" ", timespec="seconds")
             except (ValueError, KeyError):
                 due = None
         rows.append({
-            "id": src.id,
-            "table": src.ref,
+            "id": schedule.id,
+            "definition": definition.id,
+            "enabled": schedule.enabled,
+            "table": definition.ref,
             "companies": list(opts.get("companies") or []),
             "from_universe": opts.get("from_universe"),
-            "forms": sec.forms_of(src),
+            "forms": sec.forms_of(definition),
             "from": opts.get("from"),
             "to": opts.get("to"),
-            "schedule": src.schedule,
-            "every": every_of(src.schedule),
-            "last_run": None if was is None else {
+            "cron": schedule.cron,
+            "every": every_of(schedule.cron),
+            # The definition's last execution, and it is shared: two schedules
+            # over one definition have one history between them, because they
+            # run the same work.
+            "last_execution": None if was is None else {
                 "started_at": str(was.get("started_at")),
                 "ended_at": None if was.get("ended_at") is None
                             else str(was.get("ended_at")),
                 "status": was.get("status"),
-                # `rows_out` is what the runs table calls it. Reading `rows`
+                "job_id": None if was.get("job_id") is None else int(was["job_id"]),
+                "attempt": None if was.get("attempt") is None else int(was["attempt"]),
+                # `rows_out` is what the execution table calls it. Reading `rows`
                 # reported None on every pass that had in fact landed rows --
                 # which is the one thing this tool exists to report honestly.
                 "rows": None if was.get("rows_out") is None
@@ -420,7 +485,7 @@ def subscriptions(
                 "error": was.get("error"),
             },
             "next_due": due,
-            "running_now": bool(running.get(src.id, {}).get("running")),
+            "running_now": bool(running.get(schedule.id, {}).get("running")),
         })
 
     attached = sched is not None
@@ -439,7 +504,8 @@ def subscriptions(
             ),
         },
         "note": (
-            "`list_steps` reads the same cron line back, as `schedule` on the source"
+            "a definition may carry several of these; `other_schedules` on a "
+            "subscribe result names the ones a call left alone"
         ),
     }
 
@@ -449,33 +515,34 @@ def documents_table(project: Project) -> str:
     """Where document rows land.
 
     `corpus.documents` is the project saying which table holds documents, and it
-    is what the reading tools already read. A project that declares a `sec`
-    source and no corpus is answered by the source's own target, because that is
+    is what the reading tools already read. A project that declares one `sec`
+    ingestion job and no corpus is answered by that job's target, because it is
     unambiguous when there is one.
     """
     if project.corpus and project.corpus.documents:
         return project.corpus.documents
-    secs = [s for s in project.sources if s.connector == "sec"]
+    secs = [d for d in project.ingestion_job_definitions if d.connector == "sec"]
     if len(secs) == 1:
         return secs[0].ref
     raise FilingsError(
         "this project does not say which table holds documents. Set `corpus.documents` "
-        "in qanat.yaml, or declare one `sec` source and its target is used"
+        "in qanat.yaml, or declare one `sec` ingestion job and its target is used"
     )
 
 
-def _sec_source(project: Project) -> Source:
-    """A source to carry the contact and the cache. Synthesised if there is none.
+def _sec_definition(project: Project) -> IngestionJobDefinition:
+    """A definition to carry the contact and the cache. Synthesised if none.
 
     The SEC refuses a request with no contact in the User-Agent, and that refusal
     belongs before the request rather than after it. A project with a `sec`
-    source already answers the question; one without it falls back to the
+    definition already answers the question; one without it falls back to the
     environment, which is where `SEC_USER_AGENT` lives.
     """
-    for s in project.sources:
-        if s.connector == "sec":
-            return s
-    return Source(id="filings", to=["raw.documents"], connector="sec", options={})
+    for d in project.ingestion_job_definitions:
+        if d.connector == "sec":
+            return d
+    return IngestionJobDefinition(
+        id="filings", to=["raw.documents"], connector="sec", options={})
 
 
 def _stored(store: Store, ref: str, ids: list[str]) -> set[str]:
@@ -531,7 +598,7 @@ def find(
     across every form a filer uses. What is not uniform is whether anything can be
     parsed out of the result, which is the `ingestable` field.
     """
-    src = _sec_source(project)
+    src = _sec_definition(project)
     wanted = str(form).strip().upper() if form else None
     try:
         ref = documents_table(project)
@@ -624,7 +691,7 @@ def ingest(
             "find_filings"
         )
     ref = documents_table(project)
-    src = _sec_source(project)
+    src = _sec_definition(project)
     where = root / str(cache or src.options.get("cache") or "./data/documents")
 
     headers = {"User-Agent": sec.user_agent(src), "Accept-Encoding": "gzip, deflate"}
@@ -738,16 +805,34 @@ def ingest(
         "refused": sum(1 for r in out if not r["ingested"]),
         "filings": out,
         "next": (
-            f"the document rows are in {ref}. Run the steps that read it to get facts "
+            f"the document rows are in {ref}. Run the transforms that read it to get facts "
             f"and spans" if landed else "nothing landed, so there is nothing to run"
         ),
     }
 
 
 __all__ = [
-    "COVER_TAXONOMIES", "INGESTED_PILE", "INTERVALS", "LABELS", "PILES",
-    "STATEMENT_TAXONOMIES", "FilingsError", "cron_for", "documents_table", "every_of",
-    "find", "holds_statements", "ingest", "is_amendment", "label", "pile",
-    "subscribe", "subscription_id", "subscriptions", "taxonomies", "unsubscribe",
+    "COVER_TAXONOMIES",
+    "INGESTED_PILE",
+    "INTERVALS",
+    "LABELS",
+    "PILES",
+    "STATEMENT_TAXONOMIES",
+    "FilingsError",
+    "cron_for",
+    "definition_id_for",
+    "documents_table",
+    "every_of",
+    "find",
+    "holds_statements",
+    "ingest",
+    "is_amendment",
+    "label",
+    "pile",
+    "schedule_id_for",
+    "subscribe",
+    "subscriptions",
+    "taxonomies",
+    "unsubscribe",
     "why_refused",
 ]
