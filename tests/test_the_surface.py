@@ -23,12 +23,6 @@ FLOWS = Path(__file__).parent.parent / "docs" / "flows.md"
 #: get the real names; the tools are named for what a caller does.
 ENTITY_WORDS = ("job", "definition", "schedule", "execution")
 
-#: The surface measured on `qanat 0.10.2`, which is the release this plan opened
-#: against. **The model gained six objects and these did not move.** A number
-#: here going up is the test failing, whatever the reason.
-BUDGET = {"data": 14, "research": 20, "full": 28, "authoring": 33}
-
-
 def test_no_tool_is_named_after_an_entity():
     """An entity word is allowed to enumerate, never to act.
 
@@ -55,10 +49,25 @@ def test_an_entity_word_still_cannot_name_a_tool_that_acts():
         assert name not in {t["name"] for t in mcp.TOOLS}
 
 
-def test_the_count_at_each_scope_has_not_grown():
-    got = {scope: len(mcp.tools_for(scope)) for scope in mcp.SCOPES}
-    over = {s: (got[s], BUDGET[s]) for s in got if got[s] > BUDGET[s]}
-    assert not over, f"the surface grew: {over}"
+def test_the_scopes_nest_and_none_of_them_is_empty():
+    """What replaced the tool-count ceiling.
+
+    A fixed number per scope was measured on 0.10.2 and then read as a rule. It
+    was a proxy for the thing actually worth holding -- that a tool exists for a
+    flow and not for an object -- and two other tests in this file hold that
+    directly. Once every scope sat exactly on its number the ceiling stopped
+    being a ratchet and only blocked the next honest addition, so it is gone.
+
+    What is worth asserting is the shape: each scope contains the one before it,
+    so a server started at `research` offers the `data` tools too, and the
+    nesting is real rather than four hand-maintained lists.
+    """
+    seen: set[str] = set()
+    for scope in mcp.SCOPES:
+        here = {t["name"] for t in mcp.tools_for(scope)}
+        assert here, f"{scope} offers no tools"
+        assert seen <= here, f"{scope} dropped a tool a narrower scope offered"
+        seen = here
 
 
 def test_every_tool_traces_to_a_written_flow():

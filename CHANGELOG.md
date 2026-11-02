@@ -411,6 +411,15 @@ whole set, and the exact word is the only one a caller can guess. A tool that
 
 The tool count did not move: 14 / 20 / 28 / 33.
 
+**And the fixed count per scope stops being a rule.** Those numbers were measured
+on `0.10.2` and then read as a ceiling. They were a proxy for the thing worth
+holding — that a tool exists for a flow rather than for an object — which the
+flow test and the entity-name test already hold directly. Once every scope sat
+exactly on its number the ceiling could not tell a bloating surface from one
+answering a real question: it blocked both, and a budget already spent gives no
+signal. The test asserts the *shape* instead: each scope contains the one before
+it, so the nesting is checked rather than four hand-kept lists.
+
 ### A screened row names the company, not only its filer id
 
 `screen_companies` handed back `0000320193` and nothing else, so every answer had

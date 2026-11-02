@@ -19,8 +19,15 @@ engine at all, which flow is it for, which scope may see it, and is it the same
 flow at both doors. A test holds the first three: no tool that *acts* on
 one names `job`, `definition`, `schedule` or `execution` -- a `list_` tool may,
 because enumerating a set is one tool over all of it and the exact word is the
-only one a caller can guess -- every tool appears in `flows.md`, and the count at
-each scope may not grow.
+only one a caller can guess -- and every tool appears in `flows.md`.
+
+**There was a fourth: a fixed tool count per scope, and it is gone.** The numbers
+were measured on `0.10.2` and then read as a rule. They were a proxy for the
+thing worth holding -- that a tool exists for a flow rather than for an object --
+and the flow test holds that directly. Once every scope sat exactly on its
+number the ceiling could only block the next honest addition, which is not what
+a budget is for. **The surface is still sized by what users do; it is the flow
+that says so, not a number.**
 
 ## The agent's surface is wider than the CLI's
 
