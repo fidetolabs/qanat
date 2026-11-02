@@ -410,22 +410,9 @@ class Store:
         `_q()` returns the same quoted name it always did, and a view answers it.
         """
         root = self.dir / TABLES_DIR
-        self._migrate_single_files(root)
         for d in sorted(root.iterdir() if root.is_dir() else []):
             if d.is_dir():
                 self._view(d.name)
-
-    def _migrate_single_files(self, root: Path) -> None:
-        """Move a table written as one file into its own directory.
-
-        0.6 wrote `facts.parquet`. 0.7 writes `facts/0000.parquet`. Doing it on
-        open means an existing project keeps working without being told to run
-        anything.
-        """
-        for f in sorted(root.glob("*.parquet")) if root.is_dir() else []:
-            d = root / f.stem
-            d.mkdir(exist_ok=True)
-            f.replace(d / "0000.parquet")
 
     def _view(self, name: str) -> None:
         parts = self._parts(name)

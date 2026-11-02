@@ -207,24 +207,6 @@ def test_a_key_that_could_match_writes_the_correction_beside_the_old_row(
     assert list(held["px"]) == [1.0, 99.0], "both rows are readable underneath"
 
 
-def test_a_table_written_as_one_file_still_opens(tmp_path: Path):
-    """0.6 wrote `facts.parquet`; 0.7 writes `facts/0000.parquet`. An existing
-    project should not have to be told to run anything."""
-    import duckdb
-
-    tables = tmp_path / "corpus" / "tables"
-    tables.mkdir(parents=True)
-    duckdb.connect().execute(
-        f"copy (select 1 a, 'x' b) to '{tables / 'raw__old.parquet'}' (format parquet)")
-    s = Store(str(tmp_path / "corpus"))
-    try:
-        assert s.all_tables() == ["raw.old"]
-        assert len(s.read("raw.old")) == 1
-        assert (tables / "raw__old" / "0000.parquet").exists()
-    finally:
-        s.close()
-
-
 def test_append_adds_to_what_is_there(store: Store):
     store.write("raw.p", rows(3))
     store.write("raw.p", rows(2, start=100), mode="append")

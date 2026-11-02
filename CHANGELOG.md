@@ -39,6 +39,12 @@ one. A rename-on-open was written, shipped broken on the store kind this product
 actually uses, and was taken out along with the project migration -- a store you
 can throw away is not worth a code path that has to stay correct forever.
 
+**The 0.6 one-file-per-table upgrade went with it.** `0.8.0` said *"an existing
+project migrates itself"* and that is no longer true of any version: a table
+written as `facts.parquet` rather than `facts/0000.parquet` is not moved on open
+any more. It ran on every parquet store open to serve a layout three releases
+old, and it meant a stray `.parquet` at the table root silently became a table.
+
 **The job layer is the one that did not exist, and it is there for retries rather
 than backfills.** Three attempts at the 07:00 poll were three unrelated rows, so
 *"did the 07:00 poll succeed?"* had no object to ask. They are one `_qanat_job`
