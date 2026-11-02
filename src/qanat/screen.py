@@ -333,21 +333,30 @@ def metric_values(store: Store, project, mid: str, as_of: str,
     return out
 
 
-# ------------------------------------------------------------------ the universe
+# ---------------------------------------------------------------- the membership
 @dataclass
-class Universe:
+class Membership:
     """Which subjects a screen may return, and whether each name was checked.
 
-    **A universe is the caller's list and this platform's work to place.** Which
+    **`companies` is the caller's list and this platform's work to place.** Which
     companies somebody cares about is their business -- it is named on the
     client's side of the line, along with their filters and their history -- so
     this takes the list with the call and keeps none of it. **Placing those
     names against the filers this corpus holds, on the right date, is the part
     that is not their business**, and it is the whole of what this does.
 
-    One form, deliberately. An earlier version also accepted the name of a
-    universe declared in the project file, and that was the same mistake as
-    storing a filter: it made this end look up a list belonging to the caller.
+    Two ways in, and the distinction is who owns the list. `companies` is passed
+    inline and never stored: that is Margiana's list, or the list an agent built
+    against open-source Qanat, and storing it would mean this end holding one
+    caller's opinion. `from_universe` names a csv under `./universes/`, which
+    `define_universe` writes at `full` scope and an ingestion job already reads
+    -- **deployment config, not caller state**, the same standing as a metric
+    formula. Naming that one is not a lookup of somebody's private list.
+
+    An earlier version took the name of a *caller's* universe out of the project
+    file, which was the same mistake as storing a filter, and it is still
+    refused. What changed on 2026-11-02 is only that a list this deployment
+    already owns for fetching may also bound a screen.
     """
 
     members: pd.DataFrame
@@ -384,8 +393,25 @@ class Universe:
         }
 
 
-def read_universe(store: Store, project: Project,
-                  universe: Sequence[Any]) -> Universe:
+def symbols_from_universe(named: str, root: Any) -> list[str]:
+    """The symbols in a named universe, read the way an ingestion job reads them.
+
+    One resolver for both callers. A screen that found a universe by a different
+    rule than the fetch job does would be a second meaning for one name.
+    """
+    import pandas as _pd
+
+    from qanat.connectors.sec import universe_path
+
+    path = universe_path(str(named), root)
+    out = [str(x).strip() for x in _pd.read_csv(path)["symbol"].tolist() if str(x).strip()]
+    if not out:
+        raise ScreenError(f"universe '{named}' is empty: {path} holds no symbol")
+    return out
+
+
+def read_membership(store: Store, project: Project,
+                    companies: Sequence[Any]) -> Membership:
     """Place a list of names against this corpus.
 
     Accepts plain symbols -- tickers or CIKs -- or rows carrying `from` and `to`
@@ -401,25 +427,25 @@ def read_universe(store: Store, project: Project,
     from qanat.context import is_point_in_time
     from qanat.reading import company_index
 
-    if isinstance(universe, (str, bytes)):
+    if isinstance(companies, (str, bytes)):
         raise ScreenError(
-            "universe is a list of names, not one name. Pass [\"AAPL\"] rather than "
+            "`companies` is a list of names, not one name. Pass [\"AAPL\"] rather than "
             "\"AAPL\" -- and a list is all it takes, because which companies you care "
             "about is yours to keep, not this project's"
         )
     rows: list[dict[str, Any]] = []
-    for entry in universe:
+    for entry in companies:
         if isinstance(entry, dict):
             symbol = str(entry.get("symbol") or entry.get("subject") or "").strip()
             if not symbol:
-                raise ScreenError(f"a universe entry needs a `symbol`: {entry}")
+                raise ScreenError(f"a `companies` entry needs a `symbol`: {entry}")
             rows.append({"symbol": symbol, "from": entry.get("from"),
                          "to": entry.get("to")})
         else:
             rows.append({"symbol": str(entry).strip()})
     rows = [r for r in rows if r["symbol"]]
     if not rows:
-        raise ScreenError("a universe needs at least one name")
+        raise ScreenError("`companies` needs at least one name")
 
     raw = pd.DataFrame(rows)
     index = company_index(store, project)
@@ -444,7 +470,7 @@ def read_universe(store: Store, project: Project,
             subjects.append(symbol)
 
     placed_rows = raw.assign(subject=subjects)
-    return Universe(
+    return Membership(
         members=placed_rows[placed_rows["subject"].notna()].reset_index(drop=True),
         unknown=unknown,
         point_in_time=is_point_in_time(raw),
@@ -538,7 +564,7 @@ def _check_window(store: Store, project: Project, stops: list[str],
             f"nothing was published before {begins}, so a screen there reads an empty "
             f"corpus and returns a list of nobody -- which is not the same answer as "
             f"nobody passing. It covers {begins} to {ends}. What it holds: {held}. "
-            f"Ask for a window inside that, or call `coverage` first"
+            f"Ask for a window inside that, or call `check_coverage` first"
         )
 
     late = [str(d)[:10] for d in stops if ends and str(d)[:10] > ends]
@@ -623,7 +649,7 @@ def _attach_returns(rows: list[dict], fwd: pd.DataFrame) -> None:
 # ------------------------------------------------------------------- the screen
 #: What one screened row looks like, whatever the span. One date is a window of
 #: one, so a caller never branches on the shape it got back.
-COLUMNS = ["as_of", "subject", "passed", "failed_on", "evaluated"]
+COLUMNS = ["as_of", "subject", "ticker", "name", "passed", "failed_on", "evaluated"]
 
 
 def screen(
@@ -634,7 +660,9 @@ def screen(
     frm: str | None = None,
     to: str | None = None,
     every: str = "1y",
-    universe: Sequence[Any] | None = None,
+    companies: Sequence[Any] | None = None,
+    from_universe: str | None = None,
+    root: Any = None,
 ) -> dict[str, Any]:
     """Who passed, on one date or on every date in a window.
 
@@ -648,15 +676,21 @@ def screen(
     No average across dates, no comparison against the companies that failed,
     no score. A number that cannot be read off one date's list is not here.
 
-    **`universe` bounds who is considered**, as a list of tickers or CIKs you
+    **`companies` bounds who is considered**, as a list of tickers or CIKs you
     pass with the call. **It widens the answer as well as narrowing it**: a name
     you asked about that has no value for a metric the filter names comes back as
-    a row that could not be evaluated, rather than being absent. Without a
-    universe there is no way to know who is missing -- the subjects are whoever
-    the metrics returned -- and "nobody else qualified" and "I could not judge
-    nine of them" are not the same answer.
+    a row that could not be evaluated, rather than being absent. Without it there
+    is no way to know who is missing -- the subjects are whoever the metrics
+    returned -- and "nobody else qualified" and "I could not judge nine of them"
+    are not the same answer.
 
-    `list_companies` is what a caller builds that list from.
+    `from_universe` is the other way in: the name of a csv under `./universes/`
+    that this deployment already holds, so a list of two hundred is not pasted
+    into every call. **One or the other, never both** -- two lists in one call
+    has no obvious answer, and guessing at a union would bound a screen by
+    something the caller did not write.
+
+    `list_companies` is what a caller builds `companies` from.
     """
     from qanat.dates import WindowError, window
 
@@ -691,9 +725,28 @@ def screen(
             f"This project has: {known}"
         )
 
-    picked: Universe | None = None
-    if universe is not None:
-        picked = read_universe(store, project, universe)
+    picked: Membership | None = None
+    if companies is not None and from_universe is not None:
+        raise ScreenError(
+            "pass `companies` or `from_universe`, not both. One is your list and the "
+            "other is a list this project holds; a call carrying two has no obvious "
+            "answer, and a union of them would bound the screen by something you did "
+            "not write"
+        )
+    named: str | None = None
+    if from_universe is not None:
+        if root is None:
+            raise ScreenError(
+                "`from_universe` names a file, so this call needs the project root. "
+                "Pass `companies` instead when calling screen() directly"
+            )
+        named = str(from_universe)
+        try:
+            companies = symbols_from_universe(named, root)
+        except (ValueError, KeyError) as exc:
+            raise ScreenError(str(exc)) from None
+    if companies is not None:
+        picked = read_membership(store, project, companies)
         if not len(picked.members):
             raise ScreenError(
                 f"this project holds none of those {len(picked.unknown)} name(s): "
@@ -718,7 +771,7 @@ def screen(
             )
         if not picked.point_in_time:
             notes.append(
-                "this universe carries no join and leave dates, so it is today's "
+                "this list carries no join and leave dates, so it is today's "
                 "membership applied to every date screened. Every number built on it is "
                 "flattered by the names that survived"
             )
@@ -732,8 +785,15 @@ def screen(
     }
 
     columns = list(wanted.values())
+    from qanat.reading import company_index
+
     rows: list[dict] = []
     counts: list[dict] = []
+    # A screen hands back a filer id, and nobody reads one. The index that
+    # places the names a caller passed already knows the reverse, so the ticker
+    # and the company name travel with the verdict instead of costing a
+    # `list_companies` call per row.
+    labels = company_index(store, project)
     for stop in stops:
         values = {
             col: metric_values(store, project, mid, stop, version)
@@ -771,9 +831,14 @@ def screen(
             passed &= ok.fillna(False)
 
         for i, subject in enumerate(table["subject"]):
+            tick, nm = labels.label(subject)
             rows.append({
                 "as_of": stop,
                 "subject": subject,
+                # None, not "", when the corpus carries no `source_keys` to read
+                # a name out of: absent and unknown are different answers.
+                "ticker": tick,
+                "name": nm,
                 "passed": bool(passed.iloc[i]) if bool(evaluable.iloc[i]) else None,
                 "failed_on": ", ".join(failed_on[i]),
                 "evaluated": bool(evaluable.iloc[i]),
@@ -812,7 +877,12 @@ def screen(
                           picked),
     }
     if picked is not None:
-        out["universe"] = picked.as_applied()
+        # Named `companies`, matching the argument it reports on. `from_universe`
+        # says which stored list the names came from, or null when the caller
+        # passed them inline -- so an answer records where its bound came from.
+        applied = dict(picked.as_applied())
+        applied["from_universe"] = named
+        out["companies"] = applied
     if notes:
         out["notes"] = notes
     return out
@@ -821,7 +891,7 @@ def screen(
 def _inputs(store: Store, project: Project, resolved: dict[str, int],
             stops: list[str], as_of: str | None, frm: str | None,
             to: str | None, every: str,
-            picked: Universe | None = None) -> dict[str, Any]:
+            picked: Membership | None = None) -> dict[str, Any]:
     """What this answer rested on, in a form a caller can store and compare.
 
     **`id` is a digest of these inputs, not a random handle**, and that is the
@@ -853,7 +923,7 @@ def _inputs(store: Store, project: Project, resolved: dict[str, int],
         "corpus": {"from": have["from"], "to": have["to"]},
         # The universe is one of the inputs, so it is part of the id: the same
         # filter over a different list is a different answer.
-        "universe": None if picked is None else {
+        "companies": None if picked is None else {
             "subjects": sorted({str(s) for s in picked.members["subject"]}),
             "point_in_time": picked.point_in_time,
         },
@@ -881,11 +951,11 @@ __all__ = [
     "OPERATORS",
     "Clause",
     "ScreenError",
-    "Universe",
+    "Membership",
     "coverage",
     "forward_returns",
     "metric_values",
     "parse_clauses",
-    "read_universe",
+    "read_membership",
     "screen",
 ]

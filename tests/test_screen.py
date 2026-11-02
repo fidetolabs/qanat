@@ -256,7 +256,7 @@ def test_nothing_is_added_up(store):
     out = screen(store, a_project(), parse_clauses(
         [{"metric": "pe", "op": "<", "value": 100}]),
         frm="2022-01-01", to="2024-01-01", every="1y")
-    assert set(out) <= {"rows", "counts", "applied", "inputs", "universe", "notes"}
+    assert set(out) <= {"rows", "counts", "applied", "inputs", "companies", "notes"}
     for c in out["counts"]:
         assert set(c) == {"as_of", "subjects", "evaluated", "dropped", "passed",
                           "nothing_evaluable"}
@@ -278,7 +278,7 @@ def test_nothing_is_added_up(store):
             f"{m}@{v}" for m in wanted for v in range(1, 10)}
     assert set(out["inputs"]) <= {
         "id", "as_of", "from", "to", "every", "metrics", "dates", "corpus",
-        "universe", "note"}
+        "companies", "note"}
 
 
 def test_a_screen_writes_no_table(store):
@@ -356,7 +356,7 @@ def test_a_window_starting_before_the_corpus_returns_the_covered_range(store):
     assert "2022-01-01 to 2024-01-01" in said, "it says what it does hold"
     assert "2020-01-01" in said, "and which date it could not answer for"
     assert "list of nobody" in said, "and why that is not an empty answer"
-    assert "coverage" in said, "and what to call instead"
+    assert "check_coverage" in said, "and what to call instead"
 
 
 def test_a_single_date_before_the_corpus_is_refused_the_same_way(store):
@@ -434,7 +434,7 @@ def test_counts_still_report_evaluated_and_dropped_per_date(store):
 def test_the_coverage_tool_is_on_the_surface_and_writes_nothing():
     from qanat.mcp import TOOLS
 
-    entry = next(t for t in TOOLS if t["name"] == "coverage")
+    entry = next(t for t in TOOLS if t["name"] == "check_coverage")
     assert entry["writes"] is False
     assert entry["scope"] == "research", "the same rung as the screen it informs"
 
@@ -620,24 +620,24 @@ def test_a_universe_is_a_list_and_only_a_list(store):
     with pytest.raises(ScreenError) as exc:
         screen(store, a_project(), parse_clauses(
             [{"metric": "pe", "op": "lt", "value": 100}]),
-            as_of="2023-06-01", universe="AYE")
+            as_of="2023-06-01", companies="AYE")
     assert "list of names, not one name" in str(exc.value)
     assert "yours to keep" in str(exc.value)
 
     from qanat.mcp import TOOLS
 
-    entry = next(x for x in TOOLS if x["name"] == "screen")
-    assert entry["inputSchema"]["properties"]["universe"]["type"] == "array"
+    entry = next(x for x in TOOLS if x["name"] == "screen_companies")
+    assert entry["inputSchema"]["properties"]["companies"]["type"] == "array"
 
 
 def test_a_universe_bounds_who_is_considered(filers):
     """Which names somebody cares about is theirs; placing them is not."""
     out = screen(filers, a_corpus_project(), parse_clauses(
         [{"metric": "pe", "op": "lt", "value": 100}]),
-        as_of="2023-06-01", universe=["AYE"])
+        as_of="2023-06-01", companies=["AYE"])
     assert [r["subject"] for r in out["rows"]] == ["A"]
     assert out["counts"][0]["subjects"] == 1
-    assert out["universe"] == {"asked": 1, "matched": 1, "unknown": [],
+    assert out["companies"] == {"from_universe": None, "asked": 1, "matched": 1, "unknown": [],
                                "point_in_time": False, "checked": True}
 
 
@@ -652,7 +652,7 @@ def test_a_universe_widens_the_answer_as_well_as_narrowing_it(filers):
                  mode="replace", key=["subject", "date"])
     out = screen(filers, a_corpus_project(), parse_clauses(
         [{"metric": "pe", "op": "lt", "value": 100}]),
-        as_of="2023-06-01", universe=["AYE", "BEE"])
+        as_of="2023-06-01", companies=["AYE", "BEE"])
 
     rows = {r["subject"]: r for r in out["rows"]}
     assert set(rows) == {"A", "B"}
@@ -667,9 +667,9 @@ def test_a_ticker_is_placed_against_its_filer(filers):
     """The facts carry a CIK and a person writes a ticker."""
     out = screen(filers, a_corpus_project(), parse_clauses(
         [{"metric": "pe", "op": "lt", "value": 100}]),
-        as_of="2023-06-01", universe=["aye", "BEE"])
+        as_of="2023-06-01", companies=["aye", "BEE"])
     assert sorted(r["subject"] for r in out["rows"]) == ["A", "B"]
-    assert out["universe"]["unknown"] == []
+    assert out["companies"]["unknown"] == []
 
 
 def test_a_name_this_project_does_not_hold_is_reported_never_dropped(filers):
@@ -677,10 +677,10 @@ def test_a_name_this_project_does_not_hold_is_reported_never_dropped(filers):
     answered for forty."""
     out = screen(filers, a_corpus_project(), parse_clauses(
         [{"metric": "pe", "op": "lt", "value": 100}]),
-        as_of="2023-06-01", universe=["AYE", "NOTALISTEDTICKER"])
-    assert out["universe"]["matched"] == 1
-    assert out["universe"]["asked"] == 2
-    assert out["universe"]["unknown"] == ["NOTALISTEDTICKER"]
+        as_of="2023-06-01", companies=["AYE", "NOTALISTEDTICKER"])
+    assert out["companies"]["matched"] == 1
+    assert out["companies"]["asked"] == 2
+    assert out["companies"]["unknown"] == ["NOTALISTEDTICKER"]
     assert any("not in this project" in n for n in out["notes"])
     assert any("list_companies" in n for n in out["notes"])
 
@@ -689,7 +689,7 @@ def test_a_universe_this_project_holds_none_of_is_refused(filers):
     with pytest.raises(ScreenError) as exc:
         screen(filers, a_corpus_project(), parse_clauses(
             [{"metric": "pe", "op": "lt", "value": 100}]),
-            as_of="2023-06-01", universe=["NOPE", "ALSONOPE"])
+            as_of="2023-06-01", companies=["NOPE", "ALSONOPE"])
     assert "holds none of those" in str(exc.value)
     assert "list_companies" in str(exc.value)
 
@@ -703,14 +703,14 @@ def test_a_project_with_no_company_index_says_the_names_were_not_checked(store):
     """
     out = screen(store, a_project(), parse_clauses(
         [{"metric": "pe", "op": "lt", "value": 100}]),
-        as_of="2023-06-01", universe=["A", "B"])
+        as_of="2023-06-01", companies=["A", "B"])
     assert sorted(r["subject"] for r in out["rows"]) == ["A", "B"]
-    assert out["universe"]["checked"] is False
-    assert out["universe"]["unknown"] == []
+    assert out["companies"]["checked"] is False
+    assert out["companies"]["unknown"] == []
     # Not a count of names it found -- it looked for none of them. A zero here
     # would read as "found nothing" and a 2 as "found both", and neither is true.
-    assert out["universe"]["matched"] is None
-    assert out["universe"]["asked"] == 2, "the names still went through"
+    assert out["companies"]["matched"] is None
+    assert out["companies"]["asked"] == 2, "the names still went through"
     assert any("never checked is not a name that passed" in n for n in out["notes"])
 
 
@@ -726,13 +726,13 @@ def test_membership_is_point_in_time_when_the_list_carries_dates(filers):
 
     early = screen(filers, project, parse_clauses(
         [{"metric": "pe", "op": "lt", "value": 100}]),
-        as_of="2022-06-01", universe=dated)
+        as_of="2022-06-01", companies=dated)
     assert [r["subject"] for r in early["rows"]] == ["A"], "B had not joined"
-    assert early["universe"]["point_in_time"] is True
+    assert early["companies"]["point_in_time"] is True
 
     late = screen(filers, project, parse_clauses(
         [{"metric": "pe", "op": "lt", "value": 100}]),
-        as_of="2023-06-01", universe=dated)
+        as_of="2023-06-01", companies=dated)
     assert sorted(r["subject"] for r in late["rows"]) == ["A", "B"]
     assert not any("flattered" in n for n in late.get("notes", []))
 
@@ -741,15 +741,15 @@ def test_a_member_that_has_left_is_gone_from_a_later_date(filers):
     out = screen(filers, a_corpus_project(), parse_clauses(
         [{"metric": "pe", "op": "lt", "value": 100}]),
         as_of="2023-06-01",
-        universe=[{"symbol": "AYE"}, {"symbol": "BEE", "to": "2022-06-01"}])
+        companies=[{"symbol": "AYE"}, {"symbol": "BEE", "to": "2022-06-01"}])
     assert [r["subject"] for r in out["rows"]] == ["A"]
 
 
 def test_a_list_with_no_dates_says_it_flatters_the_numbers(filers):
     out = screen(filers, a_corpus_project(), parse_clauses(
         [{"metric": "pe", "op": "lt", "value": 100}]),
-        as_of="2023-06-01", universe=["AYE", "BEE"])
-    assert out["universe"]["point_in_time"] is False
+        as_of="2023-06-01", companies=["AYE", "BEE"])
+    assert out["companies"]["point_in_time"] is False
     assert any("flattered by the names that survived" in n for n in out["notes"])
 
 
@@ -757,22 +757,22 @@ def test_the_universe_is_part_of_the_inputs_id(filers):
     """The same filter over a different list is a different answer."""
     args = (filers, a_corpus_project(),
             parse_clauses([{"metric": "pe", "op": "lt", "value": 100}]))
-    both = screen(*args, as_of="2023-06-01", universe=["AYE", "BEE"])
-    one = screen(*args, as_of="2023-06-01", universe=["AYE"])
+    both = screen(*args, as_of="2023-06-01", companies=["AYE", "BEE"])
+    one = screen(*args, as_of="2023-06-01", companies=["AYE"])
     none = screen(*args, as_of="2023-06-01")
 
     assert both["inputs"]["id"] != one["inputs"]["id"]
     assert both["inputs"]["id"] != none["inputs"]["id"]
-    assert none["inputs"]["universe"] is None
-    assert both["inputs"]["universe"]["subjects"] == ["A", "B"]
+    assert none["inputs"]["companies"] is None
+    assert both["inputs"]["companies"]["subjects"] == ["A", "B"]
     # And it is still reproducible.
-    assert screen(*args, as_of="2023-06-01", universe=["AYE"]) == one
+    assert screen(*args, as_of="2023-06-01", companies=["AYE"]) == one
 
 
 def test_a_universe_over_a_window_keeps_each_date_its_own(filers):
     out = screen(filers, a_corpus_project(), parse_clauses(
         [{"metric": "pe", "op": "lt", "value": 100}]),
-        frm="2022-06-01", to="2023-06-01", every="1y", universe=["AYE", "BEE"])
+        frm="2022-06-01", to="2023-06-01", every="1y", companies=["AYE", "BEE"])
     dates = [c["as_of"] for c in out["counts"]]
     assert dates == ["2022-06-01", "2023-06-01"]
     for c in out["counts"]:
@@ -784,32 +784,123 @@ def test_an_empty_universe_is_refused(store):
     with pytest.raises(ScreenError, match="at least one name"):
         screen(store, a_project(), parse_clauses(
             [{"metric": "pe", "op": "lt", "value": 100}]),
-            as_of="2023-06-01", universe=[])
+            as_of="2023-06-01", companies=[])
 
 
 def test_a_universe_entry_with_no_symbol_is_refused(store):
     with pytest.raises(ScreenError, match="needs a `symbol`"):
         screen(store, a_project(), parse_clauses(
             [{"metric": "pe", "op": "lt", "value": 100}]),
-            as_of="2023-06-01", universe=[{"from": "2021-01-01"}])
+            as_of="2023-06-01", companies=[{"from": "2021-01-01"}])
 
 
-def test_the_screen_tool_takes_a_universe():
+def test_the_screen_tool_takes_a_list_of_companies_and_a_named_universe():
+    """Two ways in, and the names say which list is whose. `companies` is the
+    caller's and is never stored; `from_universe` names one this project holds.
+    The word `universe` on its own is gone from the screen's arguments, because
+    it meant both things at once."""
     from qanat.mcp import TOOLS
 
-    entry = next(t for t in TOOLS if t["name"] == "screen")
-    assert "universe" in entry["inputSchema"]["properties"]
-    assert "universe" not in entry["inputSchema"]["required"], "it is optional"
+    entry = next(t for t in TOOLS if t["name"] == "screen_companies")
+    props = entry["inputSchema"]["properties"]
+    assert "companies" in props and props["companies"]["type"] == "array"
+    assert "from_universe" in props and props["from_universe"]["type"] == "string"
+    assert "universe" not in props, "one word for two lists is what this rename ended"
+    for opt in ("companies", "from_universe"):
+        assert opt not in entry["inputSchema"]["required"], f"{opt} is optional"
 
 
 def test_matched_and_unknown_account_for_every_name_asked_about(filers):
     """When a check happened, the three numbers have to add up."""
     out = screen(filers, a_corpus_project(), parse_clauses(
         [{"metric": "pe", "op": "lt", "value": 100}]),
-        as_of="2023-06-01", universe=["AYE", "BEE", "NOPE", "ALSONOPE"])
-    u = out["universe"]
+        as_of="2023-06-01", companies=["AYE", "BEE", "NOPE", "ALSONOPE"])
+    u = out["companies"]
     assert u["checked"] is True
     assert u["asked"] == 4
     assert u["matched"] == 2
     assert len(u["unknown"]) == 2
     assert u["matched"] + len(u["unknown"]) == u["asked"]
+
+
+def test_a_screened_row_names_the_company_and_not_only_its_filer_id():
+    """A filer id is not a company name, and nobody reads one.
+
+    The index that places the names a caller passes already holds the reverse,
+    so the ticker and the name ride out with the verdict. Without this a caller
+    joins every answer back onto `list_companies` to find out who passed.
+    """
+    from qanat.screen import COLUMNS
+    for field in ("subject", "ticker", "name"):
+        assert field in COLUMNS, f"{field} missing from the row shape"
+
+
+def test_screen_describes_no_field_its_answer_does_not_carry():
+    """The bug this test exists for: `screen` returned `inputs` and its own
+    description told the caller to read `execution.id`. An agent reads that
+    description out of `tools/list`, so a stale field name sends it looking for
+    something that is not there.
+    """
+    from qanat import mcp
+    said = next(t for t in mcp.TOOLS if t["name"] == "screen_companies")["description"]
+    assert "`inputs`" in said
+    assert "`execution` block" not in said and "`execution.id`" not in said
+
+
+def test_a_screen_may_name_a_universe_this_project_holds(tmp_path):
+    """The two lists are told apart by who owns them.
+
+    `companies` is the caller's and is never stored. `from_universe` names a csv
+    this deployment wrote at `full` scope and an ingestion job already reads --
+    deployment config, the same standing as a metric formula. An earlier version
+    took the name of a *caller's* list out of the project file, which was the
+    same mistake as storing a filter, and that is still refused.
+    """
+    from qanat.screen import symbols_from_universe
+
+    (tmp_path / "universes").mkdir()
+    (tmp_path / "universes" / "big2.csv").write_text("symbol\nAAPL\nMSFT\n")
+    assert symbols_from_universe("big2", tmp_path) == ["AAPL", "MSFT"]
+
+
+def test_a_named_universe_that_does_not_exist_says_how_to_write_one(tmp_path):
+    from qanat.screen import symbols_from_universe
+
+    try:
+        symbols_from_universe("nope", tmp_path)
+    except Exception as exc:
+        said = str(exc)
+        assert "define_universe" in said, "the live name, not the retired one"
+        assert "save_universe" not in said
+    else:
+        raise AssertionError("a universe this project does not hold must be refused")
+
+
+def test_an_empty_named_universe_is_refused(tmp_path):
+    """A csv with a header and no rows would otherwise screen nobody and look
+    like nobody passing."""
+    from qanat.screen import ScreenError, symbols_from_universe
+
+    (tmp_path / "universes").mkdir()
+    (tmp_path / "universes" / "void.csv").write_text("symbol\n")
+    try:
+        symbols_from_universe("void", tmp_path)
+    except ScreenError as exc:
+        assert "empty" in str(exc)
+    else:
+        raise AssertionError("an empty universe must be refused")
+
+
+def test_a_screen_takes_one_list_or_the_other_and_never_both(store):
+    """Two lists in one call has no obvious answer, and a union would bound the
+    screen by something the caller did not write."""
+    from qanat.screen import ScreenError
+
+    try:
+        screen(store, a_project(), parse_clauses([{"metric": "pe", "op": "<", "value": 100}]),
+               as_of="2023-01-01", companies=["AAPL"], from_universe="big2")
+    except ScreenError as exc:
+        assert "not both" in str(exc)
+    else:
+        raise AssertionError("companies and from_universe together must be refused")
+

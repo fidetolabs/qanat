@@ -93,7 +93,7 @@ def test_research_never_writes_the_project_file():
     assert by_scope["define_transform"] == "authoring"
     assert by_scope["define_ingestion"] == "authoring"
     assert by_scope["remove_transform"] == "authoring"
-    assert by_scope["run"] == "full"
+    assert by_scope["run_project"] == "full"
 
 
 def test_a_tool_above_the_scope_says_so_instead_of_denying_it_exists(tmp_path: Path):
@@ -159,7 +159,7 @@ def test_an_error_says_what_to_do_next(tmp_path: Path):
     session = _session(tmp_path)
     for name, args in (("describe_table", {"ref": "nope.nope"}),
                        ("read_script", {"id": "nope"}),
-                       ("screen", {"clauses": [{"metric": "nope", "op": "<", "value": 1}]})):
+                       ("screen_companies", {"clauses": [{"metric": "nope", "op": "<", "value": 1}]})):
         try:
             _call(session, name, args)
         except mcp.ToolError as exc:
@@ -191,7 +191,7 @@ def test_check_is_not_cli_only(tmp_path: Path):
 
     session = _session(tmp_path)
     rep = validate(session.project, session.root)
-    over_mcp = _call(session, "check")
+    over_mcp = _call(session, "check_project")
 
     assert over_mcp == {"ok": rep.ok, "errors": rep.errors, "warnings": rep.warnings}
     assert over_mcp["ok"] is True
@@ -208,10 +208,10 @@ def test_list_steps_filters_by_stage(tmp_path: Path):
     assert validate(session.project, session.root).ok
     assert all(r.ok for r in run_all(session.store, session.project, session.root))
 
-    everything = _call(session, "list_pipeline")
+    everything = _call(session, "list_definitions")
     assert everything["ingestion"], "unfiltered, the ingestion jobs come too"
 
-    only = _call(session, "list_pipeline", {"stage": "features"})
+    only = _call(session, "list_definitions", {"stage": "features"})
     assert only["ingestion"] == [], "a stage filter is about transforms, so ingestion drops out"
     ids = {s["id"] for s in only["transforms"]}
     expected = {st.id for st in session.project.transform_job_definitions
@@ -328,7 +328,7 @@ def test_the_clock_deletes_nothing():
 
 
 def test_retention_says_what_it_will_remove_before_the_flag_removes_it():
-    entry = next(t for t in mcp.TOOLS if t["name"] == "plan")
+    entry = next(t for t in mcp.TOOLS if t["name"] == "preview_changes")
     assert "retention" in entry["description"]
     src = inspect.getsource(mcp._plan)
     # the dry run answers on the path that does not act; the deletion is only
@@ -346,12 +346,12 @@ def test_lineage_and_stale_tables_are_still_in_data_unmoved():
     published contract. Taking a tool out of one is worse than adding one.
     Moving them is a separate decision, not a cleanup."""
     by_scope = {t["name"]: t["scope"] for t in mcp.TOOLS}
-    assert by_scope["lineage"] == "data"
+    assert by_scope["trace_table"] == "data"
     assert by_scope["stale_tables"] == "data"
 
 
 def test_lineages_description_names_no_removed_concept():
-    entry = next(t for t in mcp.TOOLS if t["name"] == "lineage")
+    entry = next(t for t in mcp.TOOLS if t["name"] == "trace_table")
     assert "weights" not in entry["description"]
     assert "pnl" not in entry["description"]
 
@@ -359,7 +359,7 @@ def test_lineages_description_names_no_removed_concept():
 def test_prune_is_a_flag_on_the_tool_that_already_finds_the_orphans(tmp_path: Path):
     """The one irreversible verb does not belong at the top level, and folding
     it in means the list and the action come from one call."""
-    entry = next(t for t in mcp.TOOLS if t["name"] == "plan")
+    entry = next(t for t in mcp.TOOLS if t["name"] == "preview_changes")
     assert "prune" in entry["inputSchema"]["properties"]
     assert entry["writes"] is True, "it can drop a table now"
 

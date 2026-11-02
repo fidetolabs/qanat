@@ -458,10 +458,18 @@ class CompanyIndex(NamedTuple):
     names: dict[str, str]
     filers: frozenset[str]
     known: bool
+    #: filer -> (ticker, company name). The reverse of `names`, because a screen
+    #: hands back a CIK and a person reads a ticker. Empty when the corpus has
+    #: no `source_keys` to read either out of.
+    labels: dict[str, tuple[str | None, str | None]] = {}
 
     def place(self, symbol: str) -> str | None:
         """The filer this name means, or None if this index does not hold it."""
         return self.names.get(str(symbol).strip().upper())
+
+    def label(self, filer: str) -> tuple[str | None, str | None]:
+        """This filer's ticker and name, or two Nones when the corpus has neither."""
+        return self.labels.get(str(filer), (None, None))
 
 
 def company_index(store: Store, project: Project) -> CompanyIndex:
@@ -476,14 +484,24 @@ def company_index(store: Store, project: Project) -> CompanyIndex:
     named = _has(store, docs, "source_keys")
     ticker = ("upper(json_extract_string(source_keys, '$.ticker'))" if named
               else "CAST(NULL AS VARCHAR)")
+    cname = ("max(json_extract_string(source_keys, '$.company_name'))" if named
+             else "CAST(NULL AS VARCHAR)")
     rows = store.query(
-        f"""SELECT DISTINCT {ticker} AS ticker, CAST(entity AS VARCHAR) AS cik
-            FROM {store.readable(docs)}""")
+        f"""SELECT {ticker} AS ticker, CAST(entity AS VARCHAR) AS cik, {cname} AS name
+            FROM {store.readable(docs)}
+            GROUP BY 1, 2""")
     names: dict[str, str] = {}
+    labels: dict[str, tuple[str | None, str | None]] = {}
     filers: set[str] = set()
     for r in rows.itertuples():
         cik = str(r.cik)
         filers.add(cik)
+        tick = str(r.ticker) if r.ticker else None
+        nm = str(r.name) if getattr(r, "name", None) else None
+        # A filer can appear twice when one row carries a ticker and another
+        # does not, so keep whichever pass has the value rather than the last.
+        had_t, had_n = labels.get(cik, (None, None))
+        labels[cik] = (tick or had_t, nm or had_n)
         # A filer is addressable by its padded CIK, its unpadded one, and its
         # ticker, because a screen hands back the first and a person types the
         # other two.
@@ -491,7 +509,7 @@ def company_index(store: Store, project: Project) -> CompanyIndex:
         names[cik.lstrip("0").upper() or cik.upper()] = cik
         if r.ticker:
             names[str(r.ticker)] = cik
-    return CompanyIndex(names, frozenset(filers), bool(filers))
+    return CompanyIndex(names, frozenset(filers), bool(filers), labels)
 
 
 def read_company(store: Store, project: Project, filer: str,

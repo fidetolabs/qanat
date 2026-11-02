@@ -16,20 +16,23 @@ anything a caller needs.
 
 A new tool answers four questions before it exists: does it need Qanat's data or
 engine at all, which flow is it for, which scope may see it, and is it the same
-flow at both doors. A test holds the first three: no tool name contains `job`,
-`definition`, `schedule` or `execution`, every tool appears in `flows.md`, and
-the count at each scope may not grow.
+flow at both doors. A test holds the first three: no tool that *acts* on
+one names `job`, `definition`, `schedule` or `execution` -- a `list_` tool may,
+because enumerating a set is one tool over all of it and the exact word is the
+only one a caller can guess -- every tool appears in `flows.md`, and the count at
+each scope may not grow.
 
 ## The agent's surface is wider than the CLI's
 
-One tool shares a name with a command and does the same thing: `check`. `plan`, `run` and
-`screen` used to share one too, and those commands were removed — a second door onto one question
+One tool does the same thing as a command without sharing its name: `check_project`
+answers what `qanat check` answers. `preview_changes`, `run_project` and
+`screen_companies` once shared a command name too, and those commands were removed — a second door onto one question
 is a second place the behaviour can quietly differ, and the caller here is a program.
 
 An agent navigates where a person reads. `qanat ls` printed stages, tables and jobs in one dump;
-an agent gets `list_tables`, `list_pipeline` and `describe_table` separately, and `describe_table`
-plus `sample_table` to look inside one. **`ls` is gone, and so are `graph`, `plan`, `prune`, `run`
-and `screen`** — each was a second door onto a question a tool already answers, and a second door
+an agent gets `list_tables`, `list_definitions` and `describe_table` separately, and `describe_table`
+plus `sample_table` to look inside one. **`ls` is gone, and so are `graph`, `preview_changes`, `prune`, `run_project`
+and `screen_companies`** — each was a second door onto a question a tool already answers, and a second door
 is a second place the behaviour can quietly differ. Running one prints where it went.
 
 Going the other way, `define_transform`, `define_ingestion` and `define_universe` have no CLI at
@@ -49,7 +52,7 @@ here"*, not *"updating daily"*.
 
 ## Nothing here judges a result
 
-`screen` returns who passed and what each name did next. It does not say whether that was good,
+`screen_companies` returns who passed and what each name did next. It does not say whether that was good,
 and no tool on this surface does.
 
 The reading tools hold the same line in the other direction. `check_number` puts a number you
@@ -128,9 +131,9 @@ qanat mcp --scope authoring    # 33 tools
 
 | scope | adds | tools |
 | --- | --- | --- |
-| `data` | read the tables, list and read companies, read the documents | `list_tables` `describe_table` `sample_table` `profile_table` `lineage` `stale_tables` `list_metrics` `list_companies` `read_company` `list_sections` `read_section` `search_documents` `read_facts` `check_number` |
-| `research` | read the graph, find filings, screen a universe | `list_pipeline` `read_script` `screen` `coverage` `find_filings` `list_subscriptions` |
-| `full` | run it, and ingest | `check` `plan` `run` `list_history` `ingest_filings` `subscribe_filings` `unsubscribe_filings` `define_universe` |
+| `data` | read the tables, list and read companies, read the documents | `list_tables` `describe_table` `sample_table` `profile_table` `trace_table` `stale_tables` `list_metrics` `list_companies` `read_company` `list_sections` `read_section` `search_documents` `read_facts` `check_number` |
+| `research` | read the graph, find filings, screen a universe | `list_definitions` `read_script` `screen_companies` `check_coverage` `find_filings` `list_subscriptions` |
+| `full` | run it, and ingest | `check_project` `preview_changes` `run_project` `list_executions` `ingest_filings` `subscribe_filings` `unsubscribe_filings` `define_universe` |
 | `authoring` | define metrics, and rewire the pipeline | `define_metric` `remove_metric` `define_transform` `remove_transform` `define_ingestion` |
 
 **Why `authoring` is above the default.** The pipeline from a filing to a metric is the same in
@@ -139,7 +142,7 @@ an agent can change it by accident. Defining a metric sits there too, for a diff
 formula is the same number for every reader of a given Qanat, so there is no private definition and
 the owner of one is whoever runs the deployment.
 
-**`lineage` and `stale_tables` stay in `data`, and they look like they should not.** Both only
+**`trace_table` and `stale_tables` stay in `data`, and they look like they should not.** Both only
 mean something to a caller who may change the pipeline. But each scope is a published contract, and
 taking a tool out of `data` breaks what somebody has already built against it worse than adding one
 would. Moving them is a separate decision, not a cleanup.

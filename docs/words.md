@@ -47,7 +47,7 @@ Seven words belong to the screen:
 
 | Word | What it is |
 | --- | --- |
-| **screen** | The verb, and the only one. Ask who passed a filter — on one date, or on every date in a window. A window of one is a single date, so there is one verb and not two. **There is no noun `screen`**: what you save is a *filter*, and what happened is a *run*. |
+| **screen** | The verb, and the only one. Ask who passed a filter — on one date, or on every date in a window. A window of one is a single date, so there is one verb and not two. **There is no noun `screen_companies`**: what you save is a *filter*, and what happened is a *run*. |
 | **filter** | A named rule, holding one or more clauses. Versioned. "My usual set" is a filter. **It lives entirely on the caller's side** — a screen takes its clauses, never the filter itself, so there is no name or version to send. |
 | **clause** | One condition inside a filter: a metric against a threshold. It has no name and no version of its own, and is never a table. **A screen is a flat list of them and every one has to pass** — which is why grouping them into named filters could never change a verdict, and why that shape is now refused rather than silently flattened. |
 | **metric** | Arithmetic with no judgement in it: `pe = price / diluted EPS`. Shared, because it is the same number for everybody. **A `transform_job_definition` filling its own table in the metrics stage** — one metric, one table, so a metric can read another metric. The formula selects `subject`, `date` and `value`; `date` is the day each value became true. One naming `:as_of` is refused: it stored nothing, so it had no lineage and a screen had to run it. |
@@ -63,7 +63,7 @@ one person's. A clause is where the two meet.
 the graph once per as-of date, and it meant the same thing as screening over a
 window. One of them had to go, and the product is named after the other.
 
-Three more words belong to the `plan` tool:
+Three more words belong to the `preview_changes` tool:
 
 | Word | What it is |
 | --- | --- |
@@ -77,7 +77,7 @@ Everything else is a stage with a name you picked.
 
 **The five fixed kinds are gone.** `raw`, `normalized`, `features`, `weights` and `pnl` were
 an enum, and a project had to be shaped like the one product they were written for. A stage
-now declares what is true of it rather than which slot it fills, and what `check` enforces is
+now declares what is true of it rather than which slot it fills, and what `check_project` enforces is
 in [contract.md](contract.md). `normalized` in the starter project is a name, not a keyword.
 
 ## The files

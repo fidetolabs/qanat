@@ -237,9 +237,15 @@ def every_of(schedule: str | None) -> str | None:
     return None
 
 
-def definition_id_for(form: list[str], companies: list[str]) -> str:
+def definition_id_for(form: list[str], companies: list[str],
+                      from_universe: str | None = None) -> str:
     """A name a person can read, for a corpus that does not have one yet."""
     slug = re.sub(r"[^a-z0-9]+", "", "".join(form).lower()) or "any"
+    if from_universe:
+        # The list has a name already, so use it rather than the first two of
+        # two hundred symbols.
+        clean = re.sub(r"[^a-z0-9]+", "", str(from_universe).lower()) or "universe"
+        return f"sub_{slug}_{clean}"[:60]
     head = [re.sub(r"[^a-z0-9]+", "", str(c).lower()) for c in companies[:2]]
     name = "_".join(["sub", slug, *[h for h in head if h]])
     if len(companies) > 2:
@@ -255,7 +261,7 @@ def schedule_id_for(definition_id: str, every: str, hour: int) -> str:
 
 #: The fields of a selection. Two definitions over one table are the same
 #: subscription when all of these match, and two subscriptions when any differ.
-_SELECTION_FIELDS = ("companies", "form", "years", "from", "to")
+_SELECTION_FIELDS = ("companies", "from_universe", "form", "years", "from", "to")
 
 
 def _free_id(project: Project, wanted: str) -> str:
@@ -273,8 +279,9 @@ def _free_id(project: Project, wanted: str) -> str:
 def subscribe(
     project: Project,
     root: Path,
-    companies: list[str],
+    companies: list[str] | None = None,
     *,
+    from_universe: str | None = None,
     forms: list[str] | str = "10-K",
     frm: str | None = None,
     to: str | None = None,
@@ -305,8 +312,28 @@ def subscribe(
     """
     from qanat.editor import EditorError, save_ingestion, save_schedule
 
-    if not companies:
-        raise FilingsError("a subscription needs at least one company, by ticker or CIK")
+    if companies and from_universe:
+        raise FilingsError(
+            "pass `companies` or `from_universe`, not both. One is the list itself and "
+            "the other names a list this project holds, and a definition carrying both "
+            "has no obvious selection"
+        )
+    if not companies and not from_universe:
+        raise FilingsError(
+            "a subscription needs at least one company, by ticker or CIK -- or "
+            "`from_universe` naming a list this project already holds"
+        )
+    if from_universe:
+        # Resolved only to check it exists and to name the definition. The
+        # definition stores the *name*, so adding a symbol to the csv changes
+        # what the subscription fetches without an edit here -- which is the
+        # whole reason to name a list instead of pasting it.
+        from qanat.connectors.sec import universe_path
+
+        try:
+            universe_path(str(from_universe), root)
+        except ValueError as exc:
+            raise FilingsError(str(exc)) from None
     many = forms if isinstance(forms, (list, tuple)) else [forms]
     wanted = [str(f).strip().upper() for f in many if str(f).strip()]
     if not wanted:
@@ -338,10 +365,13 @@ def subscribe(
         )
 
     options: dict[str, Any] = {
-        "companies": [str(c) for c in companies],
         "form": wanted[0] if len(wanted) == 1 else wanted,
         "years": int(years),
     }
+    if from_universe:
+        options["from_universe"] = str(from_universe)
+    else:
+        options["companies"] = [str(c) for c in companies or []]
     if frm:
         options["from"] = frm
     if to:
@@ -361,7 +391,8 @@ def subscribe(
                 break
 
     name = prior.id if prior is not None else _free_id(
-        project, definition_id_for(wanted, [str(c) for c in companies]))
+        project, definition_id_for(wanted, [str(c) for c in companies or []],
+                                   from_universe))
 
     # **Nothing is replaced any more, and `replaced` says so.** It used to test
     # whether a cadence existed -- so a call that overwrote four companies with
@@ -395,7 +426,8 @@ def subscribe(
         "other_schedules": others,
         # What this call left alone, which is the point of it.
         "other_definitions": beside,
-        "companies": options["companies"],
+        "companies": options.get("companies"),
+        "from_universe": options.get("from_universe"),
         "forms": wanted,
         "from": frm,
         "to": to,

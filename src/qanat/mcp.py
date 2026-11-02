@@ -113,25 +113,73 @@ TOOLS: list[dict[str, Any]] = []
 #:
 #: Each new name came from a flow rather than from the object it writes:
 #:
-#:   list_steps    -> list_pipeline      "what will run, in what order, and when"
-#:   read_step     -> read_script        "show me the code one piece runs"
-#:   list_runs     -> list_history       "what has been happening here"
-#:   save_step     -> define_transform   "compute this table from those"
-#:   save_source   -> define_ingestion   "fetch this from outside"
-#:   save_universe -> define_universe    "here is the basket"
+#:   list_steps    -> list_definitions   "what is set up to build my tables"
+#:   read_step     -> read_script         "show me the code one piece runs"
+#:   list_runs     -> list_executions     "every time one of them ran"
+#:   save_step     -> define_transform    "compute this table from those"
+#:   save_source   -> define_ingestion    "fetch this from outside"
+#:   save_universe -> define_universe     "here is the basket"
+#:
+#: A second pass renamed the eight tools whose names were a bare noun or verb.
+#: `lineage`, `screen`, `coverage`, `run`, `check` and `plan` named a subject or
+#: an act without saying what it acts on, and `pipeline` and `history` were too
+#: abstract to guess from:
+#:
+#:   lineage       -> trace_table         joins describe_/profile_/sample_table
+#:   screen        -> screen_companies    the verb was right, it had no object
+#:   coverage      -> check_coverage      "call check_coverage first"
+#:   check         -> check_project       not to be read as check_number
+#:   run           -> run_project         the graph by default, one job by argument
+#:   plan          -> preview_changes     names what you get, not what it is
+#:   list_pipeline -> list_definitions    the exact word, over an abstract one
+#:   list_history  -> list_executions     an attempt, not the job it attempted
 #:
 #: `define` rather than `save` for the reason `metrics.py` already gives: *save*
 #: says keep this for me, and there is no *me* here -- a scope is a capability
 #: boundary and not an identity one, so this server cannot tell two callers
 #: apart. What it writes is a definition, which is what the field is called.
 MOVED: dict[str, str] = {
-    "list_steps": "list_pipeline",
+    # the vocabulary rename
+    "list_steps": "list_definitions",
     "read_step": "read_script",
-    "list_runs": "list_history",
+    "list_runs": "list_executions",
     "save_step": "define_transform",
     "remove_step": "remove_transform",
     "save_source": "define_ingestion",
     "save_universe": "define_universe",
+    # the shape rename: a bare noun or verb said nothing about what it acts on
+    "lineage": "trace_table",
+    "list_pipeline": "list_definitions",
+    "list_history": "list_executions",
+    "check": "check_project",
+    "plan": "preview_changes",
+    "run": "run_project",
+    "screen": "screen_companies",
+    "coverage": "check_coverage",
+}
+
+#: Why each one moved. Two renames happened, for different reasons, and a
+#: refusal that gave the wrong one sent the caller looking for the wrong thing.
+_WHY_VOCAB = (
+    "It was named for the object it wrote, and `source` and `step` are retired -- "
+    "`source` meant four things and `step` named a position in a sequence rather "
+    "than the work. The new name is what a caller does."
+)
+_WHY_SHAPE = (
+    "It was a bare noun or verb that did not say what it acts on. Every other tool "
+    "here reads {verb}_{noun}, so a name that broke the pattern could not be "
+    "guessed from the others."
+)
+_WHY_ABSTRACT = (
+    "`pipeline` and `history` were too abstract to guess from: neither says what the "
+    "call returns. The exact word does, and a tool that only enumerates a set may "
+    "name it -- it is one tool over all of it, not one per object."
+)
+_WHY_MOVED: dict[str, str] = {
+    **{k: _WHY_VOCAB for k in ("list_steps", "read_step", "list_runs", "save_step",
+                               "remove_step", "save_source", "save_universe")},
+    **{k: _WHY_SHAPE for k in ("lineage", "check", "plan", "run", "screen", "coverage")},
+    **{k: _WHY_ABSTRACT for k in ("list_pipeline", "list_history")},
 }
 
 #: The scopes, narrowest first. Each one contains the one before it, so a server
@@ -280,7 +328,7 @@ def _profile_table(s: Session, args: dict) -> Any:
     return prof
 
 
-@tool("lineage", "What feeds a table, what it feeds, and everything downstream that "
+@tool("trace_table", "What feeds a table, what it feeds, and everything downstream that "
       "breaks if it breaks.",
       {"properties": {"ref": {"type": "string"}}, "required": ["ref"]},
       scope="data")
@@ -305,7 +353,7 @@ def _lineage(s: Session, args: dict) -> Any:
             "reaches": reach}
 
 
-@tool("list_pipeline",
+@tool("list_definitions",
       "Every definition in the graph -- ingestion and transform -- in dependency order, "
       "each with the cadences pointing at it. `stage` keeps only the transforms writing "
       "into one stage, which is how you find what produces a given table: there is no "
@@ -393,7 +441,7 @@ def _read_step(s: Session, args: dict) -> Any:
 
 
 # ---- validate and plan -------------------------------------------------------
-@tool("check", "Hold the project against the stage contract. Errors block a run.",
+@tool("check_project", "Hold the project against the stage contract. Errors block a run.",
       {"properties": {}},
       scope="full")
 def _check(s: Session, args: dict) -> Any:
@@ -404,7 +452,7 @@ def _check(s: Session, args: dict) -> Any:
     return {"ok": rep.ok, "errors": rep.errors, "warnings": rep.warnings}
 
 
-@tool("plan",
+@tool("preview_changes",
       "What would change if the file were applied: adds, drift, orphans, and the rows "
       "every `retention:` policy is now holding past its window. With `prune: true` it "
       "acts -- it drops the orphan tables and applies those policies. **Removing is the "
@@ -462,7 +510,7 @@ def _plan(s: Session, args: dict) -> Any:
 
 
 # ---- run ---------------------------------------------------------------------
-@tool("run",
+@tool("run_project",
       "Run the graph once, or one definition. With as_of, screen that single pass. **What "
       "you name is a definition, not a job**: a job is one definition for one exact moment "
       "and this makes one, now. The result says which job and which execution it opened, so "
@@ -501,20 +549,26 @@ def _run(s: Session, args: dict) -> Any:
     }
 
 
-@tool("screen",
+@tool("screen_companies",
       "Which companies passed a filter, on one date or on every date in a window. "
       "Returns the list, **the metric values the verdict was reached on**, each company's "
-      "own forward return, how many could be evaluated at all, and an `execution` block "
+      "own forward return, how many could be evaluated at all, and an `inputs` block "
       "naming the definition versions it actually read and the corpus range it ran over. "
       "Writes nothing: store that block beside whatever you keep, because nothing here "
-      "keeps it for you. `execution.id` is a digest of those inputs, so the same inputs "
-      "give the same id and a changed id means something underneath moved. "
-      "`universe` bounds who is considered: a list of tickers or CIKs you pass with the "
-      "call, built from list_companies. It is a list and not a stored name because which "
-      "companies you care about is yours to keep. It widens the answer as well as "
-      "narrowing it: a name you asked about that has no value for one of your metrics "
-      "comes back as a row that could not be evaluated, instead of being quietly absent, "
-      "and a name this project does not hold at all is reported rather than dropped. "
+      "keeps it for you. `inputs.id` is a digest of those inputs, so the same inputs "
+      "give the same id and a changed id means something underneath moved. Each row "
+      "carries the `ticker` and the company `name` beside the filer id, so an answer "
+      "never has to be joined back onto `list_companies`. "
+      "`companies` bounds who is considered: a list of tickers or CIKs you pass with the "
+      "call, built from list_companies. It is never stored, because which companies you "
+      "care about is yours to keep. It widens the answer as well as narrowing it: a name "
+      "you asked about that has no value for one of your metrics comes back as a row that "
+      "could not be evaluated, instead of being quietly absent, and a name this project "
+      "does not hold at all is reported rather than dropped. **`from_universe` is the "
+      "other way in**, and the distinction is who owns the list: it names a csv under "
+      "./universes/ that this deployment already holds and an ingestion job already reads, "
+      "so two hundred names are not pasted into every call. Pass one or the other, never "
+      "both. Your own list stays inline; a list this project owns may be named. "
       "`clauses` is a flat list -- `[{metric, op, value, metric_version?}]`, and every "
       "one of them has to pass. **A filter is your named rule and nothing here stores "
       "one**, so there is no name to send: what crosses is its clauses, and `applied` "
@@ -535,7 +589,12 @@ def _run(s: Session, args: dict) -> Any:
            "to": {"type": "string", "description": "end of a window"},
            "every": {"type": "string", "default": "1y",
                      "description": "gap between dates in a window"},
-           "universe": {"type": "array",
+           "from_universe": {
+               "type": "string",
+               "description": "instead of `companies`: the name of a csv under "
+                              "./universes/ that this project holds, written by "
+                              "define_universe. The same list an ingestion job reads"},
+           "companies": {"type": "array",
                         "description": "tickers or CIKs. Each entry may also be "
                                        "{symbol, from, to}, and then membership is "
                                        "point-in-time -- which is what stops a list of "
@@ -557,13 +616,15 @@ def _screen(s: Session, args: dict) -> Any:
             s.store, s.project, parse_clauses(args.get("clauses")),
             as_of=args.get("as_of"), frm=args.get("from"), to=args.get("to"),
             every=args.get("every") or "1y",
-            universe=args.get("universe"),
+            companies=args.get("companies"),
+            from_universe=args.get("from_universe"),
+            root=s.root,
         )
     except ScreenError as exc:
         raise ToolError(str(exc)) from exc
 
 
-@tool("coverage",
+@tool("check_coverage",
       "The dates a screen can be answered for, and what sets the bound. Call this before "
       "asking for a window: a read as of a date sees the rows published on or before it, "
       "so before the oldest row there is nothing to read and a screen there returns a list "
@@ -949,20 +1010,30 @@ def _ingest_filings(s: Session, args: dict) -> Any:
            "years": {"type": "integer", "default": 1,
                      "description": "how far back each pass looks, per form. A forward "
                                     "subscription wants a small number"},
+           "from_universe": {
+               "type": "string",
+               "description": "instead of `companies`: the name of a csv under "
+                              "./universes/ this project holds. The definition stores "
+                              "the name, so adding a symbol to that file changes what "
+                              "is fetched without editing the subscription"},
        },
-       "required": ["companies"]},
+       "required": []},
       writes=True,
       scope="full")
 def _subscribe_filings(s: Session, args: dict) -> Any:
     from qanat.filings import FilingsError, subscribe
 
     companies = args.get("companies")
-    if not companies:
-        raise ToolError("'companies' is required: a list of tickers or CIKs. "
+    named = args.get("from_universe")
+    if not companies and not named:
+        raise ToolError("'companies' is required: a list of tickers or CIKs -- or "
+                        "'from_universe' naming a list this project holds. "
                         "Call tools/list to see this tool's arguments.")
     try:
         out = subscribe(
-            s.project, s.root, [str(c) for c in companies],
+            s.project, s.root,
+            [str(c) for c in companies] if companies else None,
+            from_universe=str(named) if named else None,
             # `forms`, and only `forms`. It also read `form` -- a word the
             # schema does not advertise -- so a caller using the singular worked
             # while every document said otherwise. A quiet alias is the thing
@@ -1010,7 +1081,7 @@ def _unsubscribe_filings(s: Session, args: dict) -> Any:
 
 
 
-@tool("list_history",
+@tool("list_executions",
       "Recent job executions, with status and row counts. Each one names the job it was "
       "an attempt at, and the attempt number -- so three rows under one job id are three "
       "tries at the same scheduled moment rather than three unrelated passes.",
@@ -1197,11 +1268,9 @@ def _dispatch(session: Session, msg: dict, tools: list[dict]) -> dict | None:
                     f"started below it. Reconnect at --scope {above['scope']}.", error=True))
             if name in MOVED:
                 return _ok(mid, _text(
-                    f"'{name}' is now '{MOVED[name]}'. It was named for the object it wrote, "
-                    f"and `source` and `step` are retired -- `source` meant four things and "
-                    f"`step` named a position in a sequence rather than the work. The new name "
-                    f"is what a caller does. Nothing answers to both: an alias would leave "
-                    f"both vocabularies on the surface, which is what the rename ends.",
+                    f"'{name}' is now '{MOVED[name]}'. {_WHY_MOVED[name]} Nothing answers to "
+                    f"both: an alias would leave both vocabularies on the surface, which is "
+                    f"what the rename ends.",
                     error=True))
             return _ok(mid, _text(
                 f"no tool called '{name}'. Available: {', '.join(t['name'] for t in tools)}",

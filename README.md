@@ -310,7 +310,7 @@ Entries may carry `from` and `to`, and then membership is point-in-time. A list
 without them says so, because then it is today's membership applied to the past
 and every number built on it is flattered by the names that survived.
 
-**Ask `coverage` before asking for a window.** A read as of a date sees the rows
+**Ask `check_coverage` before asking for a window.** A read as of a date sees the rows
 published on or before it, so before the oldest row there is nothing to read —
 and a screen there returns a list of nobody, which is not the same answer as
 nobody passing. A window that starts before the corpus is refused, with the
@@ -345,7 +345,7 @@ August, September and December, so the two-date clock gets a real test rather
 than a convenient one.
 
 More in [docs/dataflow.md](https://github.com/fidetolabs/qanat/blob/main/docs/dataflow.md) for the whole pipeline end to
-end, [docs/contract.md](https://github.com/fidetolabs/qanat/blob/main/docs/contract.md) for what `check` enforces,
+end, [docs/contract.md](https://github.com/fidetolabs/qanat/blob/main/docs/contract.md) for what `check_project` enforces,
 [docs/words.md](https://github.com/fidetolabs/qanat/blob/main/docs/words.md) for what each word means, and
 [docs/agents.md](https://github.com/fidetolabs/qanat/blob/main/docs/agents.md) for the surface once you are using it.
 

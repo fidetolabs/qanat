@@ -88,7 +88,7 @@ def test_the_scope_is_the_servers_and_not_the_callers(tmp_path: Path):
 
     # Nothing a caller can put in a request widens it.
     res = _rpc(client, "tools/call",
-               {"name": "screen", "arguments": {}, "scope": "research"}, sid=sid)
+               {"name": "screen_companies", "arguments": {}, "scope": "research"}, sid=sid)
     body = res.json()["result"]["content"][0]["text"]
     assert res.json()["result"]["isError"] is True
     assert "'research' scope" in body

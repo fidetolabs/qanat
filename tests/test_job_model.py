@@ -254,7 +254,7 @@ def test_the_word_step_is_gone_from_the_engine():
     # decision, to be made from a flow rather than from this test, so they are
     # named here rather than silently passed over.
     hits = [h for h in hits if not any(
-        name in h for name in ("list_pipeline", "define_transform", "read_script", "remove_transform"))]
+        name in h for name in ("list_definitions", "define_transform", "read_script", "remove_transform"))]
     assert not hits, "\n".join(hits)
 
 

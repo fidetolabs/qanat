@@ -212,9 +212,16 @@ read as of a date sees the rows published on or before it, so before the oldest 
 to read, and a screen there returns a list of nobody — which is not the same answer as nobody
 passing. A window starting before the corpus is refused with the range it does hold.
 
-`universe` bounds who is considered, as a list built from `list_companies`. It widens the answer as
+`companies` bounds who is considered, as a list built from `list_companies`. It widens the answer as
 well as narrowing it: a name with no value comes back unjudgeable rather than absent, and a name this
 project does not hold at all is reported rather than dropped.
+
+**`from_universe` is the other way in, and the two are told apart by who owns the list.**
+`companies` is the caller's and is never stored — that is Margiana's list, or one an agent built
+against open-source Qanat. `from_universe` names a csv under `./universes/` that `define_universe`
+wrote at `full` scope and an ingestion job already reads: deployment config, the same standing as a
+metric formula. One or the other, never both. The word `universe` on its own no longer names an
+argument, because it meant both lists at once.
 
 ## 5 · Serve
 

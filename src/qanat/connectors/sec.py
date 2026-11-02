@@ -198,7 +198,7 @@ def fetch_body(
 def universe_path(named: str, root: Path) -> Path:
     """Where a universe's symbol file is, given its id or its path.
 
-    `save_universe` writes `./universes/<id>.csv` unless it is told otherwise, so
+    `define_universe` writes `./universes/<id>.csv` unless it is told otherwise, so
     a universe is addressable by the name it was saved under. A path is accepted
     too, because a project that keeps its lists somewhere else still has a list.
     """
@@ -210,7 +210,7 @@ def universe_path(named: str, root: Path) -> Path:
         return guess
     raise ValueError(
         f"from_universe '{named}' is neither a file under the project nor a universe "
-        f"in ./universes/. Call save_universe to write one, or give the path to its csv"
+        f"in ./universes/. Call define_universe to write one, or give the path to its csv"
     )
 
 

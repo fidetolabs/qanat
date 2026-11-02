@@ -30,9 +30,29 @@ BUDGET = {"data": 14, "research": 20, "full": 28, "authoring": 33}
 
 
 def test_no_tool_is_named_after_an_entity():
-    bad = {t["name"]: [w for w in ENTITY_WORDS if w in t["name"]] for t in mcp.TOOLS}
-    bad = {k: v for k, v in bad.items() if v}
+    """An entity word is allowed to enumerate, never to act.
+
+    A9 banned the four words outright, and that was drawn wider than its own
+    reason. The rule exists so the surface does not grow one tool per entity --
+    and a `list_` tool does not grow it: it is one tool over the whole set, and
+    the exact word is the only one a caller can guess. `pipeline` and `history`
+    were the alternatives, and neither says what it returns. A tool that *acts*
+    on an entity still may not name it, which is what this now holds.
+    """
+    bad = {}
+    for t in mcp.TOOLS:
+        if t["name"].startswith("list_"):
+            continue
+        hits = [w for w in ENTITY_WORDS if w in t["name"]]
+        if hits:
+            bad[t["name"]] = hits
     assert not bad, f"named for the object rather than the act: {bad}"
+
+
+def test_an_entity_word_still_cannot_name_a_tool_that_acts():
+    """The half of A9 that did not move."""
+    for name in ("define_job", "save_schedule", "run_execution", "remove_definition"):
+        assert name not in {t["name"] for t in mcp.TOOLS}
 
 
 def test_the_count_at_each_scope_has_not_grown():
@@ -222,7 +242,7 @@ def test_a_screen_takes_clauses_and_never_a_filter():
 
     from qanat import screen as screen_mod
 
-    entry = next(t for t in mcp.TOOLS if t["name"] == "screen")
+    entry = next(t for t in mcp.TOOLS if t["name"] == "screen_companies")
     assert entry["inputSchema"]["required"] == ["clauses"]
     assert "filters" not in entry["inputSchema"]["properties"]
     assert not hasattr(screen_mod, "Filter"), "the wrapper is gone, not deprecated"

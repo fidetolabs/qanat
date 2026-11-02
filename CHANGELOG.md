@@ -376,6 +376,94 @@ refusal carries what a person needs; the translation did not earn its keep.
 A 0.10.x store is not carried across either. Start the store again with the
 project.
 
+### Every tool reads `{verb}_{noun}`
+
+Eight names could not be guessed from the others. Six were a bare noun or verb
+that did not say what they act on, and two were abstract enough that neither one
+told you what the call returns:
+
+| Was | Is | Why |
+| --- | --- | --- |
+| `lineage` | `trace_table` | joins `describe_table`, `profile_table`, `sample_table` |
+| `screen` | `screen_companies` | the verb was right, it had no object |
+| `coverage` | `check_coverage` | reads correctly in "call `check_coverage` first" |
+| `check` | `check_project` | not to be misread as `check_number` |
+| `run` | `run_project` | the graph by default, one definition by argument |
+| `plan` | `preview_changes` | names what you get, not what it is |
+| `list_pipeline` | `list_definitions` | `pipeline` does not say what the rows are |
+| `list_history` | `list_executions` | an attempt, not the job it was an attempt at |
+
+Each old name is refused with the reason **its own** rename had. They were
+sharing one message that said `source` and `step` are retired, which is true of
+last release's renames and false of these — a refusal that explains the wrong
+thing sends the caller after the wrong fix.
+
+The CLI is untouched: `qanat check` still answers what it answered, and the four
+verbs are still `init check mcp schedule`. Only the tool became
+`check_project`.
+
+**This narrowed a rule rather than breaking it.** The surface criterion banned
+`job`, `definition`, `schedule` and `execution` from every tool name. It was
+drawn wider than its own reason — the rule exists so the surface does not grow
+one tool per entity, and a `list_` tool does not grow it: it is one tool over a
+whole set, and the exact word is the only one a caller can guess. A tool that
+*acts* on an entity still may not name one, and a test holds that half.
+
+The tool count did not move: 14 / 20 / 28 / 33.
+
+### A screened row names the company, not only its filer id
+
+`screen_companies` handed back `0000320193` and nothing else, so every answer had
+to be joined back onto `list_companies` to find out who passed. Each row now
+carries `ticker` and `name` beside `subject`. It cost no extra query — the index
+that places the names a caller passes was already reading the documents table and
+was throwing the reverse away. Both are `null`, not `""`, when the corpus has no
+`source_keys` to read a name out of: absent and unknown are different answers.
+
+**Fixed: `screen_companies` described a field its answer does not carry.** The
+return key became `inputs` when `execution` came to mean a job attempt, and the
+tool's own description still told callers to read `execution` and `execution.id`.
+An agent reads that description out of `tools/list`, so it was being sent after a
+field that is not there. Two tests now hold it: one on the row shape, one
+comparing the description against the answer.
+
+### Two lists, two names: `companies` is yours, `from_universe` is this project's
+
+One word was doing both jobs. `screen`'s `universe` argument meant *the caller's
+list, passed inline and never stored*, while a universe written by
+`define_universe` meant *a csv this deployment holds and an ingestion job reads*.
+They are unrelated, and sharing a name made the pair unreadable.
+
+- **`companies`** — the screen argument, renamed. Tickers or CIKs you pass with
+  the call, or `{symbol, from, to}` rows for point-in-time membership. Never
+  stored, because which companies you care about is yours to keep.
+- **`from_universe`** — new on `screen_companies` and `subscribe_filings`. Names
+  a csv under `./universes/`. One or the other, never both: two lists in one call
+  has no obvious answer, and a union would bound the screen by something the
+  caller did not write.
+
+The earlier prohibition stands for what it was really about. A *caller's* list
+pulled out of the project file is still refused — that was the same mistake as
+storing a filter. What changed is that a list this deployment already owns for
+fetching may also bound a screen: it is written at `full` scope and read by an
+ingestion job, which makes it config of the same standing as a metric formula,
+not one caller's state. A threshold is still never stored.
+
+`subscribe_filings` no longer requires `companies`; it writes an
+`ingestion_job_definition`, and that object already understood `from_universe`.
+The definition stores the **name**, so adding a symbol to the csv changes what is
+fetched without editing the subscription. `from_universe` joined the selection
+fields, or a named subscription and an inline one with the same form and years
+would have read as the same selection.
+
+A screen and an ingestion job now resolve a universe through one function, so a
+screen cannot find a different file than the fetch job would. The internal
+`Universe` class is `Membership`, which is what it holds: placed subjects with
+join and leave dates.
+
+**Fixed: two refusals named `save_universe`**, retired two renames ago. They now
+say `define_universe`.
+
 ## 0.10.2 — 2026-10-31
 
 ### The store stops leaving DuckDB results open, and cleanup stops lying
