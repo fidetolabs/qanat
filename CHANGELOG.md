@@ -33,23 +33,11 @@ selection. Several schedules may point at one definition, and a definition with
 none is ordinary — it runs when something asks.
 
 Two of the four already existed under other names: `_qanat_runs` was the
-execution layer and `_qanat_state` was definition versioning. Both are renamed in
-place when a store is opened, so an existing store keeps its history.
-
-**That rename was broken on a parquet store until it was tested.** It was guarded
-by `_exists`, which answers for a *data* table -- and on a parquet store that
-means asking whether any parquet files are on disk. The metadata tables are
-never parquet; they live in the attached `meta` database. So `_exists` said no
-for every one of them, the rename never fired on the store kind this product
-actually uses, `CREATE TABLE IF NOT EXISTS` made the new tables empty beside the
-old ones, and a project upgrading lost its whole execution history with nothing
-saying so. Every test passed, because every test builds a fresh store.
-
-The old `job_id` column also had to move *before* the new one is added: it held
-the definition, under a name the job layer now uses for one definition at one
-instant. `test_a_store_from_before_the_rename_keeps_its_history` covers both
-store kinds, and an execution carried across reports `job_id: null` -- no job
-existed above it, and none is invented.
+execution layer and `_qanat_state` was definition versioning. **A 0.10.x store
+is not carried across**, for the same reason a 0.10.x project is not: nobody has
+one. A rename-on-open was written, shipped broken on the store kind this product
+actually uses, and was taken out along with the project migration -- a store you
+can throw away is not worth a code path that has to stay correct forever.
 
 **The job layer is the one that did not exist, and it is there for retries rather
 than backfills.** Three attempts at the 07:00 poll were three unrelated rows, so
@@ -379,8 +367,8 @@ Every one of those is a rule that has to stay correct against every later
 change, to serve a project shape that is being left behind on purpose. The
 refusal carries what a person needs; the translation did not earn its keep.
 
-A store written by 0.10.x is a different matter and still opens: the table
-rename is applied on open, and its history comes with it.
+A 0.10.x store is not carried across either. Start the store again with the
+project.
 
 ## 0.10.2 — 2026-10-31
 

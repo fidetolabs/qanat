@@ -111,8 +111,6 @@ META = (JOBS, EXECUTIONS, EVENTS, VERSIONS, KEYS)
 #: What these tables were called before the vocabulary changed. Renamed in place
 #: on open, so a store written by an older version keeps its history instead of
 #: starting again with an empty log.
-_RENAMED = {"_qanat_runs": EXECUTIONS, "_qanat_state": VERSIONS}
-
 #: Schema holding the as-of views a screen reads through. Named, not `asof`,
 #: because DuckDB reserves that word for ASOF JOIN.
 PIT = "qanat_pit"
@@ -708,7 +706,6 @@ class Store:
     def _ensure_meta(self) -> None:
         with self._lock:
             where = self._meta_home
-            self._rename_old_meta(where)
             # One definition, for one exact datetime, and where it came from. A
             # null `schedule_id` is the ad-hoc path and it is first-class: a
             # hand-triggered ingest is a job with no schedule behind it, not the
@@ -780,59 +777,6 @@ class Store:
                     name        VARCHAR PRIMARY KEY,
                     key_columns VARCHAR
                 )""")
-
-    def _meta_exists(self, name: str) -> bool:
-        """Is this metadata table there? **Asked of the catalogue, not of the files.**
-
-        `_exists` answers for a *data* table, and on a parquet store that means
-        asking whether any parquet files are on disk for it. The metadata tables
-        are never parquet -- they live in the attached `meta` database -- so
-        `_exists` answered False for every one of them, and the rename below
-        silently never fired on the store kind this product actually uses. The
-        new tables were then created empty beside the old ones, and a project
-        upgrading lost its whole execution history with nothing saying so.
-        """
-        try:
-            return bool(self._scalar(
-                "SELECT count(*) FROM duckdb_tables() WHERE table_name = ?", [name]))
-        except Exception:  # noqa: BLE001 -- no catalogue yet means no table
-            return False
-
-    def _rename_old_meta(self, where: str) -> None:
-        """`_qanat_runs` -> `_qanat_job_execution`, and the same for the state table.
-
-        In place, on open, so an existing store keeps its history. The old name
-        only ever existed inside this file, so nothing outside has to know.
-        """
-        for old, new in _RENAMED.items():
-            if self._meta_exists(old) and not self._meta_exists(new):
-                self.con.execute(f"ALTER TABLE {where}{old} RENAME TO {new}")
-            # The old column names went with it.
-            #
-            # **`job_id` meant the definition, and it has to move before the new
-            # `job_id` is added.** The old table keyed a row to the config entry
-            # that produced it -- a definition -- under a name the job layer now
-            # uses for something else entirely: one definition at one instant.
-            # Renamed the other way round, `ADD COLUMN IF NOT EXISTS job_id`
-            # would find the column already there, the definition names would
-            # sit in it typed as text, and `definition_id` would come back null
-            # for every row carried across.
-            if new == EXECUTIONS:
-                self._rename_column(where, new, "job_id", "definition_id")
-                self._rename_column(where, new, "run_id", "execution_id")
-            else:
-                self._rename_column(where, new, "job_id", "definition_id")
-
-    def _rename_column(self, where: str, table: str, old: str, new: str) -> None:
-        # `_meta_exists`, for the same reason the table rename needs it: a
-        # metadata table is never a parquet file, so `_exists` says no.
-        if not self._meta_exists(table):
-            return
-        have = {c for (c,) in self.con.execute(
-            "SELECT column_name FROM duckdb_columns() WHERE table_name = ?",
-            [table]).fetchall()}
-        if old in have and new not in have:
-            self.con.execute(f'ALTER TABLE {where}{table} RENAME COLUMN "{old}" TO "{new}"')
 
     #: Written while a screen holds the store, cleared when it lets go. A screen
     #: rewrites the derived tables at each as-of date and puts them back in a
