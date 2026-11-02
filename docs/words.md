@@ -36,7 +36,7 @@ in the file, a module in the package, the `connector:` value, and a string on
 every row — and only the last was ever unambiguous, so it is the only one that
 keeps the word. `step` named a position in a sequence and said nothing about a
 table going in and a table coming out, which is the only thing one does. The old
-spellings are **refused, not aliased**; `qanat migrate` rewrites a project that
+spellings are **refused, not aliased**, and nothing rewrites a project that
 still uses them.
 
 One word belongs to the picture: a **slab** is one **table** drawn in the graph. The graph draws
@@ -92,7 +92,7 @@ in [contract.md](contract.md). `normalized` in the starter project is a name, no
 each with its own `version:` integer; a metric is a `transform_job_definition`
 writing its own table now, so the definitions in `jobs.yaml` are the whole
 record — and the metrics stage is the registry, so nothing is kept beside them.
-`qanat migrate` moves an old one aside.
+There is no converter: an old one is refused at load.
 
 **The boundary is human-written against tool-written, and the two were sharing a
 file.** `define_metric` loaded `qanat.yaml`, mutated the model and re-dumped the
@@ -108,7 +108,7 @@ keep the note that sat above it, which is exactly why the file holding your
 notes is not one of them.
 
 A tool-written key left in `qanat.yaml`, or one in the wrong part file, is
-refused at load with `qanat migrate` named.
+refused at load, with the key it got wrong named.
 
 ## The fields, one spelling each
 
@@ -127,7 +127,7 @@ refused at load with `qanat migrate` named.
 | `enabled:` | job schedule | off without being deleted |
 | `kind:` | stage | `raw` for a landed stage, which is never edited; `metrics` for the one holding metric tables, which makes it the registry; otherwise a name you choose |
 | `time_columns:` | project | which column on a table says when a row became public. The one line the point-in-time reads depend on |
-| `metrics:` | **retired** | a list of formulas, each with a `version:` integer. A metric is a transform filling its own table now, so there is no list -- the metrics stage is the registry. `qanat migrate` moves an old one aside |
+| `metrics:` | **retired** | a list of formulas, each with a `version:` integer. A metric is a transform filling its own table now, so there is no list -- the metrics stage is the registry. An old one is refused, not converted |
 | `returns:` | project | which table says what a company did next, so a screen can report it |
 | `corpus:` | project | which tables hold documents, their text and their facts. **No metrics entry** -- one metric is one table, so a single ref could not name them |
 | `key:` | transform definition | the columns identifying one output row. **With one it appends and never replaces** — what a materialised metric needs, since a corrected price has to leave the value somebody was shown readable |

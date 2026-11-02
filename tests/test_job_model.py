@@ -10,8 +10,6 @@ from __future__ import annotations
 
 import re
 import subprocess
-import sys
-import textwrap
 from pathlib import Path
 
 import pytest
@@ -208,9 +206,14 @@ def test_an_execution_resolves_to_its_job_and_its_definition(tmp_path: Path):
 
 
 # ---- A5: the vocabulary ------------------------------------------------------
-#: Where the retired words are still allowed to appear. The changelog is history
-#: and the migration is the one thing that reads the old spellings.
-_VOCABULARY_EXEMPT = ("migrate.py",)
+#: No file is exempt. The one file that read the old spellings was the migration,
+#: and there is no migration -- so a retired word anywhere in the engine is a bug.
+#: A single line may still need the bare literal (the refusal that detects it);
+#: that line carries `_NAMES_A_RETIRED_WORD` and says why, so the exemption is
+#: one line wide and visible where it is taken, not a filename listed over here.
+_VOCABULARY_EXEMPT: tuple[str, ...] = ()
+
+_NAMES_A_RETIRED_WORD = "# names-a-retired-word"
 
 
 def _documents_the_column(hit: str) -> bool:
@@ -237,6 +240,7 @@ def _grep(pattern: str, *paths: str) -> list[str]:
         and "`step`" not in line and "`steps:`" not in line
         and "`source`" not in line and "`sources:`" not in line
         and "`qanat plan`" not in line
+        and _NAMES_A_RETIRED_WORD not in line
         # "open source" is the licence, not the config declaration
         and "open-source" not in line and "open source" not in line
     ]
@@ -294,79 +298,7 @@ def test_the_old_spellings_are_refused_rather_than_aliased(tmp_path: Path):
     with pytest.raises(ProjectError) as exc:
         load(tmp_path)
     assert "old vocabulary" in str(exc.value)
-    assert "qanat migrate" in str(exc.value), "the refusal names what to run"
-
-
-# ---- the migration -----------------------------------------------------------
-def test_the_migration_moves_the_cadence_into_its_own_row(tmp_path: Path):
-    from qanat.migrate import apply_migration, plan_migration
-
-    (tmp_path / "steps").mkdir(parents=True)
-    (tmp_path / "steps" / "t.sql").write_text("SELECT * FROM raw__docs")
-    (tmp_path / "seed").mkdir()
-    (tmp_path / "seed" / "docs.csv").write_text("id,as_of\n1,2024-01-01\n")
-    (tmp_path / "qanat.yaml").write_text(textwrap.dedent("""\
-        project: j
-        store: ./data
-        # a note somebody wrote and means to keep
-        stages:
-          - {id: raw, kind: raw}
-          - {id: normalized, kind: normalized}
-        sources:
-          - id: land
-            to: [raw.docs]
-            connector: csv
-            mode: replace
-            key: [id]
-            schedule: "0 6 * * *"
-            options: {path: ./seed/docs.csv}
-        steps:
-          - id: shape
-            from: [raw.docs]
-            to: [normalized.facts]
-            script: steps/t.sql
-        """))
-
-    m = plan_migration(tmp_path)
-    assert m.needed
-    apply_migration(m)
-
-    project, _ = load(tmp_path)
-    assert [d.id for d in project.ingestion_job_definitions] == ["land"]
-    assert [d.id for d in project.transform_job_definitions] == ["shape"]
-    assert [(s.definition, s.cron) for s in project.job_schedules] == [("land", "0 6 * * *")]
-    assert project.ingestion_job_definitions[0].mode == "append", \
-        "replace deletes every row outside the current selection"
-    assert project.transform_job_definitions[0].script == "transforms/t.sql"
-    assert (tmp_path / "transforms" / "t.sql").is_file()
-    assert "a note somebody wrote" in (tmp_path / "qanat.yaml").read_text()
-    assert (tmp_path / "qanat.yaml.before-the-job-model").is_file(), \
-        "a comment above a key that no longer exists survives only in the copy"
-
-
-def test_migrating_a_project_that_is_already_new_does_nothing(tmp_path: Path):
-    from qanat.migrate import plan_migration
-
-    root = _project(tmp_path, BASE)
-    assert not plan_migration(root).needed
-
-
-def test_migrate_prints_before_it_writes(tmp_path: Path):
-    """The one command that edits a file somebody wrote by hand."""
-    (tmp_path / "qanat.yaml").write_text(textwrap.dedent("""\
-        project: j
-        store: ./data
-        stages:
-          - {id: raw, kind: raw}
-        sources:
-          - {id: land, to: [raw.docs], connector: csv, key: [id], options: {path: ./x.csv}}
-        """))
-    before = (tmp_path / "qanat.yaml").read_text()
-    out = subprocess.run([sys.executable, "-m", "qanat", "migrate", str(tmp_path)],
-                         capture_output=True, text=True, check=False)
-    assert out.returncode == 0, out.stderr
-    assert "nothing was written" in out.stdout
-    assert (tmp_path / "qanat.yaml").read_text() == before
+    assert "no converter" in str(exc.value), "the refusal says there is nothing to run"
 
 
 # ---- upgrading a store written by 0.10.x -------------------------------------
@@ -429,147 +361,3 @@ def test_a_store_from_before_the_rename_keeps_its_history(tmp_path: Path, kind: 
         assert store.load_state() == {"land": {"digest": "abc123", "spec": "{}"}}
     finally:
         store.close()
-
-
-# ---- the metrics migration ----------------------------------------------------
-OLD_WITH_METRICS = """\
-project: legacy
-store: {store}
-stages:
-  - {{id: raw, kind: raw}}
-  - {{id: features, kind: features}}
-time_columns:
-  raw.facts: as_of
-corpus:
-  facts: raw.facts
-  metrics: features.metrics
-sources:
-  - id: land
-    to: [raw.facts]
-    connector: csv
-    options: {{path: ./seed/facts.csv}}
-"""
-
-OLD_METRICS_YAML = """\
-metrics:
-  - id: eps_series
-    version: 1
-    unit: USD
-    sql: SELECT subject, as_of AS date, eps AS value FROM raw__facts
-  - id: eps_series
-    version: 2
-    unit: USD
-    sql: SELECT subject, as_of AS date, eps * 1.0 AS value FROM raw__facts
-  - id: eps_max
-    version: 1
-    sql: SELECT subject, max(eps) AS value FROM raw__facts WHERE as_of <= :as_of GROUP BY 1
-"""
-
-
-def _old_project(tmp_path):
-    from conftest import STORE_KIND
-
-    store_line = "./data" if STORE_KIND == "parquet" else "./data/qanat.duckdb"
-    (tmp_path / "seed").mkdir(parents=True, exist_ok=True)
-    (tmp_path / "data").mkdir(parents=True, exist_ok=True)
-    (tmp_path / "qanat.yaml").write_text(OLD_WITH_METRICS.format(store=store_line))
-    (tmp_path / "metrics.yaml").write_text(OLD_METRICS_YAML)
-    (tmp_path / "seed" / "facts.csv").write_text(
-        "subject,eps,as_of\nAAPL,6.0,2024-01-01\nMSFT,10.0,2024-01-01\n")
-    return tmp_path
-
-
-def test_a_metric_list_migrates_into_transforms_writing_their_own_tables(tmp_path):
-    """**The list is read out of `metrics.yaml`, which this used to never open.**
-    A project already split holds its metrics there, so reading only the
-    architecture file migrated nothing -- the one file with the metrics in it."""
-    from qanat.migrate import apply_migration, plan_migration
-    from qanat.project import load, validate
-    from qanat.runner import run_all
-    from qanat.store import Store
-
-    root = _old_project(tmp_path)
-    m = plan_migration(root)
-    assert m.needed
-    apply_migration(m)
-
-    project, r = load(root)
-    assert project.metrics_stage() == "metrics", \
-        "a stage declaring kind: metrics, which is the registry"
-    assert project.metric_ids() == ["eps_series"]
-    assert (r / "transforms" / "metrics" / "eps_series.sql").is_file()
-
-    definition = project.definition("eps_series")
-    assert definition.writes == ["metrics.eps_series"]
-    assert definition.reads == ["raw.facts"], "read off the formula"
-    assert definition.key == ["subject", "date"], "a metric value is never replaced"
-    assert definition.options["unit"] == "USD", "unit moved onto the definition"
-    assert validate(project, r).ok, validate(project, r).errors
-
-    store = Store(project.store_url(r))
-    try:
-        assert all(x.ok for x in run_all(store, project, r))
-        from qanat.screen import metric_values
-
-        got = metric_values(store, project, "eps_series", "2024-06-01")
-        assert dict(zip(got.subject, got.value)) == {"AAPL": 6.0, "MSFT": 10.0}
-    finally:
-        store.close()
-
-
-def test_the_metrics_stage_is_not_the_stage_the_old_corpus_ref_named(tmp_path):
-    """`features.metrics` was a *table* inside a features stage. Reusing the
-    stage part of it landed every metric in `features`, where nothing recognised
-    it -- measured, the migrated project loaded, checked, ran, and reported no
-    metrics at all."""
-    from qanat.migrate import apply_migration, plan_migration
-    from qanat.project import load
-
-    root = _old_project(tmp_path)
-    apply_migration(plan_migration(root))
-    project, _ = load(root)
-    assert [s.id for s in project.stages] == ["raw", "features", "metrics"]
-    assert project.definition("eps_series").writes == ["metrics.eps_series"]
-
-
-def test_a_formula_taking_the_date_as_a_parameter_is_reported_not_guessed(tmp_path):
-    """Deciding which column carries the date each value became true is a
-    judgement about what the formula means. Guessing it would store numbers under
-    dates they do not mean, so it is named and left in the backup."""
-    from qanat.migrate import apply_migration, plan_migration
-    from qanat.project import load
-
-    root = _old_project(tmp_path)
-    m = plan_migration(root)
-    assert any("eps_max" in n and "NOT migrated" in n for n in m.notes), m.notes
-    apply_migration(m)
-
-    project, _ = load(root)
-    assert "eps_max" not in project.metric_ids()
-    kept = (root / "metrics.yaml.before-the-job-model").read_text()
-    assert "eps_max" in kept, "the formula survives where it can be read"
-    assert not (root / "metrics.yaml").exists()
-
-
-def test_two_versions_of_one_formula_become_one_definition_and_say_so(tmp_path):
-    """The integer version is gone -- a metric's version is its definition's
-    digest -- so two entries at one id would be two definitions writing one table
-    under one name."""
-    from qanat.migrate import plan_migration
-
-    root = _old_project(tmp_path)
-    m = plan_migration(root)
-    assert any("versions 1, 2" in n and "from version 2" in n for n in m.notes), m.notes
-
-
-def test_corpus_metrics_is_dropped_because_one_ref_cannot_name_them(tmp_path):
-    from qanat.migrate import apply_migration, plan_migration
-    from qanat.project import load
-
-    root = _old_project(tmp_path)
-    m = plan_migration(root)
-    assert any("corpus.metrics" in n for n in m.notes)
-    apply_migration(m)
-    project, _ = load(root)
-    assert project.corpus is not None
-    assert not hasattr(project.corpus, "metrics")

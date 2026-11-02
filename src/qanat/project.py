@@ -58,6 +58,11 @@ def find_project(start: str | os.PathLike[str] | None = None) -> Path:
     raise ProjectError("no qanat.yaml found here or in any parent directory")
 
 
+#: The two keys a 0.10.x project said. Named here so a refusal can name them --
+#: they are read nowhere else, because the old vocabulary is not loaded.
+OLD_KEYS = ("sources", "steps")  # names-a-retired-word: this is the detector
+
+
 def load(path: str | os.PathLike[str] | None = None) -> tuple[Project, Path]:
     """Return the parsed project and its root directory.
 
@@ -73,7 +78,6 @@ def load(path: str | os.PathLike[str] | None = None) -> tuple[Project, Path]:
         f = f / "qanat.yaml"
     with f.open() as fh:
         raw = yaml.safe_load(fh) or {}
-    from qanat.migrate import OLD_KEYS
     from qanat.project_io import PARTS, part_for
 
     # **Both refusals are about this file, before anything is merged into it.**
@@ -90,8 +94,7 @@ def load(path: str | os.PathLike[str] | None = None) -> tuple[Project, Path]:
             "  and the `schedule:` field on either one is a `job_schedules:` row pointing "
             "at it by id --\n"
             "  which is what lets one definition carry a daily and a weekly.\n"
-            f"  Run `qanat migrate {f.parent}` to rewrite it. It prints before it writes, "
-            "and keeps a copy."
+            "  There is no converter. Write the new keys, or start the project again."
         )
     stray = sorted(k for k in raw if part_for(k))
     if stray:
@@ -104,8 +107,8 @@ def load(path: str | os.PathLike[str] | None = None) -> tuple[Project, Path]:
             f"  keep, and nothing rewrites it** -- which is why they moved: an authoring "
             f"tool re-dumped this\n"
             f"  file and took every comment in it along with the change.\n"
-            f"  Run `qanat migrate {f.parent}` to split them out. It prints before it "
-            f"writes."
+            f"  Move them into {where} yourself, and leave this file holding only what "
+            f"you write."
         )
 
     # Then the part files beside it, each holding only the keys it owns.

@@ -1,8 +1,7 @@
-"""qanat -- the command line. Five verbs, and each one is here for a reason.
+"""qanat -- the command line. Four verbs, and each one is here for a reason.
 
     qanat init [dir]     scaffold a project that runs green with no keys
     qanat check          hold the pipeline against the stage contract
-    qanat migrate [dir]  rewrite a project written in the old vocabulary
     qanat mcp            serve this project to an agent, over stdio or --http
     qanat schedule       run the clock, and serve nothing
 
@@ -26,9 +25,11 @@ differ. They are gone, each named below beside what replaced it:
 project exists. `mcp` is the transport. `check` is deliberate: somebody
 connecting for the first time has to be able to tell a broken project from a
 broken server, and a tool cannot answer that when the tool is what is broken.
-`migrate` is the same shape as `init`: it runs on a project that **cannot be
-loaded yet**, so no tool over MCP could reach it -- and rewriting somebody's
-architecture file is not a thing to do silently on the way past.
+
+**There is no `migrate`.** A 0.10.x project is refused at load with the keys it
+got wrong named, and that is the whole of it: a converter is a second reader of
+a vocabulary this version does not have, and it would have to be kept correct
+against every later change to earn its place.
 
 **And the clock and the server are two commands, not one with a flag.** They
 used to be one process -- scheduler and MCP server together, with
@@ -233,40 +234,6 @@ def _opened(args):
     return project, root, store
 
 
-# --------------------------------------------------------------------- migrate
-def cmd_migrate(args) -> int:
-    """Rewrite a project in the new vocabulary. Prints first, writes on --apply.
-
-    Printing first is the point: this is the one command that edits a file
-    somebody wrote by hand, and the one thing it cannot carry across is a
-    comment above a key that no longer exists.
-    """
-    from qanat.migrate import MigrateError, apply_migration, plan_migration
-
-    try:
-        m = plan_migration(args.directory)
-    except MigrateError as exc:
-        print(c(str(exc), R_), file=sys.stderr)
-        return 1
-
-    print(f"\n  {c('qanat migrate', B)} {D}{m.path}{X}\n")
-    if not m.needed:
-        print(f"  {c('ok', G)} already in the new vocabulary -- nothing to do\n")
-        return 0
-    for note in m.notes:
-        print(f"  {c('·', D)} {note}")
-    print()
-    if not args.apply:
-        print(f"  {D}nothing was written. Run again with --apply{X}\n")
-        return 0
-    written = apply_migration(m)
-    for path in written:
-        print(f"  {c('wrote', G)} {path}")
-    print(f"\n  {D}a comment above `sources:` or `steps:` has no key left to sit on, so it\n"
-          f"  is only in the copy beside the new file. Check it before deleting that.{X}\n")
-    return 0
-
-
 # -------------------------------------------------------------------- schedule
 def cmd_schedule(args) -> int:
     """The clock, and nothing served.
@@ -463,12 +430,6 @@ def build_parser() -> argparse.ArgumentParser:
     # Removed, and kept only so it can say what replaced it rather than die in argparse.
     mc.add_argument("--read-only", action="store_true", help=argparse.SUPPRESS)
     mc.set_defaults(func=cmd_mcp)
-
-    mg = sub.add_parser("migrate", help="rewrite a project written in the old vocabulary")
-    mg.add_argument("directory", nargs="?", default=".")
-    mg.add_argument("--apply", action="store_true",
-                    help="write it. Without this the changes are printed and nothing moves")
-    mg.set_defaults(func=cmd_migrate)
 
     sc = sub.add_parser("schedule", help="run the clock, and serve nothing")
     sc.add_argument("--workers", type=int, default=4)

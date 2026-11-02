@@ -4,8 +4,10 @@
 
 ### A job is four objects, and the architecture file stops being machine-written
 
-**Breaking at every scope.** A project written for 0.10.x does not load; `qanat
-migrate <dir>` rewrites it and prints what it will do before it does it.
+**Breaking at every scope, and there is no converter.** A project written for
+0.10.x does not load. It is refused with the keys it got wrong named and what to
+write instead; rewriting it is yours to do, because a converter is a second
+reader of a vocabulary this version does not have.
 
 #### The asymmetry this started from
 
@@ -64,13 +66,14 @@ in a sequence and said nothing about a table going in and a table coming out,
 which is the only thing one does.
 
 An alias would leave both vocabularies in the record, which is the state this
-ends. `qanat migrate` is the one thing that reads the old spellings.
+ends. Nothing reads the old spellings -- they survive only in the refusal that
+names them.
 
 - `src/qanat/sources/` is `src/qanat/connectors/`; a project's `steps/` directory
   becomes `transforms/`
 - `Source` and `Step` are `IngestionJobDefinition` and `TransformJobDefinition`
-- `qanat migrate` is a fifth CLI verb, because it runs on a file that cannot be
-  loaded yet — no tool over MCP could reach it
+- the CLI stays at four verbs. A migration would have been a fifth, running on a
+  file that cannot be loaded yet — it is not here, and the refusal is
 
 #### Every row names the execution that wrote it
 
@@ -362,39 +365,22 @@ told you.** A filter name is the second kind — they sent it, so they have it.
 
 `Filter` is gone and `parse_filters` is `parse_clauses`. A break at `research`.
 
-#### Migrating
+#### Coming from 0.10.x
 
-```sh
-qanat migrate .            # prints what it will do, writes nothing
-qanat migrate . --apply    # writes, keeping qanat.yaml.before-the-job-model
-```
+**Start the project again.** There is no migration command. `load` refuses an
+old file and names the keys it got wrong and what to write instead, and that is
+where it stops.
 
-It renames the two keys, moves each `schedule:` into a `job_schedules:` row,
-turns `mode: replace` into `mode: append` and says why, renames `steps/` to
-`transforms/`, and splits the tool-written keys into their own files. A comment
-above a key that stays survives. One above a key that moved is in the backup —
-the round-tripper cannot carry a note from a key that is no longer there, and
-pretending otherwise would be worse than saying so.
+A converter was written and then taken out. It was a second reader of a
+vocabulary this version does not have — it had to translate `sources:`, split
+each `schedule:` into its own row, turn `mode: replace` into `mode: append`,
+rename `steps/`, and read a `metrics.yaml` that the new model has no list for.
+Every one of those is a rule that has to stay correct against every later
+change, to serve a project shape that is being left behind on purpose. The
+refusal carries what a person needs; the translation did not earn its keep.
 
-**It also migrates the metrics**, and reads `metrics.yaml` to do it — a project
-already split holds them in the one file the old migration never opened. Each
-formula becomes a transform writing `metrics.<id>`, with a generated script and
-`unit`/`description` moved onto `options:`; a `metrics` stage is added, or an
-existing stage named for metrics has its `kind` corrected rather than being given
-a twin. `corpus.metrics` is dropped, because one ref cannot name them.
-
-Two things it reports instead of guessing. **A formula naming `:as_of` is not
-converted** — deciding which column carries the date each value became true is a
-judgement about what the formula means, and guessing it would store numbers under
-dates they do not mean. **Only the newest version of each id is carried**, since
-the integer version is gone and two entries at one id would be two definitions
-writing one table under one name. Both are named in the printed plan, and the old
-file is kept as `metrics.yaml.before-the-job-model`.
-
-The rows already written stay where they are. They name the executions that wrote
-them, and a migration is not a reason to unsay what somebody was shown — but a
-screen reads `metrics.<id>` now, so the definitions have to be run to fill the
-new tables.
+A store written by 0.10.x is a different matter and still opens: the table
+rename is applied on open, and its history comes with it.
 
 ## 0.10.2 — 2026-10-31
 

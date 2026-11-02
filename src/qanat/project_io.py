@@ -44,7 +44,7 @@ PARTS: dict[str, tuple[str, ...]] = {
 }
 
 #: Files a tool used to write and no longer does. Read on load so an old project
-#: still opens, and named here so `migrate` can say what it is moving.
+#: still opens, and named here so a refusal can say which file owns them now.
 #:
 #: `metrics.yaml` held a list of metric objects, each with its own `version:`
 #: integer. **A metric is a transform writing its own table now**, so the

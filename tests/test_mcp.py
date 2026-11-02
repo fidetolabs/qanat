@@ -259,7 +259,7 @@ def test_the_cli_is_five_verbs_and_nothing_else():
     for action in build_parser()._actions:
         if getattr(action, "choices", None):
             verbs |= set(action.choices)
-    assert verbs == {"init", "check", "migrate", "mcp", "schedule"}
+    assert verbs == {"init", "check", "mcp", "schedule"}
 
 
 def test_every_removed_command_names_what_replaced_it():

@@ -351,14 +351,44 @@ def split_project(root: Path) -> Path:
     **The tests write one blob on purpose.** A fixture is about the project, not
     about which file each key lives in, and spelling the split out in forty of
     them would make every one of them a worse description of what it is testing.
-    The migration is the one thing that knows the layout, so this uses it.
-    """
-    from qanat.migrate import apply_migration, plan_migration
+    `project_io` owns the layout, so this asks it which file each key belongs to
+    and moves only those, leaving the rest where the fixture wrote it.
 
-    m = plan_migration(root)
-    if m.needed:
-        apply_migration(m)
-        (root / "qanat.yaml.before-the-job-model").unlink(missing_ok=True)
+    **Through the round-tripper, not `safe_dump`.** A fixture whose point is that
+    a note in `qanat.yaml` survives cannot be set up by a splitter that strips
+    notes -- that failure would look like the engine losing them.
+    """
+    import yaml
+
+    from qanat.project_io import PARTS, _round_tripper, part_for
+
+    path = root / "qanat.yaml"
+    if not path.is_file():
+        return root
+
+    yml = _round_tripper()
+    if yml is not None:
+        with path.open() as fh:
+            whole = yml.load(fh) or {}
+    else:
+        whole = yaml.safe_load(path.read_text()) or {}
+
+    moved = {k: whole.pop(k) for k in list(whole) if part_for(k)}
+    if not moved:
+        return root
+
+    def _write(target: Path, data: object) -> None:
+        if yml is not None:
+            with target.open("w") as fh:
+                yml.dump(data, fh)
+        else:
+            target.write_text(yaml.safe_dump(data, sort_keys=False))
+
+    _write(path, whole)
+    for name in PARTS:
+        part = {k: v for k, v in moved.items() if part_for(k) == name}
+        if part:
+            _write(root / name, part)
     return root
 
 

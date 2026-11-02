@@ -154,7 +154,7 @@ def test_a_tool_written_key_left_in_the_architecture_file_is_refused(tmp_path: P
         load(tmp_path)
     assert "which a tool writes" in str(exc.value)
     assert "jobs.yaml" in str(exc.value)
-    assert "qanat migrate" in str(exc.value), "the refusal names what to run"
+    assert "Move them into" in str(exc.value), "the refusal says what to do"
 
 
 def test_a_part_file_holding_a_key_it_does_not_own_is_refused(tmp_path: Path):
