@@ -309,7 +309,13 @@ def _lineage(s: Session, args: dict) -> Any:
       "Every definition in the graph -- ingestion and transform -- in dependency order, "
       "each with the cadences pointing at it. `stage` keeps only the transforms writing "
       "into one stage, which is how you find what produces a given table: there is no "
-      "separate name for those, the stage is what identifies them.",
+      "separate name for those, the stage is what identifies them. "
+      "**Each transform also reports how far its output is filled against its inputs** "
+      "-- `filled_to`, `inputs_to` and `behind`. A stored table only knows the days its "
+      "last run covered, and a read past that quietly returns an older value, because "
+      "the newest row at or before the date asked is still the rule. So a metric a week "
+      "behind answers last week's number; `behind: true` is how you find that out "
+      "instead of being surprised by it.",
       {"properties": {
           "stage": {"type": "string",
                     "description": "keep only transforms writing into this stage, "
@@ -325,11 +331,39 @@ def _list_steps(s: Session, args: dict) -> Any:
         return [{"id": x.id, "cron": x.cron, "enabled": x.enabled}
                 for x in s.project.schedules_for(did)]
 
+    def last_date(ref: str) -> str | None:
+        span = s.store.time_range(ref, s.project.time_columns.get(ref))
+        return None if span is None else span[1][:10]
+
+    def freshness(x: Any) -> dict[str, Any]:
+        """How far this definition's output has been filled, against its inputs.
+
+        **A stored table only knows the days its last run covered**, and a read
+        past that quietly returns an older value: the newest row at or before
+        the date asked is still the rule, so a metric that is a week behind
+        answers last week's number without saying so. That was the one real
+        advantage the computed-on-the-call kind had, and this is the answer to
+        it -- saying so rather than computing.
+
+        Only tables with a clock can be compared. One without is not behind or
+        current; there is nothing to measure.
+        """
+        mine = [d for d in (last_date(w) for w in x.writes) if d]
+        theirs = [d for d in (last_date(r) for r in x.reads) if d]
+        out: dict[str, Any] = {
+            "filled_to": max(mine) if mine else None,
+            "inputs_to": max(theirs) if theirs else None,
+        }
+        if out["filled_to"] and out["inputs_to"]:
+            out["behind"] = out["filled_to"] < out["inputs_to"]
+        return out
+
     stage = str(args.get("stage") or "").strip()
     chosen = [x for x in order(s.project)
               if not stage or any(w.startswith(f"{stage}.") for w in x.writes)]
     rows = [{"id": x.id, "from": x.reads, "to": x.writes, "script": x.script,
-             "schedules": cadences(x.id), "options": x.options}
+             "schedules": cadences(x.id), "options": x.options,
+             **freshness(x)}
             for x in chosen]
     return {
         "ingestion": [] if stage else [
@@ -553,42 +587,59 @@ def _coverage(s: Session, args: dict) -> Any:
 
 
 @tool("list_metrics",
-      "Every metric this project defines: its name, every version of it, unit, formula, and "
-      "whether it was shipped with the product or written here. A metric is shared "
-      "arithmetic -- the same number for every caller -- and the threshold you compare it "
-      "against is yours and stays with you. `current` marks the newest version of each; the "
-      "older ones are listed because an answer you kept points at one.",
+      "Every metric this project holds: its name, the table its values live in, the "
+      "definition that fills it, what that definition reads, its unit and description, and "
+      "`version` -- the digest of the definition, which is what a value\'s lineage "
+      "resolves to. **One metric is one table**, and the metrics stage is the registry: "
+      "this is read off what the pipeline writes, so a metric cannot be listed here and "
+      "missing from the pipeline. A metric is shared arithmetic -- the same number for "
+      "every caller -- and the threshold you compare it against is yours and stays with "
+      "you. Pass `version` back to `screen` as a clause\'s `metric_version` to read an "
+      "answer as it stood.",
       {"type": "object", "properties": {}}, "data")
 def _list_metrics(s: Session, args: dict) -> Any:
     from qanat.metrics import listing
 
-    return listing(s.project)
+    return listing(s.project, s.store)
 
 
 # ---- metrics -----------------------------------------------------------------
 @tool("define_metric",
-      "Define a metric, or replace one at the same version. `sql` selects `subject` and "
-      "`value`, one row per subject, and `:as_of` in it is replaced with the date being "
-      "screened so a formula can filter its own history. The formula is run before it is "
-      "stored, so a syntax error or an unknown column comes back as the database's own "
-      "message rather than as a definition that fails on somebody else's screen. "
-      "**Bumping the version is yours to decide**: an answer somebody kept points at a "
-      "version, so version N+1 is written beside N and both still resolve. The threshold "
-      "you compare a metric against is not part of a definition -- it is yours, and it "
-      "travels with the screen call.",
+      "Define a metric, or replace the formula of one that exists. `sql` selects "
+      "`subject`, `date` and `value` -- **`date` is the day each value became true**, and "
+      "it is what makes a metric a series rather than an answer to one call. The formula "
+      "is run before it is stored, so a syntax error or an unknown column comes back as "
+      "the database's own message rather than as a definition that fails on somebody "
+      "else's screen, and it is run again straight after so the metric answers "
+      "immediately. **One metric is one table**: this writes a transform job filling "
+      "`<metrics stage>.<id>`, which means another metric can read it -- a rank reads the "
+      "metric it ranks. The table is keyed and never rewritten, so replacing a formula "
+      "appends its values beside the old ones and each row still names the execution that "
+      "wrote it: **there is no version to bump**, because the version is the definition's "
+      "digest and it moves when the formula moves. A formula containing `:as_of` is "
+      "refused -- that kind of metric stored nothing, so it had no lineage and could be "
+      "read as of a date before its inputs were public. The threshold you compare a "
+      "metric against is not part of a definition: it is yours, and it travels with the "
+      "screen call.",
       {"type": "object",
        "properties": {
-           "id": {"type": "string", "description": "lower case, e.g. pe"},
+           "id": {"type": "string",
+                  "description": "lower case, e.g. pe. It is also the table's name"},
            "sql": {"type": "string",
-                   "description": "the formula, selecting subject and value"},
-           "version": {"type": "integer",
-                       "description": "required once the id exists: the same version to "
-                                      "replace that formula, or one higher to write a new "
-                                      "one beside it"},
+                   "description": "the formula, selecting subject, date and value. Name "
+                                  "tables as SQL does -- normalized__facts, not "
+                                  "normalized.facts"},
            "unit": {"type": "string", "description": "e.g. ratio, USD, percent"},
            "description": {"type": "string",
                            "description": "what the number means. This is the part a "
                                           "reader cannot recover from the SQL"},
+           # Declared so that passing it gets the reason rather than silence. A
+           # caller written against the old surface reaches for this first.
+           "version": {"type": "integer",
+                       "description": "**refused.** A metric's version is the digest "
+                                      "of its definition, which moves when the formula "
+                                      "moves. An integer beside it was a second version "
+                                      "free to disagree, and it did"},
        },
        "required": ["id", "sql"]},
       writes=True,
@@ -596,11 +647,18 @@ def _list_metrics(s: Session, args: dict) -> Any:
 def _define_metric(s: Session, args: dict) -> Any:
     from qanat.metrics import MetricError, define
 
+    if args.get("version") is not None:
+        raise ToolError(
+            "there is no `version` to pass. A metric's version is the digest of its "
+            "definition, which moves when the formula moves -- an integer beside it was "
+            "a second version free to disagree, and measured, it did: halving a formula "
+            "appended 1,553 new values all still labelled version 1. Replacing a formula "
+            "is not destructive here, because the table is keyed and never rewritten"
+        )
     try:
         out = define(
             s.store, s.project, s.root,
             mid=str(_need(args, "id")), sql=str(_need(args, "sql")),
-            version=None if args.get("version") is None else int(args["version"]),
             unit=str(args.get("unit") or ""),
             description=str(args.get("description") or ""),
         )
@@ -611,16 +669,21 @@ def _define_metric(s: Session, args: dict) -> Any:
 
 
 @tool("remove_metric",
-      "Drop a metric, or one version of it. Removing the last version of an id is refused "
-      "unless you pass force: a filter naming this metric is one caller's own criteria and "
-      "is held by that caller, not here, so this server cannot check whether anything "
-      "still points at it -- and whoever holds the filter is the only one who can.",
+      "Drop a metric: its definition, the script behind it, and any cadence over it. "
+      "Refused unless you pass force: a filter naming this metric is one caller's own "
+      "criteria and is held by that caller, not here, so this server cannot check whether "
+      "anything still points at it -- and whoever holds the filter is the only one who "
+      "can. **The values already written are left where they are.** They name the "
+      "executions that wrote them and stay readable: removing a definition is not a "
+      "reason to unsay what somebody was already shown.",
       {"type": "object",
        "properties": {
            "id": {"type": "string"},
-           "version": {"type": "integer",
-                       "description": "one version. Omit for every version of the id"},
            "force": {"type": "boolean", "default": False},
+           "version": {"type": "integer",
+                       "description": "**refused.** One metric is one table and its "
+                                      "version is its definition's digest, so there are "
+                                      "no numbered versions sitting beside each other"},
        },
        "required": ["id"]},
       writes=True,
@@ -628,10 +691,15 @@ def _define_metric(s: Session, args: dict) -> Any:
 def _remove_metric(s: Session, args: dict) -> Any:
     from qanat.metrics import MetricError, remove
 
+    if args.get("version") is not None:
+        raise ToolError(
+            "there is no `version` to remove. One metric is one table and its version is "
+            "its definition's digest, so there are no numbered versions sitting beside "
+            "each other to drop one of"
+        )
     try:
         out = remove(
             s.project, s.root, mid=str(_need(args, "id")),
-            version=None if args.get("version") is None else int(args["version"]),
             force=bool(args.get("force")),
         )
     except MetricError as exc:

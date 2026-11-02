@@ -148,11 +148,18 @@ derived from it. `ingest_filings` spends the fetch on the ones you pick.
 `subscribe_filings` points the same selection forwards, and
 `list_subscriptions` tells you whether anything is actually running it.
 
-**Define what to measure.** `define_metric` writes a formula with a name and a
-version, after running it against your project so a broken one comes back as the
-database's own message rather than as a screen that fails later. Bumping the
-version is yours to decide: version N+1 is written beside N and an answer
-pointing at N still resolves.
+**Define what to measure.** `define_metric` writes a **transform job filling its
+own table** — one metric, one table, in the metrics stage. It runs the formula
+against your project first, so a broken one comes back as the database's own
+message rather than as a screen that fails later, and runs it again straight
+after so the metric answers immediately.
+
+**There is no version to bump.** The table is keyed and never rewritten, so a
+changed formula appends its values beside the old ones and each row still names
+the execution that wrote it — and the execution recorded the definition's
+digest, which *is* the version. An integer beside that digest was a second
+version free to disagree with it, and measured, it did: halving a formula
+appended 1,553 new values all still labelled version 1.
 
 Only the 10-K and the 10-Q are parsed into the corpus today. Every other form is
 found and labelled, never parsed, and `ingest_filings` says which pile a refused
@@ -182,9 +189,10 @@ time_columns:
 # corpus:, returns: and retention: live here too -- all architecture.
 ```
 
-**`jobs.yaml` and `metrics.yaml` are written by the authoring tools.** They are
-separate files because the two kinds do not mix: an authoring verb that
-re-dumped one file took every comment in it along with the change.
+**`jobs.yaml` is written by the authoring tools.** It is a separate file because
+the two kinds do not mix: an authoring verb that re-dumped one file took every
+comment in it along with the change. A metric is a transform definition, so it
+lands here too — there is no `metrics.yaml`.
 
 ```yaml
 # jobs.yaml -- written by subscribe_filings, define_ingestion, define_transform
@@ -257,7 +265,7 @@ second door onto the same question is a second place the behaviour can differ.
   "as_of": "2025-12-31"}}
 
 {"name": "screen", "arguments": {
-  "clauses": [{"metric": "pe", "metric_version": 3, "op": "lt", "value": 30},
+  "clauses": [{"metric": "pe", "metric_version": "95a0eaadebb0f3b0", "op": "lt", "value": 30},
               {"metric": "net_margin", "op": "gte", "value": 0.2}],
   "from": "2021-12-31", "to": "2025-12-31", "every": "1y"}}
 ```
@@ -268,10 +276,12 @@ dataset, and a server with no identity has nowhere to keep one person's
 preference. So there is no name to send: you hold the filter, which means you
 already know which rule you just ran.
 
-What comes back in `applied` is the half you could *not* have known: the
-definition version each clause actually read. A clause may also pin
-`metric_version`, and then somebody bumping a formula cannot change what your
-rule computes.
+What comes back in `applied` is the half you could *not* have known:
+`metric_version_used`, the definition digest each clause actually read. Hand it
+back as a clause's `metric_version` to read the same answer again, and then
+somebody editing a formula cannot change what your rule computed. It is a
+digest rather than a number you maintain, because a digest moves when the
+formula moves and a number has to be remembered.
 
 **Because you keep the record, a screen hands you enough to keep one.** Each row
 carries `values` — the numbers the verdict was reached on, for the companies that

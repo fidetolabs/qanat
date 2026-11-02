@@ -96,6 +96,9 @@ stages:
   - id: features
     kind: features
     description: operator outputs -- a feature transform may read another feature transform
+  - id: metrics
+    kind: metrics
+    description: one number per subject per date, screenable. The stage is the registry
 
 # ------------------------------------------------------- the ingestion jobs --
 # What to fetch, and the one table it lands in. No cadence here -- that is a
@@ -151,6 +154,19 @@ transform_job_definitions:
     options:
       top_n: 4
       basket: ./universes/demo8.csv
+
+  # A metric: one number per subject per date, in its own table in the metrics
+  # stage. `key:` is what makes it one -- an ordinary derived table is rewritten
+  # because it is a function of what is upstream, and a metric value is not: it
+  # is what somebody was shown.
+  - id: vol
+    from: [features.risk]
+    to:   [metrics.vol]
+    script: transforms/metrics/vol.sql
+    key:  [subject, date]
+    options:
+      unit: ratio
+      description: annualised realised volatility, as a screenable metric
 
 # ------------------------------------------------------------ the schedules --
 # One cron line each, over one definition. `daily_prices` carries two, which is
@@ -295,11 +311,26 @@ def run(ctx):
     return picked[["symbol", "weight", "score", "momentum", "vol_annual", "tone", "as_of"]]
 '''
 
+VOL_SQL = """\
+-- vol -- a metric reading a feature.
+--
+-- The feature is the operator's working table; the metric is the one number per
+-- subject per date that a clause can compare. Both are the operator's
+-- judgement, which is why they are not in `normalized` -- the difference is
+-- shape, and only the metric's shape is screenable.
+SELECT symbol             AS subject,
+       CAST(as_of AS DATE) AS date,
+       vol_annual         AS value
+FROM features__risk
+WHERE vol_annual IS NOT NULL
+"""
+
 FILES = {
     "qanat.yaml": QANAT_YAML,
     "universes/demo8.csv": SYMBOLS,
     "transforms/normalize.sql": NORMALIZE_SQL,
     "transforms/risk.sql": RISK_SQL,
+    "transforms/metrics/vol.sql": VOL_SQL,
     "transforms/tone.sql": TONE_SQL,
     "transforms/momentum.py": MOMENTUM_PY,
     "transforms/portfolio.py": PORTFOLIO_PY,
@@ -344,7 +375,7 @@ def edit_project(root: Path, old: str, new: str) -> Path:
     A test editing a definition should not have to know which file holds it --
     that is the thing the split moved, and the test is about the change.
     """
-    for name in ("qanat.yaml", "jobs.yaml", "metrics.yaml"):
+    for name in ("qanat.yaml", "jobs.yaml"):
         path = root / name
         if path.is_file() and old in (text := path.read_text()):
             path.write_text(text.replace(old, new))

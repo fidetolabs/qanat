@@ -23,13 +23,26 @@ store: ./data
 # ------------------------------------------------------------------ the stages --
 # Order here is order in the pipeline. The first one holds what arrived and
 # nobody edits it; the ones after hold what you worked out. The names are yours.
+# The line between them is **authorship**, not derivation -- the same line as
+# fact-versus-metric: a fact is what they said, a metric is what you chose.
 stages:
   - id: raw
     kind: raw
     description: landed exactly as it arrived, never edited
   - id: normalized
     kind: normalized
-    description: typed and deduplicated -- the tagged numbers and the text
+    description: unpacking what arrived, with no choice of your own
+  - id: features
+    kind: features
+    description: your judgement, but not one number per subject per date
+  # **The registry.** Every table in here is a metric, so nothing keeps a list:
+  # "what metrics exist" is what the definitions write. One metric is one
+  # table, because metrics derive from each other -- a rank reads the metric it
+  # ranks, and with one shared table that is a transform reading the table it
+  # writes, which `check` refuses and the run order cannot sequence.
+  - id: metrics
+    kind: metrics
+    description: your judgement, one number per subject per date -- screenable
 
 # ------------------------------------------------------------------- the clock --
 # A filing has two dates: the period it describes, and the day it became
@@ -38,23 +51,19 @@ stages:
 time_columns:
   raw.documents: published_at
   normalized.facts: as_of
+  # One clock per metric table, because one metric is one table.
+  metrics.net_margin: date
 
 # ------------------------------------------------------------------ the corpus --
 # Which tables hold the documents and the numbers pulled out of them. The
 # reading tools need to know where to look, and the platform does not name
 # layers -- so the project says. Without this they are simply not offered.
+#
+# **There is no `metrics:` entry.** A metric is not one table this names: one
+# metric is one table in the metrics stage, and the stage is the registry.
 corpus:
   documents: raw.documents
   facts: normalized.facts
-  # Where computed metric values land, when a metric is a series: one row per
-  # subject per date per metric per version. `define_metric` writes a transform
-  # into this table for any formula carrying a `date` of its own, and nothing
-  # writes it until one does.
-  #
-  # The starter formula below is not one -- it takes the date as a parameter and
-  # collapses to one row per company, which is a fact rescaled. It is computed
-  # when a screen asks, and `define_metric` says so when you write one.
-  metrics: normalized.metrics
 
 """
 
@@ -99,6 +108,33 @@ transform_job_definitions:
     options:
       reads: raw.documents
 
+  # ------------------------------------------------------------- the metric --
+  # **A metric is a transform job writing its own table.** The starter set is
+  # one formula, so the product's own verb works on the day you install -- and
+  # deliberately not a metric library. Call `define_metric` to write your own
+  # beside it; it writes a definition exactly like this one.
+  #
+  # `key:` is what makes it a metric rather than an ordinary derived table. An
+  # ordinary transform rewrites its output, which is right -- it is a function
+  # of what is upstream. A metric value is not: it is what somebody was shown,
+  # so a corrected input writes a new row beside the old one.
+  #
+  # There is no `version:`. The version is this definition's digest, recorded
+  # on the execution that ran, and `lineage` resolves a value to it. An integer
+  # beside it would be a second version free to disagree.
+  - id: net_margin
+    from: [normalized.facts]
+    to:   [metrics.net_margin]
+    script: transforms/metrics/net_margin.sql
+    key:  [subject, date]
+    options:
+      unit: ratio
+      description: >
+        net income over revenue, for the most recent full year each filer had
+        reported as of each filing date. Filers do not agree on a revenue tag --
+        NVIDIA uses Revenues, Apple uses the contract tag -- so both are
+        accepted and the contract one wins when a filer tags both.
+
 # --------------------------------------------------------------- the schedules --
 # A cadence, as a row. Each one points at one definition by id and holds nothing
 # else: what to fetch is the definition's. Several may point at the same
@@ -114,55 +150,58 @@ transform_job_definitions:
 
 """
 
-METRICS_YAML = """\
-# ----------------------------------------------------------------- the metrics --
-# A formula with a name and a version. Shared: `net income / revenue` is
-# arithmetic, so it is the same number for every caller. The threshold you
-# compare it against is the judgement, and that is yours -- it travels with the
-# screen call and is never stored here.
-#
-# `origin: shipped` marks this as the **starter set**: one formula, so the
-# product's own verb works on the day you install, and deliberately not a
-# metric library. Call `define_metric` to write your own beside it; yours is
-# labelled `defined` and does not join this set by being stored next to it.
-#
-# **The version is yours to bump.** An answer somebody kept points at a
-# version, so a changed formula is written as a new version beside the old one
-# and both still resolve.
-metrics:
-  - id: net_margin
-    origin: shipped
-    version: 1
-    unit: ratio
-    description: >
-      net income over revenue, for the most recent full year each filer has
-      reported as of the date being screened. Filers do not agree on a revenue
-      tag -- NVIDIA uses Revenues, Apple uses the contract tag -- so both are
-      accepted and the contract one wins when a filer tags both.
-    sql: |
-      WITH annual AS (
-        SELECT subject, concept, value, as_of, period_end
-        FROM normalized__facts
-        WHERE dims = '{}' AND NOT is_instant
-          AND date_diff('day', period_start, period_end) BETWEEN 350 AND 380
-          AND as_of <= :as_of
-      ), ni AS (
-        SELECT subject, value, row_number() OVER (PARTITION BY subject
-                 ORDER BY as_of DESC, period_end DESC) AS rn
-        FROM annual WHERE concept = 'us-gaap:NetIncomeLoss'
-      ), rev AS (
-        SELECT subject, value, row_number() OVER (PARTITION BY subject
-                 ORDER BY as_of DESC, period_end DESC,
-                 CASE concept
-                   WHEN 'us-gaap:RevenueFromContractWithCustomerExcludingAssessedTax' THEN 0
-                   ELSE 1 END) AS rn
-        FROM annual WHERE concept IN (
-          'us-gaap:RevenueFromContractWithCustomerExcludingAssessedTax',
-          'us-gaap:Revenues')
-      )
-      SELECT ni.subject AS subject, ni.value / NULLIF(rev.value, 0) AS value
-      FROM ni JOIN rev ON rev.subject = ni.subject AND rev.rn = 1
-      WHERE ni.rn = 1
+NET_MARGIN_SQL = """\
+-- net_margin -- the starter metric, as a series.
+--
+-- **One row per subject per filing date.** `date` is the day the value became
+-- true, which is what makes this a series rather than an answer to one call:
+-- `time_columns` filters it exactly as it filters the facts underneath.
+--
+-- It used to take the date as a parameter -- `as_of <= :as_of`, collapsing to
+-- one row per company -- and store nothing. That kind is gone. With nothing
+-- stored a screen had to run the formula, and a formula with no date to bind
+-- ran over every row, so a screen could return a figure that was not public
+-- yet. A stored row also names the execution that wrote it; a computed one has
+-- nothing to name.
+WITH annual AS (
+  SELECT subject, concept, value, as_of, period_end
+  FROM normalized__facts
+  WHERE dims = '{}' AND NOT is_instant
+    AND date_diff('day', period_start, period_end) BETWEEN 350 AND 380
+), ni AS (
+  SELECT subject, as_of, value,
+         row_number() OVER (PARTITION BY subject, as_of
+                            ORDER BY period_end DESC) AS rn
+  FROM annual WHERE concept = 'us-gaap:NetIncomeLoss'
+), rev AS (
+  -- Both revenue tags are accepted and the contract one wins, because a filer
+  -- tagging both means the same number twice.
+  SELECT subject, as_of, value,
+         row_number() OVER (PARTITION BY subject, as_of
+                            ORDER BY period_end DESC,
+                            CASE concept
+                              WHEN 'us-gaap:RevenueFromContractWithCustomerExcludingAssessedTax' THEN 0
+                              ELSE 1 END) AS rn
+  FROM annual WHERE concept IN (
+    'us-gaap:RevenueFromContractWithCustomerExcludingAssessedTax',
+    'us-gaap:Revenues')
+), reported AS (
+  SELECT ni.subject, ni.as_of, ni.value / NULLIF(rev.value, 0) AS value
+  FROM ni JOIN rev
+    ON rev.subject = ni.subject AND rev.as_of = ni.as_of AND rev.rn = 1
+  WHERE ni.rn = 1
+),
+-- Every day anything was filed. A 10-Q carries no annual figure, so the value
+-- holds flat from the last filing that reported one, which is what
+-- `as_of <= :as_of` used to produce one date at a time.
+filing_days AS (SELECT DISTINCT subject, as_of FROM normalized__facts)
+SELECT d.subject,
+       CAST(d.as_of AS DATE) AS date,
+       r.value               AS value
+FROM filing_days d
+ASOF JOIN reported r
+  ON d.subject = r.subject AND d.as_of >= r.as_of
+WHERE r.value IS NOT NULL
 """
 
 PARSE_FACTS_PY = '''\
@@ -233,7 +272,7 @@ read out of it.
 
     qanat.yaml      what you write and mean to keep -- stages, the clock, the corpus
     jobs.yaml       what to fetch, what to transform, and how often. Tool-written
-    metrics.yaml    the formulas, each with a version. Tool-written
+    transforms/      the scripts the jobs run, metrics included
 
 **Nothing rewrites `qanat.yaml`.** The other two are written by authoring tools,
 and a tool that re-dumps a file cannot keep the comments somebody put in it --
@@ -261,7 +300,7 @@ a metric is a query over the facts, not another stage.
 FILES = {
     "qanat.yaml": QANAT_YAML,
     "jobs.yaml": JOBS_YAML,
-    "metrics.yaml": METRICS_YAML,
+    "transforms/metrics/net_margin.sql": NET_MARGIN_SQL,
     "README.md": README,
     "transforms/parse_facts.py": PARSE_FACTS_PY,
 }

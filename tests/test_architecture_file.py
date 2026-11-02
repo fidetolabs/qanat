@@ -44,10 +44,21 @@ def test_what_stays_is_what_a_person_writes():
     }
 
 
-def test_definitions_schedules_and_metrics_are_all_tool_written():
+def test_definitions_and_schedules_are_tool_written():
     for key in ("ingestion_job_definitions", "transform_job_definitions",
-                "job_schedules", "metrics"):
+                "job_schedules"):
         assert part_for(key), key
+
+
+def test_a_metric_is_not_a_key_a_part_file_owns():
+    """It used to be `metrics:` in `metrics.yaml`, a list of formula objects each
+    with its own `version:` integer. **A metric is a transform writing its own
+    table now**, so the definitions in `jobs.yaml` are the whole record -- and
+    the metrics stage is the registry, so nothing is kept beside them."""
+    from qanat.project_io import RETIRED_PARTS
+
+    assert part_for("metrics") is None
+    assert "metrics.yaml" in RETIRED_PARTS
 
 
 def test_a_universe_is_a_file_and_not_a_key():
@@ -109,12 +120,16 @@ def test_defining_a_metric_leaves_the_architecture_file_byte_identical(tmp_path:
 
         run_all(store, project, root)
         metrics.define(store, project, root, mid="spread",
-                       sql="SELECT symbol AS subject, close AS value FROM normalized__prices")
+                       sql="SELECT symbol AS subject, date AS date, close AS value "
+                           "FROM normalized__prices")
     finally:
         store.close()
 
     assert (root / "qanat.yaml").read_text() == before
-    assert "spread" in (root / "metrics.yaml").read_text()
+    # It lands in `jobs.yaml` as a transform, because a metric is one -- there
+    # is no `metrics.yaml` for it to go in any more.
+    assert "spread" in (root / "jobs.yaml").read_text()
+    assert not (root / "metrics.yaml").exists()
 
 
 def test_subscribing_leaves_the_architecture_file_byte_identical(tmp_path: Path):
@@ -144,30 +159,27 @@ def test_a_tool_written_key_left_in_the_architecture_file_is_refused(tmp_path: P
 
 def test_a_part_file_holding_a_key_it_does_not_own_is_refused(tmp_path: Path):
     write_project(tmp_path, "demo")
-    (tmp_path / "metrics.yaml").write_text("job_schedules: []\n")
+    (tmp_path / "jobs.yaml").write_text("corpus: {}\n")
     with pytest.raises(ProjectError) as exc:
         load(tmp_path)
     assert "does not own" in str(exc.value)
 
 
 def test_a_part_file_that_is_not_there_is_not_an_error(tmp_path: Path):
-    """A project with no metrics has no `metrics.yaml`, and a save that empties
-    one removes it rather than leaving a file holding a bare key."""
+    """A fresh project has `jobs.yaml`; a project with nothing tool-written has
+    no part file at all, and loading it is not an error."""
     from qanat.scaffold import write_project as scaffold
 
     scaffold(tmp_path, "demo")
-    assert (tmp_path / "metrics.yaml").is_file()
-    (tmp_path / "metrics.yaml").unlink()
+    assert (tmp_path / "jobs.yaml").is_file()
+    (tmp_path / "jobs.yaml").unlink()
 
     project, root = load(tmp_path)
-    assert project.metrics == []
+    assert project.transform_job_definitions == []
+    assert project.metric_ids() == []
 
     save_project(project, root)
-    assert not (root / "metrics.yaml").exists(), "nothing to write, so no file"
-    assert (root / "jobs.yaml").is_file()
 
-
-# ---- a comment that moved says something false ------------------------------
 def test_a_block_between_two_keys_stays_with_the_key_it_introduces(tmp_path: Path):
     """**Found by using the `check` project.** One `define_metric` appended a
     generated transform to `jobs.yaml` and left the paragraph explaining

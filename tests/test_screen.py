@@ -13,15 +13,24 @@ import pandas as pd
 import pytest
 
 from qanat.dates import WindowError, window
-from qanat.models import Metric, Project, Returns, Stage
+from qanat.models import Project, Returns, Stage, TransformJobDefinition
 from qanat.screen import (
     Clause,
-        ScreenError,
+    ScreenError,
     forward_returns,
     parse_clauses,
     screen,
 )
 from qanat.store import Store
+
+#: A metric's values, as the table they now are. **A screen reads a table and
+#: only a table**: the formula is a transform's business, and a value that was
+#: never written has no execution to name and so no lineage at all.
+PE = pd.DataFrame({
+    "subject": ["A", "A", "A", "B", "B", "B"],
+    "date": pd.to_datetime(["2022-01-01", "2023-01-01", "2024-01-01"] * 2),
+    "value": [5.0, 8.0, 40.0, 50.0, 9.0, 3.0],
+})
 
 
 @pytest.fixture
@@ -33,17 +42,26 @@ def store(tmp_path: Path) -> Store:
         "close": [10.0, 20.0, 30.0, 100.0, 50.0, 25.0],
         "pe": [5.0, 8.0, 40.0, 50.0, 9.0, 3.0],
     }), mode="replace")
+    s.write("metrics.pe", PE.copy(), mode="replace", key=["subject", "date"])
     yield s
     s.close()
 
 
-def a_project(with_returns: bool = True) -> Project:
+def a_metric(mid: str, reads: str = "raw.prices") -> TransformJobDefinition:
+    """The definition behind one metric. **The stage is the registry**, so a
+    metric exists because something writes its table -- there is no list."""
+    return TransformJobDefinition(
+        id=mid, **{"from": [reads], "to": [f"metrics.{mid}"]},
+        script=f"transforms/metrics/{mid}.sql", key=["subject", "date"],
+    )
+
+
+def a_project(with_returns: bool = True, metrics: tuple[str, ...] = ("pe",)) -> Project:
     return Project(
-        project="t", stages=[Stage(id="raw", kind="raw")],
-        metrics=[Metric(id="pe", sql="SELECT subject, pe AS value FROM raw__prices "
-                                     "WHERE as_of <= :as_of "
-                                     "QUALIFY row_number() OVER (PARTITION BY subject "
-                                     "ORDER BY as_of DESC) = 1")],
+        project="t",
+        stages=[Stage(id="raw", kind="raw"), Stage(id="metrics", kind="metrics")],
+        transform_job_definitions=[a_metric(m) for m in metrics],
+        time_columns={f"metrics.{m}": "date" for m in metrics},
         returns=Returns(table="raw.prices") if with_returns else None,
     )
 
@@ -137,10 +155,12 @@ def test_the_screen_returns_who_passed(store):
 
 
 def test_every_clause_has_to_pass(store):
-    p = a_project()
-    p.metrics.append(Metric(id="px", sql="SELECT subject, close AS value FROM raw__prices "
-                                         "WHERE as_of <= :as_of QUALIFY row_number() OVER "
-                                         "(PARTITION BY subject ORDER BY as_of DESC) = 1"))
+    store.write("metrics.px", pd.DataFrame({
+        "subject": ["A", "A", "A", "B", "B", "B"],
+        "date": pd.to_datetime(["2022-01-01", "2023-01-01", "2024-01-01"] * 2),
+        "value": [10.0, 20.0, 30.0, 100.0, 50.0, 25.0],
+    }), mode="replace", key=["subject", "date"])
+    p = a_project(metrics=("pe", "px"))
     out = screen(store, p, parse_clauses([{"metric": "pe", "op": "<", "value": 10},
                                           {"metric": "px", "op": ">", "value": 30}]),
                  as_of="2023-06-01")
@@ -161,11 +181,23 @@ def test_an_unknown_metric_names_the_ones_there_are(store):
             [{"metric": "nope", "op": "<", "value": 1}]), as_of="2023-06-01")
 
 
-def test_a_metric_must_select_subject_and_value(store):
-    p = a_project()
-    p.metrics.append(Metric(id="bad", sql="SELECT 1 AS wrong"))
+def test_a_metric_table_must_hold_subject_and_value(store):
+    """A metric is read, not run, so the shape that has to hold is the table's."""
+    store.write("metrics.bad", pd.DataFrame({"wrong": [1]}), mode="replace")
     with pytest.raises(ScreenError, match="subject"):
-        screen(store, p, parse_clauses([{"metric": "bad", "op": "<", "value": 1}]),
+        screen(store, a_project(metrics=("pe", "bad")),
+               parse_clauses([{"metric": "bad", "op": "<", "value": 1}]),
+               as_of="2023-06-01")
+
+
+def test_a_metric_with_no_table_written_says_to_run_it(store):
+    """**There is no path that computes a metric on the call.** A value that was
+    never written has no execution to name, so it could not be traced -- and the
+    fallback that used to run the formula instead could read a figure from before
+    it was public."""
+    with pytest.raises(ScreenError, match="has not been written"):
+        screen(store, a_project(metrics=("pe", "unfilled")),
+               parse_clauses([{"metric": "unfilled", "op": "<", "value": 1}]),
                as_of="2023-06-01")
 
 
@@ -173,10 +205,10 @@ def test_a_metric_must_select_subject_and_value(store):
 def test_a_subject_missing_a_metric_is_not_a_fail(store):
     """A list is a claim. A screen that silently dropped half the market has
     said something false about who passed, so the count travels with it."""
-    store.write("raw.prices", pd.DataFrame({
-        "subject": ["A", "C"], "as_of": pd.to_datetime(["2023-01-01"] * 2),
-        "close": [10.0, 10.0], "pe": [5.0, None],
-    }), mode="replace")
+    store.write("metrics.pe", pd.DataFrame({
+        "subject": ["A", "C"], "date": pd.to_datetime(["2023-01-01"] * 2),
+        "value": [5.0, None],
+    }), mode="replace", key=["subject", "date"])
     out = screen(store, a_project(), parse_clauses(
         [{"metric": "pe", "op": "<", "value": 10}]), as_of="2023-06-01")
     c = out["counts"][0]
@@ -264,8 +296,11 @@ def test_the_same_screen_twice_is_the_same_answer(store):
 def test_clause_objects_can_be_passed_directly(store):
     out = screen(store, a_project(), [Clause(metric="pe", op="lt", value=10)],
                  as_of="2023-06-01")
+    # `metric_version_used` is the definition's digest, and this project's `pe`
+    # has never run -- so there is no digest and it reports none rather than a
+    # number nobody recorded.
     assert out["applied"] == [{"metric": "pe", "op": "lt", "value": 10.0,
-                               "metric_version_used": 1}]
+                               "metric_version_used": None}]
 
 
 def test_two_groups_of_clauses_and_one_flat_list_are_the_same_screen(store):
@@ -288,7 +323,9 @@ def test_coverage_reports_the_range_and_what_sets_it(store):
     have = coverage(store, a_project())
     assert have["from"] == "2022-01-01"
     assert have["to"] == "2024-01-01"
-    assert [t["ref"] for t in have["tables"]] == ["raw.prices"]
+    # The metric's own table is named too: a screen reads it, and the bound on
+    # what is answerable is set by what it holds.
+    assert [t["ref"] for t in have["tables"]] == ["raw.prices", "metrics.pe"]
     assert have["tables"][0]["written"] is True
     assert "nothing to read" in have["why"]
 
@@ -363,13 +400,10 @@ def test_a_screen_over_a_window_gives_each_company_its_own_forward_return(store)
 
 def test_a_date_with_nothing_evaluable_says_so_rather_than_being_omitted(store):
     """Three zeros read as "nobody passed". That is a different answer."""
-    project = a_project()
-    project.metrics = [Metric(
-        id="pe",
-        sql="SELECT subject, pe AS value FROM raw__prices WHERE as_of <= :as_of "
-            "AND as_of < DATE '2022-06-01' "
-            "QUALIFY row_number() OVER (PARTITION BY subject ORDER BY as_of DESC) = 1")]
-    out = screen(store, project, parse_clauses(
+    # Values that only exist before the window, so every date in it reads none.
+    store.write("metrics.pe", PE[PE.date < "2022-06-01"].copy(),
+                mode="replace", key=["subject", "date"])
+    out = screen(store, a_project(), parse_clauses(
         [{"metric": "pe", "op": "<", "value": 100}]),
         frm="2022-06-01", to="2023-06-01", every="1y")
 
@@ -381,18 +415,10 @@ def test_a_date_with_nothing_evaluable_says_so_rather_than_being_omitted(store):
 
 
 def test_counts_still_report_evaluated_and_dropped_per_date(store):
-    project = a_project()
-    project.metrics = [
-        Metric(id="pe", sql="SELECT subject, pe AS value FROM raw__prices "
-                            "WHERE as_of <= :as_of "
-                            "QUALIFY row_number() OVER (PARTITION BY subject "
-                            "ORDER BY as_of DESC) = 1"),
-        # Only A has one, so B can never be judged.
-        Metric(id="only_a", sql="SELECT subject, pe AS value FROM raw__prices "
-                                "WHERE subject = 'A' AND as_of <= :as_of "
-                                "QUALIFY row_number() OVER (PARTITION BY subject "
-                                "ORDER BY as_of DESC) = 1"),
-    ]
+    # Only A has a value, so B can never be judged.
+    store.write("metrics.only_a", PE[PE.subject == "A"].copy(),
+                mode="replace", key=["subject", "date"])
+    project = a_project(metrics=("pe", "only_a"))
     out = screen(store, project, parse_clauses([
         {"metric": "pe", "op": "<", "value": 100},
         {"metric": "only_a", "op": "<", "value": 100},
@@ -436,39 +462,61 @@ def test_a_screen_returns_the_values_behind_the_verdict(store):
     assert by_subject["B"]["failed_on"] == "pe lt 9"
 
 
-def test_the_values_are_keyed_so_two_versions_of_one_metric_stay_apart(store):
-    project = a_project()
-    project.metrics = [
-        Metric(id="pe", version=1,
-               sql="SELECT subject, pe AS value FROM raw__prices WHERE as_of <= :as_of "
-                   "QUALIFY row_number() OVER (PARTITION BY subject "
-                   "ORDER BY as_of DESC) = 1"),
-        Metric(id="pe", version=2,
-               sql="SELECT subject, pe * 10 AS value FROM raw__prices "
-                   "WHERE as_of <= :as_of QUALIFY row_number() OVER "
-                   "(PARTITION BY subject ORDER BY as_of DESC) = 1"),
-    ]
-    out = screen(store, project, parse_clauses([
-        {"metric": "pe", "metric_version": 1, "op": "lt", "value": 100},
-        {"metric": "pe", "metric_version": 2, "op": "lt", "value": 100},
+def test_two_versions_of_one_metric_stay_apart_in_the_values(store):
+    """**A version is a digest now, and two of them can be in one table.**
+
+    It used to be an integer on a definition and a column on a shared row, which
+    meant two formulas sat side by side in the file. A metric is one table and
+    never rewritten, so a changed formula appends its values beside the old ones
+    -- and each row names the execution that wrote it, which recorded the digest.
+    So "as of version X" is a filter on the execution rather than on a column
+    somebody maintained.
+    """
+    from qanat.store import EXEC_COL
+
+    # Two executions over one metric table: the second halves every value.
+    first = store.start_execution(store.open_job("pe", "transform", "2024-01-01"),
+                                  "pe", "transform", ["metrics.pe"], "digest_one")
+    store.write("metrics.pe", PE.copy(), mode="replace", key=["subject", "date"])
+    store.end_execution(first, "ok", len(PE))
+    second = store.start_execution(store.open_job("pe", "transform", "2024-01-02"),
+                                   "pe", "transform", ["metrics.pe"], "digest_two")
+    halved = PE.copy()
+    halved["value"] = halved["value"] / 2
+    store.write("metrics.pe", halved, mode="append", key=["subject", "date"])
+    store.end_execution(second, "ok", len(halved))
+
+    # `raw_ref`, not `readable`: the `now` view hides the engine columns from
+    # `SELECT *` on purpose, and this is asking about one of them.
+    stamped = store.query(
+        f'SELECT DISTINCT "{EXEC_COL}" AS e FROM {store.raw_ref("metrics.pe")}')
+    assert len(stamped) == 2, "both executions wrote, neither replaced the other"
+
+    out = screen(store, a_project(), parse_clauses([
+        {"metric": "pe", "metric_version": "digest_one", "op": "lt", "value": 1000},
+        {"metric": "pe", "metric_version": "digest_two", "op": "lt", "value": 1000},
     ]), as_of="2023-06-01")
     values = {r["subject"]: r["values"] for r in out["rows"]}
-    assert values["A"] == {"pe@1": 8.0, "pe@2": 80.0}
-    assert values["B"] == {"pe@1": 9.0, "pe@2": 90.0}
-    # And the record says both versions ran, which a mapping could not.
+    assert values["A"] == {"pe@digest_one": 8.0, "pe@digest_two": 4.0}
+    assert values["B"] == {"pe@digest_one": 9.0, "pe@digest_two": 4.5}
     assert out["inputs"]["metrics"] == [
-        {"metric": "pe", "version": 1}, {"metric": "pe", "version": 2}]
+        {"metric": "pe", "version": "digest_one"},
+        {"metric": "pe", "version": "digest_two"}]
+
+
+def test_a_version_pinned_as_a_number_is_refused_with_the_reason(store):
+    """An integer version was a second version free to disagree with the digest,
+    and measured, it did: halving a formula appended 1,553 values all still
+    labelled version 1."""
+    with pytest.raises(ScreenError, match="digest, not a number"):
+        parse_clauses([{"metric": "pe", "metric_version": 1, "op": "lt", "value": 1}])
 
 
 def test_a_subject_that_could_not_be_judged_says_so_in_its_values(store):
     """`None` rather than a missing key: the caller asked about this metric."""
-    project = a_project()
-    project.metrics = [Metric(
-        id="pe", sql="SELECT subject, pe AS value FROM raw__prices "
-                     "WHERE subject = 'A' AND as_of <= :as_of "
-                     "QUALIFY row_number() OVER (PARTITION BY subject "
-                     "ORDER BY as_of DESC) = 1")]
-    out = screen(store, project, parse_clauses(
+    store.write("metrics.pe", PE[PE.subject == "A"].copy(),
+                mode="replace", key=["subject", "date"])
+    out = screen(store, a_project(), parse_clauses(
         [{"metric": "pe", "op": "lt", "value": 100}]), as_of="2023-06-01")
     rows = {r["subject"]: r for r in out["rows"]}
     assert rows["A"]["values"] == {"pe": 8.0}
@@ -478,28 +526,22 @@ def test_a_subject_that_could_not_be_judged_says_so_in_its_values(store):
 
 def test_an_unpinned_clause_records_the_version_it_actually_read(store):
     """Otherwise a kept answer cannot say what computed it, and is not a record."""
-    project = a_project()
-    project.metrics = [
-        Metric(id="pe", version=1, sql="SELECT subject, 1.0 AS value FROM raw__prices "
-                                       "WHERE as_of <= :as_of GROUP BY subject"),
-        Metric(id="pe", version=4, sql="SELECT subject, 2.0 AS value FROM raw__prices "
-                                       "WHERE as_of <= :as_of GROUP BY subject"),
-    ]
-    out = screen(store, project, parse_clauses(
+    store.set_state("pe", "the_applied_digest", "{}")
+    out = screen(store, a_project(), parse_clauses(
         [{"metric": "pe", "op": "lt", "value": 100}]), as_of="2023-06-01")
     clause = out["applied"][0]
     assert "metric_version" not in clause, "the caller pinned nothing"
-    assert clause["metric_version_used"] == 4, "and this is what ran"
-    assert out["inputs"]["metrics"] == [{"metric": "pe", "version": 4}]
+    assert clause["metric_version_used"] == "the_applied_digest", "and this is what ran"
+    assert out["inputs"]["metrics"] == [{"metric": "pe", "version": "the_applied_digest"}]
 
 
 def test_a_pinned_clause_records_both_what_was_asked_and_what_ran(store):
     out = screen(store, a_project(), parse_clauses(
-        [{"metric": "pe", "metric_version": 1, "op": "lt", "value": 100}]),
+        [{"metric": "pe", "metric_version": "pinned", "op": "lt", "value": 100}]),
         as_of="2023-06-01")
     clause = out["applied"][0]
-    assert clause["metric_version"] == 1
-    assert clause["metric_version_used"] == 1
+    assert clause["metric_version"] == "pinned"
+    assert clause["metric_version_used"] == "pinned"
 
 
 def test_the_inputs_id_is_a_digest_of_them_and_not_a_random_handle(store):
@@ -522,14 +564,13 @@ def test_the_inputs_id_moves_when_the_definition_moves(store):
     before = screen(store, project, parse_clauses(
         [{"metric": "pe", "op": "lt", "value": 10}]), as_of="2023-06-01")
 
-    project.metrics = [*project.metrics, Metric(
-        id="pe", version=2, sql="SELECT subject, pe * 2 AS value FROM raw__prices "
-                                "WHERE as_of <= :as_of QUALIFY row_number() OVER "
-                                "(PARTITION BY subject ORDER BY as_of DESC) = 1")]
+    # The definition moved, so its digest moved -- and that is what the answer
+    # records, rather than a number somebody maintained alongside it.
+    store.set_state("pe", "the_second_digest", "{}")
     after = screen(store, project, parse_clauses(
         [{"metric": "pe", "op": "lt", "value": 10}]), as_of="2023-06-01")
     assert after["inputs"]["id"] != before["inputs"]["id"]
-    assert after["inputs"]["metrics"] == [{"metric": "pe", "version": 2}]
+    assert after["inputs"]["metrics"] == [{"metric": "pe", "version": "the_second_digest"}]
 
 
 def test_the_inputs_block_records_the_corpus_range_it_ran_over(store):
@@ -607,13 +648,9 @@ def test_a_universe_widens_the_answer_as_well_as_narrowing_it(filers):
     is no way to know who is missing -- and "nobody else qualified" is not the
     same answer as "I could not judge one of them".
     """
-    project = a_corpus_project()
-    project.metrics = [Metric(
-        id="pe", sql="SELECT subject, pe AS value FROM raw__prices "
-                     "WHERE subject = 'A' AND as_of <= :as_of "
-                     "QUALIFY row_number() OVER (PARTITION BY subject "
-                     "ORDER BY as_of DESC) = 1")]
-    out = screen(filers, project, parse_clauses(
+    filers.write("metrics.pe", PE[PE.subject == "A"].copy(),
+                 mode="replace", key=["subject", "date"])
+    out = screen(filers, a_corpus_project(), parse_clauses(
         [{"metric": "pe", "op": "lt", "value": 100}]),
         as_of="2023-06-01", universe=["AYE", "BEE"])
 

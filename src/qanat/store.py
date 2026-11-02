@@ -734,13 +734,23 @@ class Store:
                     status        VARCHAR,
                     rows_out      BIGINT,
                     targets       VARCHAR,
-                    error         VARCHAR
+                    error         VARCHAR,
+                    -- **The digest that actually ran**, stamped when the attempt
+                    -- opens. Not looked up later: the version table holds one row
+                    -- per definition and that row is whatever is applied *now*, so
+                    -- after any edit every older row would report the new version.
+                    definition_version VARCHAR
                 )""")
             # A store written before the job layer existed has executions with no
             # job above them and no attempt number. Added rather than backfilled:
             # nothing can honestly say which attempt an old row was.
             for col, kind in (("execution_id", "BIGINT"), ("job_id", "BIGINT"),
-                              ("definition_id", "VARCHAR"), ("attempt", "INTEGER")):
+                              ("definition_id", "VARCHAR"), ("attempt", "INTEGER"),
+                              # Null on an execution that ran before this was
+                              # recorded. Null is honest -- nothing can say which
+                              # digest an old attempt used -- so `provenance`
+                              # falls back to the lookup and says it did.
+                              ("definition_version", "VARCHAR")):
                 self.con.execute(
                     f"ALTER TABLE {where}{EXECUTIONS} ADD COLUMN IF NOT EXISTS {col} {kind}")
             self.con.execute(f"""
@@ -1240,10 +1250,11 @@ class Store:
         adds is only the one that actually differs, so a recompute that finds
         nothing new writes nothing.
 
-        Done in SQL rather than through a frame: the metrics table is the first
+        Done in SQL rather than through a frame: a metric table is the first
         one whose size depends on a date grid rather than on how many filings
         exist, and 5,000 tickers over 250 trading days over 20 metrics is about
-        25M rows a year.
+        25M rows a year -- measured at about 190 MB, whichever way they are
+        split.
         """
         name = phys(ref)
         execution, written = current_execution(), 0
@@ -1689,6 +1700,53 @@ class Store:
                 f"INSERT INTO {self._meta_home}{VERSIONS} VALUES (?, ?, ?, now()::TIMESTAMP)",
                 [definition_id, digest, spec])
 
+    def max_time_written_by(self, ref: str, execution_id: int,
+                            override: str | None = None) -> Any | None:
+        """The newest clock value among the rows **one execution** wrote.
+
+        `max_time` answers it of the whole table, which is the wrong question
+        for a lookahead check: a keyed table is never rewritten, so a table
+        filled by an ordinary run keeps those rows forever -- and every later
+        as-of run would then be accused of writing the dates the first one did.
+        Measured on the leak battery: a metric table filled normally failed
+        every subsequent screened run.
+        """
+        col = self.time_column(ref, override)
+        if col is None or not self.exists(ref):
+            return None
+        name = phys(ref)
+        if EXEC_COL not in self._engine_cols(name):
+            return None
+        with self._lock:
+            row = self._one(
+                f'SELECT max("{_ident(col)}") FROM {self._q(name)} '
+                f'WHERE CAST("{EXEC_COL}" AS BIGINT) = ?',
+                [int(execution_id)], con=self.rcon)
+        return None if row is None else row[0]
+
+    def raw_ref(self, ref: str) -> str:
+        """The table under the `now` view, **engine columns included**.
+
+        `readable` hands back the view, which hides `_qanat_execution` from
+        `SELECT *` on purpose -- a `.sql` transform naming a table bare would
+        otherwise inherit its input's stamp and get a second one of its own. A
+        reader that wants to *filter* on the execution has to see it, and
+        pinning a metric version is exactly that: the rows wanted are the ones a
+        particular execution wrote, including ones the view treats as
+        superseded.
+        """
+        return self._q(phys(ref))
+
+    def executions_ref(self) -> str:
+        """The executions table, qualified -- for a reader that needs to join it.
+
+        A screen pinning a version joins here rather than being handed the
+        digest per row: the digest lives on the attempt, not on the row, so one
+        execution's worth of rows all resolve through one entry.
+        """
+        self._meta()
+        return f"{self._meta_home}{EXECUTIONS}"
+
     def definition_version(self, definition_id: str) -> dict[str, Any] | None:
         """The applied digest for one definition, which is its version.
 
@@ -1839,7 +1897,7 @@ class Store:
         return job_id
 
     def start_execution(self, job_id: int, definition_id: str, kind: str,
-                        targets: list[str]) -> int:
+                        targets: list[str], definition_version: str | None = None) -> int:
         """One attempt at one job. `attempt` counts from 1, per job.
 
         **It also opens the attribution window**: every write from here until
@@ -1847,6 +1905,13 @@ class Store:
         because the runner has four exit paths and three of them are error paths
         -- a caller that has to remember is a caller that will forget on the one
         path nobody tests.
+
+        `definition_version` is the digest of the definition as it is about to
+        run, and it is **recorded on the attempt rather than resolved from it.**
+        The version table keeps one row per definition, holding what is applied
+        now, so a lookup answers "what would run today" -- which for a row
+        written before an edit is the wrong question and a confident wrong
+        answer. Recorded on failure too: what ran is what ran.
         """
         self._meta()
         execution_id = time.time_ns() // 1000
@@ -1857,8 +1922,9 @@ class Store:
                 [job_id], con=self.rcon) or 0) + 1
             self.con.execute(
                 f"INSERT INTO {self._meta_home}{EXECUTIONS} VALUES "
-                f"(?, ?, ?, ?, ?, now()::TIMESTAMP, NULL, 'running', 0, ?, NULL)",
-                [execution_id, job_id, definition_id, kind, attempt, ",".join(targets)],
+                f"(?, ?, ?, ?, ?, now()::TIMESTAMP, NULL, 'running', 0, ?, NULL, ?)",
+                [execution_id, job_id, definition_id, kind, attempt, ",".join(targets),
+                 definition_version],
             )
         return execution_id
 
@@ -1935,7 +2001,14 @@ class Store:
         for execution_id, n in [(e, n) for e, n in rows if e is not None][:int(limit)]:
             found = self.execution(int(execution_id)) or {}
             job = self.job(found["job_id"]) if found.get("job_id") is not None else None
-            version = self.definition_version(found.get("definition") or "")
+            # The digest this attempt recorded, which is the one that ran. Only
+            # an attempt from before the column existed falls back to the
+            # lookup, and it is labelled so nobody reads "today's" as "then's".
+            ran = found.get("definition_version")
+            if not ran:
+                ran = ((self.definition_version(found.get("definition") or "") or {})
+                       .get("version"))
+                ran = f"{ran} (current, not recorded)" if ran else None
             out.append({
                 "rows": int(n),
                 "execution": int(execution_id),
@@ -1945,7 +2018,7 @@ class Store:
                 "scheduled_for": (job or {}).get("scheduled_for"),
                 "schedule": (job or {}).get("schedule"),
                 "definition": found.get("definition"),
-                "definition_version": (version or {}).get("version"),
+                "definition_version": ran,
             })
         return {
             "table": ref,
@@ -1962,7 +2035,8 @@ class Store:
         self._meta()
         row = self._one(
             f"SELECT job_id, definition_id, kind, attempt, started_at, ended_at, status, "
-            f"rows_out, targets, error FROM {self._meta_home}{EXECUTIONS} "
+            f"rows_out, targets, error, definition_version "
+            f"FROM {self._meta_home}{EXECUTIONS} "
             f"WHERE execution_id = ?", [execution_id], con=self.rcon)
         if row is None:
             return None
@@ -1973,6 +2047,9 @@ class Store:
             "started_at": str(row[4]), "ended_at": None if row[5] is None else str(row[5]),
             "status": row[6], "rows": None if row[7] is None else int(row[7]),
             "targets": [x for x in str(row[8] or "").split(",") if x], "error": row[9],
+            # The digest that ran, or None on an attempt from before this was
+            # recorded. Never the current one dressed up as it.
+            "definition_version": row[10],
         }
 
     def bar_history(self, limit: int = 20) -> list[dict[str, Any]]:

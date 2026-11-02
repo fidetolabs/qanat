@@ -241,15 +241,22 @@ def test_the_scaffold_is_a_valid_project(tmp_path: Path):
     assert rep.ok, rep.errors
 
 
-def test_the_scaffold_stops_at_facts(tmp_path: Path):
-    """No weights stage and no pnl stage. A metric is a query over the facts, so
-    there is nothing for a further stage to hold."""
+def test_the_scaffold_stops_at_metrics(tmp_path: Path):
+    """No weights stage and no pnl stage. **A metric is the last thing a stage
+    holds** -- it is one number per subject per date, and what somebody does
+    with it is theirs.
+
+    The split between the four is authorship rather than derivation: `raw` is as
+    fetched, `normalized` is unpacking what the source gave you with no choice
+    of your own, `features` is your judgement in some other shape, and `metrics`
+    is your judgement as one number per subject per date.
+    """
     from qanat.scaffold import write_project as write_scaffold
 
     write_scaffold(tmp_path, "demo")
     project, _ = load(tmp_path)
     kinds = [s.kind for s in project.stages]
-    assert kinds == ["raw", "normalized"], kinds
+    assert kinds == ["raw", "normalized", "features", "metrics"], kinds
     assert not any(s.kind in ("weights", "pnl") for s in project.stages), (
         "the five fixed kinds are gone; a stage declares what is true of it"
     )
@@ -288,8 +295,16 @@ def test_the_bundled_example_is_a_valid_project():
     project, root = load(src)
     rep = validate(project, root)
     assert rep.ok, rep.errors
-    assert {s.id for s in project.stages} == {"raw", "normalized"}
+    assert {s.id for s in project.stages} == {"raw", "normalized", "metrics"}
     assert project.time_columns["raw.documents"] == "published_at"
+    # The two shipped formulas are transform jobs filling their own tables, and
+    # the stage they write into is what makes them metrics.
+    assert project.metrics_stage() == "metrics"
+    assert set(project.metric_ids()) == {"pe", "net_margin"}
+    for mid in project.metric_ids():
+        assert project.definition(mid).key == ["subject", "date"], \
+            "a metric value is never replaced"
+        assert (root / project.definition(mid).script).is_file()
 
 
 def test_every_bundled_example_passes_check():

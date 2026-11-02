@@ -429,3 +429,147 @@ def test_a_store_from_before_the_rename_keeps_its_history(tmp_path: Path, kind: 
         assert store.load_state() == {"land": {"digest": "abc123", "spec": "{}"}}
     finally:
         store.close()
+
+
+# ---- the metrics migration ----------------------------------------------------
+OLD_WITH_METRICS = """\
+project: legacy
+store: {store}
+stages:
+  - {{id: raw, kind: raw}}
+  - {{id: features, kind: features}}
+time_columns:
+  raw.facts: as_of
+corpus:
+  facts: raw.facts
+  metrics: features.metrics
+sources:
+  - id: land
+    to: [raw.facts]
+    connector: csv
+    options: {{path: ./seed/facts.csv}}
+"""
+
+OLD_METRICS_YAML = """\
+metrics:
+  - id: eps_series
+    version: 1
+    unit: USD
+    sql: SELECT subject, as_of AS date, eps AS value FROM raw__facts
+  - id: eps_series
+    version: 2
+    unit: USD
+    sql: SELECT subject, as_of AS date, eps * 1.0 AS value FROM raw__facts
+  - id: eps_max
+    version: 1
+    sql: SELECT subject, max(eps) AS value FROM raw__facts WHERE as_of <= :as_of GROUP BY 1
+"""
+
+
+def _old_project(tmp_path):
+    from conftest import STORE_KIND
+
+    store_line = "./data" if STORE_KIND == "parquet" else "./data/qanat.duckdb"
+    (tmp_path / "seed").mkdir(parents=True, exist_ok=True)
+    (tmp_path / "data").mkdir(parents=True, exist_ok=True)
+    (tmp_path / "qanat.yaml").write_text(OLD_WITH_METRICS.format(store=store_line))
+    (tmp_path / "metrics.yaml").write_text(OLD_METRICS_YAML)
+    (tmp_path / "seed" / "facts.csv").write_text(
+        "subject,eps,as_of\nAAPL,6.0,2024-01-01\nMSFT,10.0,2024-01-01\n")
+    return tmp_path
+
+
+def test_a_metric_list_migrates_into_transforms_writing_their_own_tables(tmp_path):
+    """**The list is read out of `metrics.yaml`, which this used to never open.**
+    A project already split holds its metrics there, so reading only the
+    architecture file migrated nothing -- the one file with the metrics in it."""
+    from qanat.migrate import apply_migration, plan_migration
+    from qanat.project import load, validate
+    from qanat.runner import run_all
+    from qanat.store import Store
+
+    root = _old_project(tmp_path)
+    m = plan_migration(root)
+    assert m.needed
+    apply_migration(m)
+
+    project, r = load(root)
+    assert project.metrics_stage() == "metrics", \
+        "a stage declaring kind: metrics, which is the registry"
+    assert project.metric_ids() == ["eps_series"]
+    assert (r / "transforms" / "metrics" / "eps_series.sql").is_file()
+
+    definition = project.definition("eps_series")
+    assert definition.writes == ["metrics.eps_series"]
+    assert definition.reads == ["raw.facts"], "read off the formula"
+    assert definition.key == ["subject", "date"], "a metric value is never replaced"
+    assert definition.options["unit"] == "USD", "unit moved onto the definition"
+    assert validate(project, r).ok, validate(project, r).errors
+
+    store = Store(project.store_url(r))
+    try:
+        assert all(x.ok for x in run_all(store, project, r))
+        from qanat.screen import metric_values
+
+        got = metric_values(store, project, "eps_series", "2024-06-01")
+        assert dict(zip(got.subject, got.value)) == {"AAPL": 6.0, "MSFT": 10.0}
+    finally:
+        store.close()
+
+
+def test_the_metrics_stage_is_not_the_stage_the_old_corpus_ref_named(tmp_path):
+    """`features.metrics` was a *table* inside a features stage. Reusing the
+    stage part of it landed every metric in `features`, where nothing recognised
+    it -- measured, the migrated project loaded, checked, ran, and reported no
+    metrics at all."""
+    from qanat.migrate import apply_migration, plan_migration
+    from qanat.project import load
+
+    root = _old_project(tmp_path)
+    apply_migration(plan_migration(root))
+    project, _ = load(root)
+    assert [s.id for s in project.stages] == ["raw", "features", "metrics"]
+    assert project.definition("eps_series").writes == ["metrics.eps_series"]
+
+
+def test_a_formula_taking_the_date_as_a_parameter_is_reported_not_guessed(tmp_path):
+    """Deciding which column carries the date each value became true is a
+    judgement about what the formula means. Guessing it would store numbers under
+    dates they do not mean, so it is named and left in the backup."""
+    from qanat.migrate import apply_migration, plan_migration
+    from qanat.project import load
+
+    root = _old_project(tmp_path)
+    m = plan_migration(root)
+    assert any("eps_max" in n and "NOT migrated" in n for n in m.notes), m.notes
+    apply_migration(m)
+
+    project, _ = load(root)
+    assert "eps_max" not in project.metric_ids()
+    kept = (root / "metrics.yaml.before-the-job-model").read_text()
+    assert "eps_max" in kept, "the formula survives where it can be read"
+    assert not (root / "metrics.yaml").exists()
+
+
+def test_two_versions_of_one_formula_become_one_definition_and_say_so(tmp_path):
+    """The integer version is gone -- a metric's version is its definition's
+    digest -- so two entries at one id would be two definitions writing one table
+    under one name."""
+    from qanat.migrate import plan_migration
+
+    root = _old_project(tmp_path)
+    m = plan_migration(root)
+    assert any("versions 1, 2" in n and "from version 2" in n for n in m.notes), m.notes
+
+
+def test_corpus_metrics_is_dropped_because_one_ref_cannot_name_them(tmp_path):
+    from qanat.migrate import apply_migration, plan_migration
+    from qanat.project import load
+
+    root = _old_project(tmp_path)
+    m = plan_migration(root)
+    assert any("corpus.metrics" in n for n in m.notes)
+    apply_migration(m)
+    project, _ = load(root)
+    assert project.corpus is not None
+    assert not hasattr(project.corpus, "metrics")

@@ -67,6 +67,9 @@ def project_yaml(name: str, *, extra_steps: str = "",
         "stages:",
         "  - {id: raw, kind: raw}",
         "  - {id: normalized, kind: normalized}",
+        # The registry. Every table in here is a metric, so `px` below exists
+        # because something writes `metrics.px` -- not because a list says so.
+        "  - {id: metrics, kind: metrics}",
         "ingestion_job_definitions:",
         "  - {id: bars, to: [raw.bars], connector: csv, key: [symbol, date],",
         "     options: {path: ./seed/bars.csv}}",
@@ -78,6 +81,15 @@ def project_yaml(name: str, *, extra_steps: str = "",
         "    to: [normalized.probe]",
         f"    script: {step_script}",
         "    options: {reads: normalized.prices}",
+        # **A metric is a transform filling its own table.** It used to be a
+        # `metrics:` entry with a `version:` and `:as_of` in its SQL, which
+        # stored nothing -- so a screen had to run the formula, and a formula
+        # with no date to bind ran over every row.
+        "  - id: px",
+        "    from: [normalized.prices]",
+        "    to: [metrics.px]",
+        "    script: transforms/metrics/px.sql",
+        "    key: [subject, date]",
     ]
     if extra_steps:
         lines += extra_steps.rstrip("\n").split("\n")
@@ -85,20 +97,27 @@ def project_yaml(name: str, *, extra_steps: str = "",
         "time_columns:",
         "  raw.bars: date",
         "  normalized.prices: date",
+        "  metrics.px: date",
         "returns:",
         "  table: normalized.prices",
         "  subject_column: symbol",
         "  date_column: date",
         "  price_column: close",
-        "metrics:",
-        "  - id: px",
-        "    version: 1",
-        "    sql: |",
-        "      SELECT symbol AS subject, close AS value FROM normalized__prices",
-        "      WHERE date <= :as_of",
-        "      QUALIFY row_number() OVER (PARTITION BY symbol ORDER BY date DESC) = 1",
     ]
     return "\n".join(lines) + "\n"
+
+
+#: The one metric every battery screens on: the close, as a series.
+PX = """\
+-- px -- the close, as one number per symbol per day.
+--
+-- `date` is the day the value became true, so a screen reads the newest row at
+-- or before the date it asks about. One shape, both calendars.
+SELECT symbol AS subject,
+       CAST(date AS DATE) AS date,
+       close AS value
+FROM normalized__prices
+"""
 
 
 def build(where: Path, name: str, bars: pd.DataFrame, step_src: str,
@@ -118,6 +137,8 @@ def build(where: Path, name: str, bars: pd.DataFrame, step_src: str,
     syms = symbols if symbols is not None else sorted(bars["symbol"].unique())
     pd.DataFrame({"symbol": syms}).to_csv(root / "universes/u.csv", index=False)
     (root / "transforms/normalize.sql").write_text(NORMALIZE)
+    (root / "transforms/metrics").mkdir(parents=True, exist_ok=True)
+    (root / "transforms/metrics/px.sql").write_text(PX)
     (root / "transforms/sorter.py").write_text(step_src)
     for fname, body in (files or {}).items():
         (root / "transforms" / fname).write_text(body)

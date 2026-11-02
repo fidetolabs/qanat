@@ -50,9 +50,6 @@ from pydantic import (
 #: names. This was an enum of five until the five described one workflow.
 StageKind = str
 Connector = Literal["rest", "sql", "csv", "sec", "yfinance"]
-#: Where a metric definition came from. Shipped with the product, or written
-#: here by whoever runs this Qanat.
-MetricOrigin = Literal["shipped", "defined"]
 #: How a job lands its rows. `replace` is still how a derived table is rebuilt --
 #: it is a function of what is upstream of it, so rewriting it loses nothing. A
 #: An ingestion job is the other case: its rows are the thing nothing else can
@@ -307,6 +304,13 @@ Definition = IngestionJobDefinition | TransformJobDefinition
 class Corpus(Base):
     """Which tables hold documents, their text and their tagged numbers.
 
+    **There is no `metrics` entry, because a metric is not a table this names.**
+    One metric is one table in the metrics stage, and the stage is the registry:
+    "what metrics exist" is "every table in it". A single ref here could only
+    name a shared table, and a shared one makes a metric computed from another
+    metric impossible -- `check` refuses a transform that reads and writes one
+    table, and the run order resolves per table, so a chain cannot be sequenced.
+
     The reading tools need to know where to look, and the platform does not
     name layers, so the project says. Same shape as `returns:`: a default so a
     caller does not repeat it, and nothing hard-coded in the engine.
@@ -318,49 +322,6 @@ class Corpus(Base):
     documents: str = ""
     spans: str = ""
     facts: str = ""
-    #: Where computed metric values land. **One row per subject per date per
-    #: metric per version**, which is what makes a metric a time series rather
-    #: than an answer to one call: `PER on 2024-05-03` is
-    #: `price(2024-05-03) / EPS(latest filing as of 2024-05-03)`, and the date is
-    #: the metric's own. Unset, a metric is computed when it is asked for and
-    #: nothing is stored.
-    metrics: str = ""
-
-
-class Metric(Base):
-    """A formula with a name and a version. Shared, and not an opinion.
-
-    `PER = price / diluted EPS` is arithmetic. There is no judgement in it, so
-    it is computed once and the answer is the same for everybody. The judgement
-    is the threshold somebody puts next to it, and that belongs to whoever set
-    it.
-
-    **The version is load-bearing and it is yours to bump.** A saved answer
-    points at a definition version, so editing a formula in place silently
-    changes what an old answer meant. Bump `version` instead: the new one is
-    written alongside the old and both still resolve.
-    """
-
-    id: str = Field(pattern=_NAME)
-    #: The formula, as SQL over the tables this project holds. One row out per
-    #: subject, with a `value` column. `:as_of` is replaced with the date being
-    #: screened, so a definition filters its own history.
-    sql: str
-    version: int = 1
-    unit: str = ""
-    description: str = ""
-    #: Where this definition came from. `shipped` is the starter set that comes
-    #: with the product; `defined` is one somebody wrote here. A caller's own
-    #: definition does not join the shipped set by being stored next to it, and
-    #: a reader asking which it has is asking a real question.
-    origin: MetricOrigin = "defined"
-
-    @field_validator("version")
-    @classmethod
-    def _positive(cls, v: int) -> int:
-        if v < 1:
-            raise ValueError(f"version is {v}: versions start at 1 and only go up")
-        return v
 
 
 class Returns(Base):
@@ -394,7 +355,6 @@ class Project(Base):
     #: Cadence, as rows. Several may point at one definition; a definition with
     #: none is ordinary and runs when asked.
     job_schedules: list[JobSchedule] = Field(default_factory=list)
-    metrics: list[Metric] = Field(default_factory=list)
     retention: dict[str, str] = Field(default_factory=dict)
     time_columns: dict[str, str] = Field(default_factory=dict)
     # How long any job gets, unless it says otherwise. A job with no limit holds a
@@ -417,28 +377,47 @@ class Project(Base):
                 return i
         return -1
 
-    def metric(self, mid: str, version: int | None = None) -> Metric | None:
-        """One definition. The newest version unless a version is named.
+    # ---- metrics --------------------------------------------------------------
+    #
+    # **A metric is a table in the metrics stage, and the stage is the registry.**
+    # There is no list of metric objects and no `metrics.yaml`: "what metrics
+    # exist" is answered by looking at what the definitions write, so a metric
+    # cannot be declared in one place and missing from another.
+    #
+    # One table each rather than one shared table, because metrics derive from
+    # each other. A rank reads the metric it ranks, and with one shared table
+    # that is a transform reading the table it writes -- which `check` refuses,
+    # and which the run order cannot sequence anyway, since it resolves a
+    # dependency per table and a shared table counts as produced the moment any
+    # metric writes it.
+    def metrics_stage(self) -> str:
+        """The stage holding metrics, or "" if this project declares none.
 
-        **Every version stays resolvable, and that is the point of the field.**
-        An answer somebody kept points at a definition version, so a formula
-        bumped to N+1 must not change what version N meant. Asking without a
-        version gets the current one, which is what a fresh screen wants.
+        Found by `kind`, so the stage declares itself and nothing has to be kept
+        aligned with it. `id` is matched as a fallback for a project that named
+        the stage before kinds were free text.
         """
-        these = [x for x in self.metrics if x.id == mid]
-        if not these:
-            return None
-        if version is not None:
-            return next((x for x in these if x.version == version), None)
-        return max(these, key=lambda x: x.version)
+        for x in self.stages:
+            if x.kind == "metrics":
+                return x.id
+        return "metrics" if self.stage("metrics") is not None else ""
 
-    def metric_versions(self, mid: str) -> list[int]:
-        """Every version of one definition, oldest first."""
-        return sorted(x.version for x in self.metrics if x.id == mid)
+    def metric_ref(self, mid: str) -> str:
+        """Where one metric's values live: `<metrics stage>.<id>`.
+
+        A ref whether or not anything writes it -- `metric_ids` is what says
+        which exist. "" when the project has no metrics stage at all.
+        """
+        stage = self.metrics_stage()
+        return f"{stage}.{mid}" if stage else ""
 
     def metric_ids(self) -> list[str]:
-        """Each definition once, in the order the file declares them."""
-        return list(dict.fromkeys(x.id for x in self.metrics))
+        """Every metric this project has, in the order its definitions write them."""
+        stage = self.metrics_stage()
+        if not stage:
+            return []
+        return [ref.split(".", 1)[1] for ref in self.tables()
+                if ref.split(".", 1)[0] == stage]
 
     # ---- definitions ---------------------------------------------------------
     @property

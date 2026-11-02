@@ -7,11 +7,11 @@ is the count `lineage` and `list_tables` report over MCP, not a second opinion.
 **The table is the node and the transform is the edge**, and the only thing a node's
 colour says is which stage it belongs to.
 
-Columns are layers, not stages. A features stage may chain -- one transform
-reading `features.a` and writing `features.b` -- and drawn a column per stage
-that edge would have to leave the column and come back into it. So a stage owns
-as many columns as its longest chain, and the rule across the top says which
-columns those are.
+Columns are layers, not stages. Any stage but `raw` may chain -- one transform
+reading `metrics.pe` and writing `metrics.pe_rank` -- and drawn a column per
+stage that edge would have to leave the column and come back into it. So a stage
+owns as many columns as its longest chain, and the rule across the top says
+which columns those are.
 """
 
 from __future__ import annotations

@@ -841,7 +841,14 @@ def ingest(
         # neither, which is exactly why its rows were the ones nothing could
         # claim -- the documents table held rows no execution had written.
         job_id = store.open_job(src.id, "ingestion", _now(), None)
-        execution_id = store.start_execution(job_id, src.id, "ingestion", [ref])
+        # The digest that ran, recorded on the attempt. A hand-triggered ingest
+        # gets it for the same reason a scheduled one does: the version table
+        # holds only what is applied now, so a lookup later would answer about
+        # today rather than about this pass.
+        from qanat.plan import definition_spec, digest
+
+        execution_id = store.start_execution(
+            job_id, src.id, "ingestion", [ref], digest(definition_spec(src, root)))
         try:
             landed = store.write(ref, df, mode="append", key=["id"])
         except Exception as exc:

@@ -140,22 +140,114 @@ the path everybody tests and ruinously on one nobody does. The round-tripper
 stays but was never the answer: a key a tool *removed* has nowhere left to keep
 the note that sat above it.
 
-#### A metric is a transform definition
+#### A metric is a transform definition writing its own table
 
-Metric values are materialised into a metrics table by a transform `define_metric`
-writes, keyed on `(subject, date, metric, version)` so a corrected price adds a
-row rather than replacing the value somebody was shown. A screen resolves a
-clause against the stored value, taking the newest date at or before the one
-asked about.
+`define_metric` writes a `transform_job_definition` filling `metrics.<id>`, and
+runs it straight away so the metric answers. The table is keyed on
+`(subject, date)`, so a corrected input adds a row rather than replacing the
+value somebody was shown. A screen resolves a clause against the stored value,
+taking the newest date at or before the one asked about — one rule, whether the
+metric lands on filing dates or on trading days.
 
-**A real metric has a date of its own.** A formula that takes the date as a
-*parameter* is a fact rescaled, not a series, and is not materialised: storing a
-value under a date it does not mean would be worse than computing it on the call.
-`define_metric` says which kind it stored.
+**One table per metric, because metrics derive from each other.** A rank reads
+the metric it ranks. With one shared `metrics` table that is a transform reading
+the table it writes: `check` refuses it, and the run order resolves a dependency
+per *table*, so a shared table counts as produced the moment any metric writes
+it and a chain cannot be sequenced at all. Measured — declared deepest-first, a
+three-deep chain scheduled the dependent at step 6 and its input at step 7, and
+the dependent silently read nothing.
+
+Size does not decide it. At 25M values (5,000 companies × 250 days × 20 metrics)
+one long table is 190 MB, twenty separate ones are 190 MB, and one wide table is
+188 MB; a five-metric screen is 5.5 ms against 7.1 ms. What decides it is that
+the `from:`/`to:` edge is the **only** record of what a value was computed from —
+there is no row-level input lineage — so a shared table makes every derived
+metric report "I read all metrics", and makes that table reach itself.
+
+**The metrics stage is the registry.** A stage declaring `kind: metrics` holds
+them, and "what metrics exist" is "every table in it". So `metrics.yaml`, the
+`Metric` model, `corpus.metrics` and `list_metrics`' own list are all gone —
+`list_metrics` reads the pipeline, which means it cannot disagree with it.
+
+**A metric carries no `version` column, and the version is still kept.** It is
+the definition's digest, recorded on the execution that ran. A literal in
+generated SQL could not be relied on to move when the formula did, and measured,
+it did not: halving a formula and re-running appended 1,553 new values **all
+still under `version: 1`**, leaving 1,553 keys holding two different numbers
+under one version. The digest moved correctly; nothing connected them. A screen
+reports `metric_version_used` — hand it back as a clause's `metric_version` to
+read the same answer again.
+
+**A formula naming `:as_of` is refused.** That kind took the date as a parameter
+and stored nothing, and it could not be read safely: `metric_values` fell back
+to running the formula when the table returned nothing, and a dated series has
+no `:as_of` to bind — so the fallback ran over *every* row and the screen took
+whichever came first. Measured on the `check` project: a screen at 2024-06-15
+returned 0.239713, a figure that was not public for five more months. The
+fallback is gone and a subject with no row at or before the date is simply not
+evaluated.
+
+The deeper reason is provenance. A value computed on the call leaves no row, so
+there is nothing to stamp with the execution that made it — a metric that leaves
+no row has no lineage at all. The look-ahead was the symptom.
+
+The two shipped formulas are rewritten as filing-dated series. **Verified on the
+40-filing example: 566 values over 39 filing dates, nothing missing, largest
+difference 0.000000000000.** This is a shape change, not a numbers change.
 
 `transform_job_definition` gained a `key:`. Without one a transform rewrites its
 table, which is right — the output is a function of what is upstream. With one it
 appends and never replaces.
+
+#### Four stages, split by authorship rather than by derivation
+
+`init` scaffolds `raw`, `normalized`, `features` and `metrics`. The line between
+them is the same line as fact-versus-metric, applied to tables: *a fact is what
+they said, a metric is what you chose.*
+
+| Stage | The test |
+| --- | --- |
+| `raw` | as fetched, never edited |
+| `normalized` | unpacking what the source gave you, with **no choice of your own** |
+| `features` | **your judgement**, but not one number per subject per date |
+| `metrics` | **your judgement**, one number per subject per date — screenable |
+
+So a SIC code extracted from submission metadata and split on the standard's own
+digit boundaries is `normalized` — no choice of ours is in it. A hedging-language
+score per document section is `features`: the word list is ours, it is not one
+number per subject per date, and two metrics read it. A peer-group rank is
+`metrics`.
+
+**`check` no longer requires `kind: features` to chain inside a stage.** The rule
+made a stage honestly declared `kind: metrics` refuse a metric computed from
+another metric, so projects declared `id: metrics, kind: features` as a
+workaround. Its real purpose is keeping `raw` unedited, which the rule above it
+already does: any non-raw stage may chain.
+
+#### The execution records which version ran, and the lookahead guard asks it
+
+`*_job_execution` gained `definition_version`, stamped when the attempt opens.
+`lineage` reads it from there instead of looking the digest up, **because the
+lookup answered the wrong question**: the version table holds one row per
+definition, holding what is applied *now*, so after any edit every older row
+reported the new version — a confident wrong answer. An attempt from before the
+column exists is labelled `(current, not recorded)` rather than passed off as
+the one that ran.
+
+That column also fixes the lookahead guard, which asked `max_time` of the whole
+table. A keyed table is never rewritten, so one filled by an ordinary run keeps
+those rows forever — and every later as-of run was then accused of having
+written them. Measured on the leak battery: a metric table filled normally
+failed every screened run after it. It asks about the rows this execution wrote.
+
+#### `list_pipeline` says how far each table is filled
+
+Each transform reports `filled_to`, `inputs_to` and `behind`. A stored table only
+knows the days its last run covered, and a read past that quietly returns an
+older value — the newest row at or before the date asked is still the rule, so a
+metric a week behind answers last week's number. That was the one real advantage
+the computed-on-the-call kind had, and this is the answer to it: saying so rather
+than computing.
 
 #### The surface did not follow the model
 
@@ -283,6 +375,26 @@ turns `mode: replace` into `mode: append` and says why, renames `steps/` to
 above a key that stays survives. One above a key that moved is in the backup —
 the round-tripper cannot carry a note from a key that is no longer there, and
 pretending otherwise would be worse than saying so.
+
+**It also migrates the metrics**, and reads `metrics.yaml` to do it — a project
+already split holds them in the one file the old migration never opened. Each
+formula becomes a transform writing `metrics.<id>`, with a generated script and
+`unit`/`description` moved onto `options:`; a `metrics` stage is added, or an
+existing stage named for metrics has its `kind` corrected rather than being given
+a twin. `corpus.metrics` is dropped, because one ref cannot name them.
+
+Two things it reports instead of guessing. **A formula naming `:as_of` is not
+converted** — deciding which column carries the date each value became true is a
+judgement about what the formula means, and guessing it would store numbers under
+dates they do not mean. **Only the newest version of each id is carried**, since
+the integer version is gone and two entries at one id would be two definitions
+writing one table under one name. Both are named in the printed plan, and the old
+file is kept as `metrics.yaml.before-the-job-model`.
+
+The rows already written stay where they are. They name the executions that wrote
+them, and a migration is not a reason to unsay what somebody was shown — but a
+screen reads `metrics.<id>` now, so the definitions have to be run to fill the
+new tables.
 
 ## 0.10.2 — 2026-10-31
 

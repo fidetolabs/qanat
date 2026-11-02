@@ -73,11 +73,12 @@ much of each to hold, and that decision is yours.
 
 ## Two metrics, and why they are a warning
 
-`pe` and `net_margin` are defined in `metrics.yaml`, marked `origin: shipped` —
-they are the **starter set**, enough to screen with on the day you install and
-deliberately not a metric library. `define_metric` writes your own beside them,
-labelled `defined`. Both of these got two things wrong first time, and both
-failures are the reason the metric map is the large piece of work left:
+`pe` and `net_margin` are transform jobs in `jobs.yaml`, filling `metrics.pe`
+and `metrics.net_margin` — they are the **starter set**, enough to screen with on
+the day you install and deliberately not a metric library. `define_metric`
+writes your own beside them, in exactly the same shape. Both of these got two
+things wrong first time, and both failures are the reason the metric map is the
+large piece of work left:
 
 **A 10-K reports three years, all stamped with the same filing date.** Ordering
 by `as_of` alone picks an arbitrary one of the three. Meta's PE came out at 80

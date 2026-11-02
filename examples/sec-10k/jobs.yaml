@@ -65,3 +65,38 @@ transform_job_definitions:
   script: transforms/split_sections.py
   options:
     reads: raw.documents
+
+# ---- the metrics -------------------------------------------------------------
+# A metric is a transform job writing its own table. `key:` is what makes it one:
+# an ordinary derived table is rewritten because it is a function of what is
+# upstream, and a metric value is not -- it is what somebody was shown. There is
+# no `version:`; the version is this definition's digest, recorded on the
+# execution that ran.
+- id: pe
+  from:
+  - normalized.facts
+  - normalized.filing_prices
+  to:
+  - metrics.pe
+  script: transforms/metrics/pe.sql
+  key:
+  - subject
+  - date
+  options:
+    unit: ratio
+    description: >
+      price as it printed on the filing date, over diluted EPS for the year
+      reported. Uses close_as_printed, not close: the EPS comes from a filing and
+      the SEC never rewrites one, so the price must be on the same footing.
+- id: net_margin
+  from:
+  - normalized.facts
+  to:
+  - metrics.net_margin
+  script: transforms/metrics/net_margin.sql
+  key:
+  - subject
+  - date
+  options:
+    unit: ratio
+    description: net income over revenue, for the year reported

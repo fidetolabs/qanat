@@ -282,10 +282,18 @@ def validate(p: Project, root: Path) -> Report:
                         f"transform '{st.id}' reads '{src}' from a later stage than it writes "
                         f"('{ref}'). Data only moves forward"
                     )
-                elif si == ti and lay.kind != "features":
+                elif si == ti and lay.kind == "raw":
+                    # **Chaining inside a stage used to need `kind: features`**,
+                    # which made a stage honestly declared `kind: metrics` refuse
+                    # `pe_rank` -- a metric computed from another metric, which is
+                    # the whole reason a metric is a table. The `check` project
+                    # passed only by declaring `id: metrics, kind: features`, a
+                    # workaround for a rule whose real job is keeping raw
+                    # unedited. Rule 1 above already does that, so the rule here
+                    # is only about raw.
                     r.errors.append(
-                        f"transform '{st.id}' reads and writes the same stage '{lid}'. "
-                        "only a features stage may chain"
+                        f"transform '{st.id}' reads and writes the raw stage '{lid}'. "
+                        "raw is landed as it arrived and never edited"
                     )
             if ref in st.reads:
                 r.errors.append(f"transform '{st.id}' reads and writes the same table '{ref}'")
@@ -406,39 +414,45 @@ def validate(p: Project, root: Path) -> Report:
             )
 
     # ---- metrics --------------------------------------------------------------
-    # A bumped version is written beside the old one, so an id appears more than
-    # once on purpose. The pair has to be unique, or `metric(id, version)`
-    # resolves to whichever one happens to be first.
-    seen: set[tuple[str, int]] = set()
-    for m in p.metrics:
-        if (m.id, m.version) in seen:
-            r.errors.append(
-                f"metric '{m.id}' is defined twice at version {m.version}. A changed "
-                f"formula is a new version written beside the old one, not a second "
-                f"copy of the same one")
-        seen.add((m.id, m.version))
+    # **There is nothing to check for duplicates any more.** A metric used to be
+    # an entry in a list, so one id could appear twice at one version and
+    # `metric(id, version)` would resolve to whichever came first. A metric is a
+    # table now, and two definitions writing one table is legal and attributed
+    # -- every row names the execution that wrote it -- so the only thing left
+    # to say is when a metric has no definition filling it.
+    stage = p.metrics_stage()
+    if stage:
+        writers = p.writers()
+        for ref, who in writers.items():
+            if ref.split(".", 1)[0] != stage:
+                continue
+            if len(who) > 1:
+                r.warnings.append(
+                    f"metric '{ref}' is written by {len(who)} definitions "
+                    f"({', '.join(who)}). That is allowed and every row names the "
+                    f"execution that wrote it -- but one metric is usually one "
+                    f"definition, so check this is meant"
+                )
 
     # ---- soft advice ----------------------------------------------------------
-    #: A metric reads a table the way SQL does, by its physical name. Counting
-    #: only transforms as readers meant the terminal table of every correct filings
-    #: pipeline was reported as read by nothing -- the thing a metric is for.
-    from qanat.metrics import tables_read
-
+    #: A metric is a transform like any other, so what it reads is already on its
+    #: definition and counted. What is not counted is the reading surface.
     read_by_metric: set[str] = set()
-    for m in p.metrics:
-        read_by_metric.update(tables_read(p, m.sql))
 
-    #: And a table named in `corpus:` is read by the reading tools, which are a
+    #: A table named in `corpus:` is read by the reading tools, which are a
     #: reader like any other -- `list_sections` and `read_facts` do nothing else.
     #: A project of filings was being told its documents, spans and facts were
     #: read by nothing, which is every table it has.
-    #: And `corpus.metrics` is read by a screen, which resolves a clause against
-    #: the materialised value rather than recomputing the formula -- so the one
-    #: table a metric writes was being reported as read by nothing.
     if p.corpus:
         read_by_metric.update(
-            ref for ref in (p.corpus.documents, p.corpus.spans, p.corpus.facts,
-                            p.corpus.metrics) if ref)
+            ref for ref in (p.corpus.documents, p.corpus.spans, p.corpus.facts) if ref)
+
+    #: And every table in the metrics stage is read by a screen, which resolves a
+    #: clause against the stored value. Without this, each metric table is
+    #: reported as read by nothing -- which is every metric a project has.
+    if stage:
+        read_by_metric.update(ref for ref in p.tables()
+                              if ref.split(".", 1)[0] == stage)
 
     for ref, who in writers.items():
         read_by = [st.id for st in p.transform_job_definitions if ref in st.reads]

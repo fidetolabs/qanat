@@ -1,9 +1,12 @@
 """Defining a metric over the API, which is the object the product is named after.
 
-Three things are worth holding here. A formula that cannot run is not stored. A
-bumped version is written beside the old one rather than over it, because an
-answer somebody kept points at a version. And the threshold never appears --
-that half belongs to whoever set it and travels with the screen call.
+Four things are worth holding here. A formula that cannot run is not stored. A
+metric is a **table in the metrics stage**, so the stage is the registry and
+nothing keeps a list beside it. Replacing a formula appends its values beside the
+old ones rather than over them, so there is no version to bump -- the version is
+the definition's digest, and it moves when the formula moves. And the threshold
+never appears: that half belongs to whoever set it and travels with the screen
+call.
 """
 
 from __future__ import annotations
@@ -25,6 +28,8 @@ stages:
     kind: raw
   - id: normalized
     kind: normalized
+  - id: metrics
+    kind: metrics
 ingestion_job_definitions:
   - id: land
     to: [raw.docs]
@@ -43,6 +48,12 @@ corpus:
 
 SHAPE = "SELECT * FROM raw__docs\n"
 
+FACTS = pd.DataFrame({
+    "subject": ["AAPL", "MSFT"],
+    "value": [10.0, 20.0],
+    "as_of": pd.to_datetime(["2024-01-01", "2024-01-01"]),
+})
+
 
 @pytest.fixture
 def project(tmp_path: Path):
@@ -55,550 +66,214 @@ def project(tmp_path: Path):
     (tmp_path / "data").mkdir(parents=True, exist_ok=True)
     write_project_text(tmp_path, YAML.format(store=store_line))
     (tmp_path / "transforms" / "shape.sql").write_text(SHAPE)
-    pd.DataFrame({
-        "subject": ["AAPL", "MSFT"],
-        "value": [10.0, 20.0],
-        "as_of": pd.to_datetime(["2024-01-01", "2024-01-01"]),
-    }).to_csv(tmp_path / "seed" / "docs.csv", index=False)
+    FACTS.to_csv(tmp_path / "seed" / "docs.csv", index=False)
 
     pr, root = load(tmp_path)
     store = Store(pr.store_url(root))
-    store.write("normalized.facts", pd.DataFrame({
-        "subject": ["AAPL", "MSFT"],
-        "value": [10.0, 20.0],
-        "as_of": pd.to_datetime(["2024-01-01", "2024-01-01"]),
-    }))
+    store.write("normalized.facts", FACTS.copy())
     yield pr, store, root
     store.close()
 
 
-GOOD = "SELECT subject, value FROM normalized__facts WHERE as_of <= :as_of"
+#: A formula carrying its own date, which is the only kind there is.
+GOOD = "SELECT subject, as_of AS date, value FROM normalized__facts"
+
+
+def define(project, **kw):
+    pr, store, root = project
+    out = metrics.define(store, pr, root, **kw)
+    return out, load(root)[0]
 
 
 # ------------------------------------------------------------- it can be made
 def test_a_metric_defined_over_the_api_is_listed_and_screenable(project):
     """The whole point. Nothing wrote one before, and there was no CLI verb."""
-    pr, store, root = project
-    out = metrics.define(store, pr, root, mid="pe", sql=GOOD, unit="ratio",
-                         description="value over one")
-    assert out["defined"] == "pe"
-    assert out["version"] == 1
-    assert out["origin"] == "defined"
-    assert out["reads"] == ["normalized.facts"]
+    _, store, _ = project
+    out, fresh = define(project, mid="val", sql=GOOD, unit="ratio")
 
-    listed = metrics.listing(pr)
-    assert [m["id"] for m in listed] == ["pe"]
-    assert listed[0]["current"] is True
+    assert out["defined"] == "val"
+    assert out["table"] == "metrics.val"
+    assert fresh.metric_ids() == ["val"], "the stage is the registry"
+    assert [m["id"] for m in metrics.listing(fresh)] == ["val"]
 
-    from qanat.screen import Clause, screen
+    # And it answers, because define ran it.
+    from qanat.screen import metric_values
 
-    answer = screen(store, pr, [Clause("pe", "gt", 15)], as_of="2024-06-01")
-    passed = {r["subject"]: r["passed"] for r in answer["rows"]}
-    assert passed == {"AAPL": False, "MSFT": True}
+    got = metric_values(store, fresh, "val", "2024-06-01")
+    assert dict(zip(got.subject, got.value)) == {"AAPL": 10.0, "MSFT": 20.0}
+
+
+def test_defining_it_runs_it_so_it_answers_immediately(project):
+    """A metric that exists only as a definition answers nothing, and asking for
+    it is the next thing any caller does."""
+    out, _ = define(project, mid="val", sql=GOOD)
+    assert out["filled"]["status"] == "ok"
+    assert out["filled"]["rows"] == 2
+    assert out["filled"]["execution"] is not None
 
 
 def test_a_metric_survives_a_reload_because_it_is_written_to_the_file(project):
-    pr, store, root = project
-    metrics.define(store, pr, root, mid="pe", sql=GOOD, unit="ratio")
-    fresh, _ = load(root)
-    assert fresh.metric("pe") is not None
-    assert fresh.metric("pe").unit == "ratio"
+    define(project, mid="val", sql=GOOD)
+    _, root = load(project[2])
+    again, _ = load(root)
+    assert again.metric_ids() == ["val"]
+    assert again.definition("val") is not None
 
 
-# ------------------------------------------------------- it has to be runnable
+def test_the_version_is_the_digest_and_not_a_number_to_maintain(project):
+    out, fresh = define(project, mid="val", sql=GOOD)
+    _, store, _ = project
+    assert out["version"], "the digest the execution ran under"
+    assert out["version"] == store.definition_version("val")["version"]
+    listed = metrics.listing(fresh, store)[0]
+    assert listed["version"] == out["version"]
+
+
+# ------------------------------------------------- a formula that cannot run
 def test_a_formula_with_a_syntax_error_is_refused_at_save_time(project):
-    pr, store, root = project
-    with pytest.raises(metrics.MetricError) as exc:
-        metrics.define(store, pr, root, mid="broken", sql="SELEKT subject FROM x")
-    assert "broken" in str(exc.value)
-    assert pr.metric("broken") is None, "a formula that cannot run was stored"
+    with pytest.raises(metrics.MetricError):
+        define(project, mid="bad", sql="SELECT FROM WHERE")
+    assert load(project[2])[0].metric_ids() == []
 
 
 def test_a_formula_naming_an_unknown_column_is_refused_with_the_databases_message(project):
-    pr, store, root = project
-    with pytest.raises(metrics.MetricError) as exc:
-        metrics.define(store, pr, root, mid="nope",
-                       sql="SELECT subject, nosuchcol AS value FROM normalized__facts")
-    assert "nosuchcol" in str(exc.value), "the database's own message is what helps"
-    assert pr.metric("nope") is None
+    with pytest.raises(metrics.MetricError, match="nosuchcol"):
+        define(project, mid="bad",
+               sql="SELECT subject, as_of AS date, nosuchcol AS value "
+                   "FROM normalized__facts")
 
 
-def test_a_formula_that_does_not_select_subject_and_value_is_refused(project):
-    pr, store, root = project
-    with pytest.raises(metrics.MetricError, match="subject"):
-        metrics.define(store, pr, root, mid="wrong",
-                       sql="SELECT subject AS s, value AS v FROM normalized__facts")
+def test_a_formula_with_no_date_is_refused_because_there_is_no_series(project):
+    """**`date` is what makes a metric a series.** Without it there is only an
+    answer to one call, and an answer to one call leaves no row -- so nothing to
+    stamp with the execution that made it, and no lineage at all."""
+    with pytest.raises(metrics.MetricError, match="missing date"):
+        define(project, mid="flat", sql="SELECT subject, value FROM normalized__facts")
+
+
+def test_a_formula_taking_the_date_as_a_parameter_is_refused(project):
+    """It used to be accepted and store nothing. **That kind could not be read
+    safely**: with no table a screen had to run the formula, and a formula with
+    no date to bind ran over every row -- so a screen at 2024-06-15 could return
+    a figure that was not public for five more months."""
+    with pytest.raises(metrics.MetricError, match=r":as_of"):
+        define(project, mid="param",
+               sql="SELECT subject, value FROM normalized__facts WHERE as_of <= :as_of")
+    assert load(project[2])[0].metric_ids() == []
 
 
 def test_an_empty_formula_is_refused(project):
-    pr, store, root = project
     with pytest.raises(metrics.MetricError, match="formula"):
-        metrics.define(store, pr, root, mid="blank", sql="   ")
+        define(project, mid="x", sql="   ")
+
+
+def test_a_formula_reading_no_declared_table_is_refused(project):
+    """There would be nothing for a transform to depend on, and nothing to
+    recompute it from."""
+    with pytest.raises(metrics.MetricError, match="reads no table"):
+        define(project, mid="x", sql="SELECT 'A' AS subject, DATE '2024-01-01' AS date, "
+                                     "1.0 AS value")
 
 
 def test_a_table_declared_and_not_yet_written_is_a_warning_not_a_refusal(tmp_path):
-    """Defining a metric before the first run is the normal order on a new project."""
+    """Defining a metric before the first run is the normal order on a fresh
+    project. Refusing it would mean a scaffold could only gain metrics after a
+    pipeline run."""
     from conftest import STORE_KIND, write_project_text
 
     store_line = "./data" if STORE_KIND == "parquet" else "./data/qanat.duckdb"
-    (tmp_path / "seed").mkdir(parents=True, exist_ok=True)
     (tmp_path / "transforms").mkdir(parents=True, exist_ok=True)
+    (tmp_path / "seed").mkdir(parents=True, exist_ok=True)
     (tmp_path / "data").mkdir(parents=True, exist_ok=True)
     write_project_text(tmp_path, YAML.format(store=store_line))
     (tmp_path / "transforms" / "shape.sql").write_text(SHAPE)
-    (tmp_path / "seed" / "docs.csv").write_text("subject,value,as_of\n")
+    FACTS.to_csv(tmp_path / "seed" / "docs.csv", index=False)
 
     pr, root = load(tmp_path)
     store = Store(pr.store_url(root))
-    try:
-        out = metrics.define(store, pr, root, mid="pe", sql=GOOD)
-        assert pr.metric("pe") is not None, "it is stored"
-        assert any("not run yet" in w for w in out["warnings"])
-        assert any("normalized.facts" in w for w in out["warnings"])
-    finally:
-        store.close()
+    out = metrics.define(store, pr, root, mid="val", sql=GOOD)
+    assert any("not run yet" in w for w in out["warnings"])
+    assert out["filled"]["status"] == "not run"
+    assert load(root)[0].metric_ids() == ["val"], "stored anyway"
+    store.close()
 
 
-# ----------------------------------------------------------------- versioning
-def test_a_bumped_version_leaves_the_old_one_resolvable(project):
-    """An answer pointing at N still returns after N+1 exists."""
-    pr, store, root = project
-    metrics.define(store, pr, root, mid="pe", sql=GOOD)
-    metrics.define(store, pr, root, mid="pe", version=2,
-                   sql="SELECT subject, value * 2 AS value FROM normalized__facts")
+# --------------------------------------------------- replacing, not versioning
+def test_replacing_a_formula_appends_its_values_beside_the_old_ones(project):
+    """**This is what replaced bumping a version.** The table is keyed and never
+    rewritten, so the value somebody was already shown stays readable -- and it
+    still names the execution that wrote it, which recorded the digest. An
+    integer version alongside was a second version free to disagree, and
+    measured, it did."""
+    _, store, root = project
+    first, _ = define(project, mid="val", sql=GOOD)
 
-    assert pr.metric_versions("pe") == [1, 2]
-    assert pr.metric("pe").version == 2, "no version asked for means the current one"
-    assert pr.metric("pe", 1) is not None, "version 1 still resolves"
+    pr2, _ = load(root)
+    second = metrics.define(store, pr2, root, mid="val",
+                            sql="SELECT subject, as_of AS date, value * 2 AS value "
+                                "FROM normalized__facts")
+    assert second["replaced"] is True
+    assert second["version"] != first["version"], "the digest moved with the formula"
 
-    from qanat.screen import metric_values
-
-    at_one = metric_values(store, pr.metric("pe", 1), "2024-06-01")
-    at_two = metric_values(store, pr.metric("pe", 2), "2024-06-01")
-    assert at_one.set_index("subject")["value"]["AAPL"] == 10.0
-    assert at_two.set_index("subject")["value"]["AAPL"] == 20.0
-
-
-def test_redefining_an_existing_id_without_a_version_is_refused_not_guessed(project):
-    """Replacing N changes what a kept answer meant; writing N+1 claims the
-    meaning moved. Neither is something to pick on the caller's behalf."""
-    pr, store, root = project
-    metrics.define(store, pr, root, mid="pe", sql=GOOD)
-    with pytest.raises(metrics.MetricError) as exc:
-        metrics.define(store, pr, root, mid="pe", sql="SELECT subject, 1 AS value")
-    assert "version 1" in str(exc.value)
-    assert "2 to write a new one" in str(exc.value)
-    assert pr.metric_versions("pe") == [1], "nothing was written"
+    rows = store.query(f'SELECT subject, value FROM {store.raw_ref("metrics.val")} '
+                       "ORDER BY subject, value")
+    assert list(rows.value) == [10.0, 20.0, 20.0, 40.0], \
+        "both answers are in the table; neither was written over"
 
 
-def test_the_same_version_replaces_rather_than_duplicating(project):
-    pr, store, root = project
-    metrics.define(store, pr, root, mid="pe", sql=GOOD)
-    out = metrics.define(store, pr, root, mid="pe", version=1,
-                         sql="SELECT subject, value AS value FROM normalized__facts")
-    assert out["replaced"] is True
-    assert pr.metric_versions("pe") == [1]
-    assert validate(pr, root).ok
+def test_a_second_definition_at_one_id_is_not_a_contract_error(project):
+    """There is nothing left to collide. A metric used to be an entry in a list,
+    so one id could appear twice at one version and the lookup resolved to
+    whichever came first."""
+    _, _, root = project
+    define(project, mid="val", sql=GOOD)
+    fresh, froot = load(root)
+    res = validate(fresh, froot)
+    assert res.ok, res.errors
 
 
-def test_a_version_below_one_is_refused(project):
-    pr, store, root = project
-    with pytest.raises(metrics.MetricError, match="versions start at 1"):
-        metrics.define(store, pr, root, mid="pe", version=0, sql=GOOD)
+# ------------------------------------------------------------------- removing
+def test_removing_a_metric_is_refused_because_this_server_cannot_check(project):
+    define(project, mid="val", sql=GOOD)
+    fresh, root = load(project[2])
+    with pytest.raises(metrics.MetricError, match="force"):
+        metrics.remove(fresh, root, mid="val")
 
 
-def test_two_definitions_at_one_version_is_a_contract_error(project):
-    pr, _store, root = project
-    from qanat.models import Metric
+def test_removing_with_force_goes_through_and_leaves_the_values(project):
+    """Removing a definition is not a reason to unsay what somebody was shown.
+    The rows name the executions that wrote them and stay readable."""
+    _, store, root = project
+    define(project, mid="val", sql=GOOD)
+    fresh, froot = load(root)
+    out = metrics.remove(fresh, froot, mid="val", force=True)
 
-    pr.metrics = [Metric(id="pe", sql=GOOD, version=1),
-                  Metric(id="pe", sql=GOOD, version=1)]
-    rep = validate(pr, root)
-    assert not rep.ok
-    assert any("defined twice at version 1" in e for e in rep.errors)
-
-
-# --------------------------------------------------------------- where it came from
-def test_a_definition_says_whether_it_was_shipped_or_written_here(project):
-    pr, store, root = project
-    metrics.define(store, pr, root, mid="mine", sql=GOOD)
-    assert pr.metric("mine").origin == "defined"
-
-
-def test_the_shipped_starter_set_is_readable_as_a_starter_set():
-    """Two formulas, labelled, and deliberately not a metric library."""
-    pr, _root = load(Path(__file__).resolve().parents[1] / "examples" / "sec-10k")
-    listed = metrics.listing(pr)
-    assert listed, "the example ships a starter set"
-    assert all(m["origin"] == "shipped" for m in listed)
-    assert {m["id"] for m in listed} == {"pe", "net_margin"}
-
-
-def test_a_callers_definition_does_not_join_the_shipped_set_by_sitting_beside_it(project):
-    pr, store, root = project
-    from qanat.editor import save_metric
-    from qanat.models import Metric
-
-    save_metric(pr, root, Metric(id="pe", sql=GOOD, version=1, origin="shipped"))
-    with pytest.raises(metrics.MetricError, match="shipped"):
-        metrics.define(store, pr, root, mid="pe", version=1,
-                       sql="SELECT subject, 1 AS value")
-    # Writing it as a new version is the way through, and it is labelled.
-    out = metrics.define(store, pr, root, mid="pe", version=2,
-                         sql="SELECT subject, value FROM normalized__facts")
-    assert out["origin"] == "defined"
-    assert pr.metric("pe", 1).origin == "shipped"
-
-
-# ----------------------------------------------------------------- removal
-def test_removing_the_last_version_is_refused_because_this_server_cannot_check(project):
-    """A filter naming a metric is one caller's criteria, held by the caller."""
-    pr, store, root = project
-    metrics.define(store, pr, root, mid="pe", sql=GOOD)
-    with pytest.raises(metrics.MetricError) as exc:
-        metrics.remove(pr, root, mid="pe")
-    assert "held by the caller" in str(exc.value)
-    assert "force" in str(exc.value)
-    assert pr.metric("pe") is not None
-
-
-def test_removing_the_last_version_with_force_goes_through(project):
-    pr, store, root = project
-    metrics.define(store, pr, root, mid="pe", sql=GOOD)
-    out = metrics.remove(pr, root, mid="pe", force=True)
-    assert out["versions_removed"] == [1]
-    assert out["versions_left"] == []
-    assert pr.metric("pe") is None
-
-
-def test_removing_an_older_version_warns_that_a_pinned_answer_stops_resolving(project):
-    pr, store, root = project
-    metrics.define(store, pr, root, mid="pe", sql=GOOD)
-    metrics.define(store, pr, root, mid="pe", version=2, sql=GOOD)
-    out = metrics.remove(pr, root, mid="pe", version=1)
-    assert out["versions_left"] == [2]
-    assert any("no longer resolves" in w for w in out["warnings"])
-    assert pr.metric("pe", 1) is None
-    assert pr.metric("pe", 2) is not None
+    assert out["removed"] == "val"
+    assert load(root)[0].metric_ids() == [], "the definition is gone"
+    assert store.exists("metrics.val"), "and the values are not"
+    assert any("left where they are" in w for w in out["warnings"])
 
 
 def test_removing_a_metric_that_does_not_exist_names_what_there_is(project):
-    pr, store, root = project
-    metrics.define(store, pr, root, mid="pe", sql=GOOD)
-    with pytest.raises(metrics.MetricError, match="This project has: pe"):
-        metrics.remove(pr, root, mid="nope")
+    define(project, mid="val", sql=GOOD)
+    fresh, root = load(project[2])
+    with pytest.raises(metrics.MetricError, match="val"):
+        metrics.remove(fresh, root, mid="nope", force=True)
 
 
-def test_removing_a_version_that_does_not_exist_names_the_ones_that_do(project):
-    pr, store, root = project
-    metrics.define(store, pr, root, mid="pe", sql=GOOD)
-    with pytest.raises(metrics.MetricError, match="It has: 1"):
-        metrics.remove(pr, root, mid="pe", version=7)
-
-
-# ------------------------------------------------------ check stops lying
-def test_check_counts_a_metrics_sql_as_a_read(project):
-    """The terminal table of every correct filings pipeline was reported as
-    read by nothing -- which is the one thing a metric is for."""
-    pr, store, root = project
-    # Isolate the metric rule: this project also names the table in `corpus`,
-    # which is a reader in its own right and would mask what is being tested.
-    corpus, pr.corpus = pr.corpus, None
-    try:
-        before = validate(pr, root).warnings
-        assert any("normalized.facts" in w and "never read" in w for w in before)
-
-        metrics.define(store, pr, root, mid="pe", sql=GOOD)
-        after = validate(pr, root).warnings
-        assert not any("normalized.facts" in w and "never read" in w for w in after)
-    finally:
-        pr.corpus = corpus
+# -------------------------------------------------------------- what check says
+def test_check_counts_a_metric_table_as_read_because_a_screen_reads_it(project):
+    """Without this every metric a project has is reported as read by nothing,
+    which is the one table a metric exists to write."""
+    define(project, mid="val", sql=GOOD)
+    fresh, froot = load(project[2])
+    res = validate(fresh, froot)
+    assert res.ok, res.errors
+    assert not [w for w in res.warnings if "metrics.val" in w and "never read" in w]
 
 
 def test_check_counts_a_corpus_table_as_read_because_the_reading_tools_read_it(project):
-    """`raw.docs` is `corpus.documents`; `read_facts` and friends do nothing else."""
-    pr, _store, root = project
-    assert not any("raw.docs" in w and "never read" in w
-                   for w in validate(pr, root).warnings)
-
-
-def test_no_stage_kind_exempts_a_table_from_the_warning(project):
-    """It exempted exactly one kind -- `weights` -- and that kind is gone."""
-    src = (Path(__file__).resolve().parents[1] / "src" / "qanat" / "project.py").read_text()
-    assert 'kind != "weights"' not in src
-
-
-# ------------------------------------------------------ the file keeps its fields
-def test_every_field_the_model_holds_is_written_back(tmp_path):
-    """`dump_project` dropped `metrics`, `returns` and `corpus`.
-
-    The round-tripper deletes any key the new dict does not carry, so one
-    `save_step` on a filings project removed every metric definition, the price
-    table a screen reads, and the three tables the reading tools read -- and
-    the dump then matched the file it had just emptied, so the safety check
-    passed. This is the test that catches the next field.
-    """
-    from qanat.models import Project
-    from qanat.project_io import dump_project
-
-    full = Project.model_validate({
-        "project": "everything",
-        "store": "./data/qanat.duckdb",
-        "stages": [{"id": "raw", "kind": "raw"}],
-        "ingestion_job_definitions": [{"id": "s", "to": ["raw.a"], "connector": "csv",
-                     "options": {"path": "./x.csv"}}],
-        "transform_job_definitions": [{"id": "t", "from": ["raw.a"], "to": ["raw.b"], "script": "s.sql"}],
-        "metrics": [{"id": "pe", "sql": "SELECT 1 AS subject, 2 AS value",
-                     "version": 2, "unit": "ratio", "origin": "shipped"}],
-        "retention": {"raw.a": "30d"},
-        "time_columns": {"raw.a": "as_of"},
-        "job_timeout": "10m",
-        "returns": {"table": "raw.prices"},
-        "corpus": {"documents": "raw.a", "spans": "raw.b", "facts": "raw.b"},
-    })
-    written = dump_project(full)
-    # Every field the model carries has to reach the dict, under the name the
-    # YAML uses for it.
-    aliases = {"name": "project"}
-    for name in type(full).model_fields:
-        value = getattr(full, name)
-        if not value:
-            continue
-        key = aliases.get(name, name)
-        assert key in written, f"dump_project drops '{key}', so saving anything deletes it"
-
-    # And it has to survive the round trip, not merely appear.
-    back = Project.model_validate(written)
-    assert back.metric("pe").version == 2
-    assert back.metric("pe").origin == "shipped"
-    assert back.returns.table == "raw.prices"
-    assert back.corpus.facts == "raw.b"
-
-
-def test_saving_a_step_does_not_delete_the_metrics_beside_it(project):
-    """The failure the test above describes, from the path it happened on."""
-    pr, store, root = project
-    metrics.define(store, pr, root, mid="pe", sql=GOOD)
-
-    from qanat.editor import save_transform
-
-    save_transform(pr, root, {"id": "extra", "from": ["raw.docs"], "to": ["normalized.more"],
-                         "script": "transforms/extra.sql"})
-    fresh, _ = load(root)
-    assert fresh.metric("pe") is not None, "save_step deleted the metric block"
-    assert fresh.corpus is not None and fresh.corpus.facts == "normalized.facts"
-
-
-def test_the_yaml_a_definition_lands_in_is_still_the_project(project):
-    pr, store, root = project
-    metrics.define(store, pr, root, mid="pe", sql=GOOD, unit="ratio",
-                   description="a multi\nline description")
-    # **In `metrics.yaml`, not in `qanat.yaml`.** `define_metric` used to load the
-    # architecture file, mutate it and re-dump the whole thing -- which cost the
-    # project's own header, the note explaining why a row needs a publication
-    # date, the note naming which tables the reading tools open, the section
-    # spacing and the hand-wrapped SQL. All of it survived only in the .bak.
-    assert "metrics:" in (root / "metrics.yaml").read_text()
-    assert "metrics:" not in (root / "qanat.yaml").read_text()
-    fresh, _ = load(root)
-    assert validate(fresh, root).ok
-    assert fresh.metric("pe").description.strip() == "a multi line description" or \
-        "multi" in fresh.metric("pe").description
-
-
-# ------------------------------------------------------------------ the surface
-def test_the_tools_exist_and_name_no_threshold():
-    """A threshold is the caller's half and must not be storable here."""
-    from qanat.mcp import TOOLS
-
-    names = [t["name"] for t in TOOLS]
-    assert "define_metric" in names
-    assert "remove_metric" in names
-    assert "save_metric" not in names, "the verb is define: there is no `me` to save for"
-
-    entry = next(t for t in TOOLS if t["name"] == "define_metric")
-    fields = set(entry["inputSchema"]["properties"])
-    assert not fields & {"op", "value", "threshold", "filter"}, \
-        "a threshold is one caller's judgement and does not belong in a definition"
-    assert entry["scope"] == "authoring", \
-        "defining a metric is the operator's call, a rung above the default"
-
-
-def test_nothing_on_this_surface_stores_a_filter():
-    """Qanat owns the shared half. A filter is one caller's research criteria,
-    and a store that cannot tell two callers apart has nowhere to put one."""
-    from qanat.mcp import TOOLS
-    from qanat.models import Project
-
-    names = {t["name"] for t in TOOLS}
-    assert not names & {"save_filter", "list_filters", "remove_filter"}
-    assert "filters" not in type(Project).model_fields if False else True
-    assert not hasattr(Project.model_validate(
-        {"project": "x", "stages": [{"id": "raw"}]}), "filters")
-
-
-# ---------------------------------------------------- a filter is a named object
-def two_metrics(store, pr, root):
-    metrics.define(store, pr, root, mid="pe", sql=GOOD, unit="ratio")
-    metrics.define(store, pr, root, mid="margin",
-                   sql="SELECT subject, value / 100 AS value FROM normalized__facts")
-
-
-def test_a_screen_is_its_clauses_and_nothing_else(project):
-    """**`applied.filter` was null, and then it was whatever the caller sent.**
-    Neither was information: the caller holds its own filter, so echoing a name
-    back tells it something it already knew. What `applied` reports now is the
-    part it could not have known -- the definition version each clause read.
-    """
-    pr, store, root = project
-    two_metrics(store, pr, root)
-
-    from qanat.screen import parse_clauses, screen
-
-    out = screen(store, pr, parse_clauses(
-        [{"metric": "pe", "op": "gt", "value": 15}]), as_of="2024-06-01")
-
-    assert out["applied"] == [{"metric": "pe", "op": "gt", "value": 15.0,
-                               "metric_version_used": 1}]
-    assert "filter" not in out
-
-
-def test_several_metrics_each_with_its_own_threshold(project):
-    """Two clauses over two metrics, and both have to pass."""
-    pr, store, root = project
-    two_metrics(store, pr, root)
-
-    from qanat.screen import parse_clauses, screen
-
-    out = screen(store, pr, parse_clauses(
-        [{"metric": "pe", "op": "gte", "value": 10},
-         {"metric": "margin", "op": "gt", "value": 0.15}]), as_of="2024-06-01")
-
-    passed = {r["subject"]: r["passed"] for r in out["rows"]}
-    assert passed == {"AAPL": False, "MSFT": True}
-    assert {c["metric"] for c in out["applied"]} == {"pe", "margin"}
-
-
-def test_a_metric_bumped_to_a_new_version_does_not_change_a_pinned_clause(project):
-    """The reason a clause may pin a version at all."""
-    pr, store, root = project
-    metrics.define(store, pr, root, mid="pe", sql=GOOD)
-
-    from qanat.screen import parse_clauses, screen
-
-    pinned = parse_clauses([
-        {"metric": "pe", "metric_version": 1, "op": "gt", "value": 15}])
-    floating = parse_clauses([
-        {"metric": "pe", "op": "gt", "value": 15}])
-
-    before = screen(store, pr, pinned, as_of="2024-06-01")
-    # Version 2 halves every value, so MSFT's 20 becomes 10 and stops passing.
-    metrics.define(store, pr, root, mid="pe", version=2,
-                   sql="SELECT subject, value / 2 AS value FROM normalized__facts")
-
-    after = screen(store, pr, pinned, as_of="2024-06-01")
-    assert after["rows"] == before["rows"], "a pinned clause still means what it meant"
-    assert after["applied"][0]["metric_version"] == 1
-
-    moved = screen(store, pr, floating, as_of="2024-06-01")
-    assert moved["rows"] != before["rows"], "an unpinned clause reads the current one"
-    assert {r["subject"]: r["passed"] for r in moved["rows"]} == {
-        "AAPL": False, "MSFT": False}
-
-
-def test_one_filter_may_read_two_versions_of_one_metric(project):
-    """Which is why the values are keyed by metric *and* version."""
-    pr, store, root = project
-    metrics.define(store, pr, root, mid="pe", sql=GOOD)
-    metrics.define(store, pr, root, mid="pe", version=2,
-                   sql="SELECT subject, value / 2 AS value FROM normalized__facts")
-
-    from qanat.screen import parse_clauses, screen
-
-    out = screen(store, pr, parse_clauses([
-        {"metric": "pe", "metric_version": 1, "op": "gt", "value": 15},
-        {"metric": "pe", "metric_version": 2, "op": "lt", "value": 15},
-    ]), as_of="2024-06-01")
-    passed = {r["subject"]: r["passed"] for r in out["rows"]}
-    assert passed == {"AAPL": False, "MSFT": True}
-
-
-def test_pinning_a_version_that_does_not_exist_names_the_ones_that_do(project):
-    pr, store, root = project
-    metrics.define(store, pr, root, mid="pe", sql=GOOD)
-
-    from qanat.screen import ScreenError, parse_clauses, screen
-
-    with pytest.raises(ScreenError) as exc:
-        screen(store, pr, parse_clauses([{"metric": "pe", "metric_version": 9,
-                                          "op": "gt", "value": 1}]),
-               as_of="2024-06-01")
-    assert "no version 9" in str(exc.value)
-    assert "it has 1" in str(exc.value)
-
-
-def test_an_unknown_metric_still_names_what_the_project_has(project):
-    pr, store, root = project
-    metrics.define(store, pr, root, mid="pe", sql=GOOD)
-
-    from qanat.screen import ScreenError, parse_clauses, screen
-
-    with pytest.raises(ScreenError, match="This project has: pe"):
-        screen(store, pr, parse_clauses([{"metric": "nope", "op": "gt", "value": 1}]),
-               as_of="2024-06-01")
-
-
-def test_a_clause_names_the_version_in_what_it_reports_back(project):
-    """So whoever keeps the filter can keep what it actually computed."""
-    pr, store, root = project
-    metrics.define(store, pr, root, mid="pe", sql=GOOD)
-
-    from qanat.screen import parse_clauses
-
-    pinned = parse_clauses([{"metric": "pe", "metric_version": 1,
-                             "op": "gt", "value": 1}])[0].as_applied()
-    plain = parse_clauses([{"metric": "pe", "op": "gt", "value": 1}])[0].as_applied()
-    assert pinned["metric_version"] == 1
-    assert "metric_version" not in plain, "no pin, nothing to report"
-
-
-# ------------------------------------------------- calling it wrong says so
-def test_screen_with_no_clauses_argument_errors_the_way_read_facts_does(project):
-    """It returned `subjects: 0, passed: 0, applied: []`, which reads as
-    "nobody passed" rather than "you called it wrong"."""
-    from qanat.mcp import TOOLS, Session, ToolError
-
-    pr, store, root = project
-    two_metrics(store, pr, root)
-    session = Session(str(root))
-    try:
-        handler = next(t for t in TOOLS if t["name"] == "screen")["handler"]
-        with pytest.raises(ToolError) as exc:
-            handler(session, {"as_of": "2024-06-01"})
-        assert "'clauses' is required" in str(exc.value)
-        assert "tools/list" in str(exc.value), "the same shape read_facts uses"
-    finally:
-        session.close()
-
-
-def test_there_is_one_spelling_because_there_is_one_door():
-    """One service layer had two names for one list of one kind of object.
-
-    The CLI said `--filter` and the tool said `filters`. The flag was renamed to
-    match, and then the CLI's own `screen` verb was deleted outright -- a second
-    implementation of a question a tool already answers is a second place the
-    behaviour can quietly differ. So there is one spelling now because there is
-    one caller.
-    """
-    from qanat.cli import MOVED, build_parser
-    from qanat.mcp import TOOLS
-
-    tool = next(t for t in TOOLS if t["name"] == "screen")
-    assert tool["inputSchema"]["required"] == ["clauses"]
-
-    verbs = set()
-    for action in build_parser()._actions:
-        if getattr(action, "choices", None):
-            verbs |= set(action.choices)
-    assert "screen" not in verbs, "two doors onto one question"
-    assert MOVED["screen"] == "the `screen` tool", "and the deleted one says so"
+    fresh, froot = load(project[2])
+    res = validate(fresh, froot)
+    assert not [w for w in res.warnings
+                if "normalized.facts" in w and "never read" in w]

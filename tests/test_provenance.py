@@ -272,3 +272,146 @@ def test_a_table_with_no_provenance_column_says_so(tmp_path: Path):
         assert "before the engine recorded one" in out["note"]
     finally:
         store.close()
+
+
+def test_a_row_reports_the_version_that_wrote_it_not_the_current_one(tmp_path):
+    """**A3's last clause, which was not met.**
+
+    The chain was row -> execution -> definition_id, and the version was then
+    looked up in a table whose primary key is the definition alone -- one row,
+    holding whatever is applied *now*. So editing a formula made every older row
+    report the new version: a confident answer to the wrong question.
+
+    Measured before the fix on the `check` project: halving a metric's formula
+    left the earlier rows claiming the new digest. The digest itself was always
+    right and did change on a script edit; nothing recorded which one ran.
+    """
+
+    from qanat.project import load
+    from qanat.runner import run_definition
+    from qanat.store import Store
+
+    root = tmp_path
+    (root / "transforms").mkdir()
+    (root / "transforms" / "m.sql").write_text(
+        "SELECT 'A' AS subject, DATE '2024-01-01' AS date, 1.0 AS value")
+    (root / "qanat.yaml").write_text(
+        "project: p\nstore: ./data\nstages:\n- id: metrics\n  kind: features\n")
+    (root / "jobs.yaml").write_text(
+        "transform_job_definitions:\n"
+        "- id: m\n  from: []\n  to: [metrics.m]\n  script: transforms/m.sql\n"
+        "  key: [subject, date]\n")
+
+    project, r = load(str(root))
+    store = Store(project.store_url(r))
+    run_definition(store, project, r, "m")
+    first = store.provenance("metrics.m")["executions"][0]
+    wrote_it = first["definition_version"]
+    assert wrote_it and "not recorded" not in wrote_it
+
+    # Edit the formula. The values change, so new rows land beside the old ones.
+    (root / "transforms" / "m.sql").write_text(
+        "SELECT 'A' AS subject, DATE '2024-01-01' AS date, 2.0 AS value")
+    project, r = load(str(root))
+    run_definition(store, project, r, "m")
+
+    now = store.definition_version("m")["version"]
+    assert now != wrote_it, "editing the script has to move the digest"
+
+    by_execution = {e["execution"]: e["definition_version"]
+                    for e in store.provenance("metrics.m")["executions"]}
+    assert by_execution[first["execution"]] == wrote_it, \
+        "the first attempt still reports the digest it ran"
+    assert now in by_execution.values(), "and the second reports the new one"
+    assert len(set(by_execution.values())) == 2, \
+        "two versions in one table, each row naming its own"
+    store.close()
+
+
+def test_an_execution_from_before_the_column_says_so_rather_than_guessing(tmp_path):
+    """A null is honest; the current digest wearing the old one's place is not."""
+    from qanat.project import load
+    from qanat.runner import run_definition
+    from qanat.store import Store
+
+    root = tmp_path
+    (root / "transforms").mkdir()
+    (root / "transforms" / "m.sql").write_text(
+        "SELECT 'A' AS subject, DATE '2024-01-01' AS date, 1.0 AS value")
+    (root / "qanat.yaml").write_text(
+        "project: p\nstore: ./data\nstages:\n- id: metrics\n  kind: features\n")
+    (root / "jobs.yaml").write_text(
+        "transform_job_definitions:\n"
+        "- id: m\n  from: []\n  to: [metrics.m]\n  script: transforms/m.sql\n")
+
+    project, r = load(str(root))
+    store = Store(project.store_url(r))
+    run_definition(store, project, r, "m")
+
+    # Blank what the attempt recorded, which is the state of a store written
+    # before this column existed.
+    from qanat.store import EXECUTIONS
+
+    store.con.execute(
+        f"UPDATE {store._meta_home}{EXECUTIONS} SET definition_version = NULL")
+    reported = store.provenance("metrics.m")["executions"][0]["definition_version"]
+    assert reported.endswith("(current, not recorded)"), \
+        "an unrecorded version is labelled, not passed off as the one that ran"
+    store.close()
+
+
+def test_the_lookahead_guard_asks_what_this_execution_wrote(tmp_path):
+    """**It used to ask the table, which a keyed table makes the wrong question.**
+
+    A keyed table is never rewritten, so one filled by an ordinary run keeps
+    those rows forever -- and asking `max_time` of the table then accused every
+    later as-of run of having written them. Measured on the leak battery: a
+    metric table filled normally failed every screened run after it.
+
+    What makes the right question answerable is T-04's column. The rows name the
+    execution that wrote them, so the guard can ask about this pass only.
+    """
+    import pandas as pd
+
+    from qanat.project import load
+    from qanat.runner import run_definition
+    from qanat.store import Store
+
+    root = tmp_path
+    (root / "transforms").mkdir()
+    (root / "transforms" / "px.sql").write_text(
+        "SELECT symbol AS subject, CAST(date AS DATE) AS date, close AS value "
+        "FROM raw__bars")
+    (root / "qanat.yaml").write_text(
+        "project: p\nstore: ./data/q.duckdb\n"
+        "stages:\n- {id: raw, kind: raw}\n- {id: metrics, kind: metrics}\n"
+        "time_columns:\n  raw.bars: date\n  metrics.px: date\n")
+    (root / "jobs.yaml").write_text(
+        "transform_job_definitions:\n"
+        "- id: px\n  from: [raw.bars]\n  to: [metrics.px]\n"
+        "  script: transforms/px.sql\n  key: [subject, date]\n")
+    (root / "data").mkdir()
+
+    project, r = load(str(root))
+    store = Store(project.store_url(r))
+    store.write("raw.bars", pd.DataFrame({
+        "symbol": ["A"] * 4,
+        "date": pd.to_datetime(["2024-01-01", "2024-02-01", "2024-03-01", "2024-07-18"]),
+        "close": [1.0, 2.0, 3.0, 4.0]}), mode="replace", key=["symbol", "date"])
+
+    # An ordinary run fills the table to the end of the bars.
+    assert run_definition(store, project, r, "px").ok
+    assert str(store.max_time("metrics.px"))[:10] == "2024-07-18"
+
+    # Then a screened run at an earlier date. The as-of views keep the later
+    # bars out of what it reads, so it writes nothing new -- and it must not be
+    # blamed for the rows the first run left.
+    store.open_pit("2024-03-01", project.time_columns)
+    try:
+        out = run_definition(store, project, r, "px", as_of="2024-03-01")
+    finally:
+        store.close_pit()
+    assert out.ok, out.error
+    assert str(store.max_time("metrics.px"))[:10] == "2024-07-18", \
+        "the earlier rows are still there, which is the point of never replacing"
+    store.close()

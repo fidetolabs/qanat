@@ -103,7 +103,10 @@ def test_every_box_in_a_column_starts_at_the_same_place(tmp_path: Path):
     tops = {mt.start() for ln in lines for mt in re.finditer("╭─", ln)}
     bottoms = {mt.start() for ln in lines for mt in re.finditer("╰─", ln)}
     assert tops == bottoms
-    assert len(tops) == 4, f"one column per stage, got {sorted(tops)}"
+    # One column per *layer*, and a stage owns as many layers as its longest
+    # chain -- `features` chains, so it holds two. Five here: raw, normalized,
+    # two for features, and metrics.
+    assert len(tops) == 5, f"one column per layer, got {sorted(tops)}"
 
 
 def test_colour_is_the_stage_and_nothing_else():

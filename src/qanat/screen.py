@@ -67,15 +67,23 @@ from __future__ import annotations
 
 import hashlib
 import json
-import re
 from collections.abc import Sequence
 from dataclasses import dataclass, field
 from typing import Any
 
 import pandas as pd
 
-from qanat.models import Metric, Project
-from qanat.store import Store
+from qanat.models import Project
+from qanat.store import EXEC_COL, SEQ_COL, Store
+
+
+#: Stands in for a table that is not there, so the column check reads the same
+#: way whether the table is missing a column or missing entirely.
+class _NoColumns:
+    columns: tuple[str, ...] = ()
+
+
+_NO_COLUMNS = _NoColumns()
 
 
 class ScreenError(Exception):
@@ -118,7 +126,11 @@ class Clause:
     metric: str
     op: str
     value: float
-    version: int | None = None
+    #: The definition digest this clause insists on, or None for whatever is
+    #: current. **A digest, not a number somebody maintained.** A metric has no
+    #: version column: the version is the digest its execution recorded, and
+    #: that is what `metric_version_used` hands back for keeping.
+    version: str | None = None
 
     def __post_init__(self) -> None:
         if self.op not in OPERATORS:
@@ -128,18 +140,22 @@ class Clause:
             )
 
     @property
-    def key(self) -> tuple[str, int | None]:
+    def key(self) -> tuple[str, str | None]:
         """What identifies the column this clause reads: the metric at a version."""
         return (self.metric, self.version)
 
-    def as_applied(self, resolved: dict[str, int] | None = None) -> dict[str, Any]:
+    def as_applied(self, resolved: dict[str, str | None] | None = None) -> dict[str, Any]:
         """What a caller records about this clause, as it ran.
 
-        **`metric_version_used` is the point of it**: the definition version the
+        **`metric_version_used` is the point of it**: the definition digest the
         clause actually read. `metric_version` is what the caller pinned and may
         be absent; this one ran and never is. A caller keeping its own history
         can only keep what it was handed, and that is the half it could not have
         known -- unlike a filter name, which it sent.
+
+        Hand `metric_version_used` back as `metric_version` to read the same
+        answer again. That is what replaced bumping an integer: the digest moves
+        when the formula moves, so it cannot be left behind.
         """
         resolved = resolved or {}
         return {
@@ -207,88 +223,114 @@ def _clause(c: dict) -> Clause:
     # version is a different field on a different object.
     pinned = c.get("metric_version", c.get("version"))
     try:
-        return Clause(metric=str(c["metric"]), op=str(c["op"]), value=float(c["value"]),
-                      version=None if pinned is None else int(pinned))
+        value = float(c["value"])
     except (TypeError, ValueError) as exc:
         raise ScreenError(f"clause value must be a number: {c}") from exc
+    if isinstance(pinned, int) and not isinstance(pinned, bool):
+        raise ScreenError(
+            f"metric_version is a definition digest, not a number: got {pinned}. A "
+            f"metric has no version column any more -- the version is the digest the "
+            f"execution recorded. Take it from `metric_version_used` in a previous "
+            f"answer's `applied`, or leave it out for whatever is current"
+        )
+    return Clause(metric=str(c["metric"]), op=str(c["op"]), value=value,
+                  version=None if pinned is None else str(pinned))
 
 
 # ------------------------------------------------------------------ the metrics
-_AS_OF = re.compile(r":as_of\b")
+def metric_values(store: Store, project, mid: str, as_of: str,
+                  version: str | None = None) -> pd.DataFrame:
+    """One metric for every subject, as it stood on one date.
 
-
-def raw_metric_frame(store: Store, metric: Metric, as_of: str) -> pd.DataFrame:
-    """The formula's own output, whatever shape it is.
-
-    Separate from `metric_values` because two callers want two different things
-    from the same statement: a screen wants `subject` and `value`, and
-    `define_metric` wants to know whether the formula carries a `date` of its
-    own -- which decides whether it can be materialised at all.
-    """
-    sql = _AS_OF.sub(f"DATE '{as_of}'", metric.sql)
-    try:
-        return store.query(sql)
-    except Exception as exc:
-        raise ScreenError(f"metric '{metric.id}' failed: {exc}") from exc
-
-
-def _shaped(metric: Metric, df: pd.DataFrame) -> pd.DataFrame:
-    cols = {c.lower(): c for c in df.columns}
-    if "subject" not in cols or "value" not in cols:
-        raise ScreenError(
-            f"metric '{metric.id}' must select `subject` and `value`, got: "
-            + ", ".join(df.columns)
-        )
-    out = df[[cols["subject"], cols["value"]]].copy()
-    out.columns = ["subject", "value"]
-    out["value"] = pd.to_numeric(out["value"], errors="coerce")
-    return out
-
-
-def stored_metric_values(store: Store, project, metric: Metric,
-                         as_of: str) -> pd.DataFrame | None:
-    """The materialised values, if this metric has any. None if it has none.
+    **Read from the table, and only from the table.** A metric is a transform's
+    output, so the value a screen reports is the value that was written -- which
+    means it names the execution that wrote it and can be traced. A number
+    computed on the call leaves no row, so there would be nothing to trace and
+    nothing to compare a later answer against.
 
     **The newest date at or before `as_of`, per subject.** A metric is a series,
     so "the value on that date" means the most recent one the series had reached
     by then -- not an exact match, which would answer nothing on a day the
-    subject had no new filing.
+    subject had no new filing. A trading-day series answers the day itself; a
+    filing-dated one answers the last filing. One rule, both calendars, and a
+    Saturday correctly falls back to Friday.
 
-    Which *row* for that date is the store's answer, not this one's: two rows for
+    **A subject with no row at or before the date is simply absent**, and the
+    screen reports it as not evaluated. There used to be a fallback that ran the
+    formula when the table returned nothing, and it was unsafe: a dated series
+    has no `:as_of` to bind, so the fallback ran over every row and the screen
+    took whichever came first. Measured on the `check` project, a screen at
+    2024-06-15 returned a figure that was not public for five more months.
+
+    `version` pins the digest that must have produced the row -- the one
+    `lineage` reports -- so a kept answer can be read back as it stood. Rows
+    from an execution that recorded no digest are excluded when pinning, because
+    including them would be a guess.
+
+    Which *row* for a date is the store's answer, not this one's: two rows for
     one key are a correction, and the `now` view returns the newest write.
     """
-    from qanat.metrics import metrics_table
+    ref = project.metric_ref(mid) if project is not None else ""
+    if not ref:
+        raise ScreenError(
+            f"this project declares no metrics stage, so '{mid}' has nowhere to live. "
+            f"Add a stage with `kind: metrics` to qanat.yaml"
+        )
+    if not store.exists(ref):
+        raise ScreenError(
+            f"metric '{mid}' has no values yet: {ref} has not been written. Run its "
+            f"definition -- a metric answers from its table, and there is no longer a "
+            f"path that computes one on the call"
+        )
 
-    ref = metrics_table(project) if project is not None else ""
-    if not ref or not store.exists(ref):
-        return None
+    # `columns` is (name, type) pairs.
+    held = {str(c[0]).lower() for c in (store.table_info(ref) or _NO_COLUMNS).columns}
+    missing = [c for c in ("subject", "date", "value") if c not in held]
+    if missing:
+        raise ScreenError(
+            f"{ref} must hold subject, date and value; it holds "
+            f"{', '.join(sorted(held)) or '(nothing)'} and is missing "
+            f"{', '.join(missing)}"
+        )
+
+    where, params = ["CAST(date AS DATE) <= CAST(? AS DATE)"], [as_of]
+    if version:
+        # **Read the physical table, not the `now` view.** Pinning asks for the
+        # rows one execution wrote, and some of those are rows the view treats
+        # as superseded -- which is the whole point of being able to pin.
+        reading = store.raw_ref(ref)
+        order = f'date DESC, "{SEQ_COL}" DESC'
+        # Cast, because a table whose every execution is null -- one written
+        # entirely outside a job -- reads back as VARCHAR.
+        where.append(
+            f'CAST("{EXEC_COL}" AS BIGINT) IN '
+            f"(SELECT execution_id FROM {store.executions_ref()} "
+            f"WHERE definition_version = ?)")
+        params.append(version)
+    else:
+        reading, order = store.readable(ref), "date DESC"
+
     try:
         df = store.query(
             f"SELECT subject, value FROM ("
             f"  SELECT subject, value, row_number() OVER ("
-            f"    PARTITION BY subject ORDER BY date DESC) AS rn"
-            f"  FROM {store.readable(ref)}"
-            f"  WHERE metric = ? AND version = ? AND CAST(date AS DATE) <= CAST(? AS DATE)"
-            f") WHERE rn = 1",
-            [metric.id, int(metric.version), as_of])
-    except Exception:  # noqa: BLE001 -- a table that cannot answer is one that has not run
-        return None
-    return None if df.empty else _shaped(metric, df)
+            f"    PARTITION BY subject ORDER BY {order}) AS rn"
+            f"  FROM {reading}"
+            f"  WHERE {' AND '.join(where)}"
+            f") WHERE rn = 1", params)
+    except Exception as exc:
+        raise ScreenError(f"metric '{mid}' could not be read from {ref}: {exc}") from exc
 
-
-def metric_values(store: Store, metric: Metric, as_of: str, project=None) -> pd.DataFrame:
-    """One metric for every subject, as it stood on one date.
-
-    **Read from the table when there is one.** A materialised value is what
-    somebody was shown, and recomputing instead would answer the question a
-    second time rather than answering what the first answer was. With no table,
-    or none written yet, the formula runs -- which is also the only path a
-    formula taking the date as a parameter has.
-    """
-    stored = stored_metric_values(store, project, metric, as_of)
-    if stored is not None:
-        return stored
-    return _shaped(metric, raw_metric_frame(store, metric, as_of))
+    cols = {c.lower(): c for c in df.columns}
+    out = df[[cols["subject"], cols["value"]]].copy()
+    out.columns = ["subject", "value"]
+    # A pin that matches nothing comes back empty, and an empty frame's columns
+    # are typed by guesswork -- which then refuses to merge against the subject
+    # list. Pinned to a digest nobody recorded, "no rows" is the right answer,
+    # so it has to survive being joined.
+    out["subject"] = out["subject"].astype(object)
+    out["value"] = pd.to_numeric(out["value"], errors="coerce")
+    return out
 
 
 # ------------------------------------------------------------------ the universe
@@ -428,15 +470,19 @@ def coverage(store: Store, project: Project,
     * after the newest row, every date reads the same rows as the newest one.
       Not false -- just flat, and worth saying rather than refusing.
     """
-    from qanat.metrics import tables_read
+    from qanat.metrics import transform_id
 
     which = list(metrics) if metrics else project.metric_ids()
     refs: list[str] = []
     for mid in which:
-        for version in project.metric_versions(mid):
-            m = project.metric(mid, version)
-            if m is not None:
-                refs.extend(tables_read(project, m.sql))
+        # What a metric reads is declared on its definition, not parsed out of a
+        # formula this end no longer holds.
+        d = project.definition(transform_id(mid))
+        if d is not None:
+            refs.extend(d.reads)
+        ref = project.metric_ref(mid)
+        if ref:
+            refs.append(ref)
     # The returns table is read too, and a screen reports a forward return off it.
     if project.returns is not None:
         refs.append(project.returns.table)
@@ -624,26 +670,26 @@ def screen(
         stops = [as_of] if as_of else window(frm, to, every)
     except WindowError as exc:
         raise ScreenError(str(exc)) from exc
+    from qanat.metrics import transform_id
+
     if not stops:
         raise ScreenError("that window holds no dates")
 
     # One entry per metric *at a version*, because two clauses may read two
     # versions of one formula -- which is the whole reason a clause may pin one.
-    wanted: dict[tuple[str, int | None], str] = {}
+    wanted: dict[tuple[str, str | None], str] = {}
     for c in clauses:
         wanted[c.key] = c.column
 
-    missing: list[str] = []
-    for mid, version in wanted:
-        if project.metric(mid, version) is None:
-            if version is not None and project.metric(mid) is not None:
-                have = ", ".join(map(str, project.metric_versions(mid)))
-                missing.append(f"'{mid}' has no version {version} (it has {have})")
-            else:
-                missing.append(f"no metric called '{mid}'")
+    have = set(project.metric_ids())
+    missing = sorted({mid for mid, _v in wanted} - have)
     if missing:
-        known = ", ".join(project.metric_ids()) or "(none defined)"
-        raise ScreenError(f"{'; '.join(missing)}. This project has: {known}")
+        known = ", ".join(sorted(have)) or "(none defined)"
+        plural = "s" if len(missing) > 1 else ""
+        raise ScreenError(
+            f"no metric{plural} called {', '.join(repr(m) for m in missing)}. "
+            f"This project has: {known}"
+        )
 
     picked: Universe | None = None
     if universe is not None:
@@ -681,7 +727,7 @@ def screen(
     # current version, so recording only what the caller pinned would leave a
     # kept answer unable to say what computed it -- and then it is not a record.
     resolved = {
-        col: project.metric(mid, version).version
+        col: version or (store.definition_version(transform_id(mid)) or {}).get("version")
         for (mid, version), col in wanted.items()
     }
 
@@ -690,7 +736,7 @@ def screen(
     counts: list[dict] = []
     for stop in stops:
         values = {
-            col: metric_values(store, project.metric(mid, version), stop, project)
+            col: metric_values(store, project, mid, stop, version)
             for (mid, version), col in wanted.items()
         }
         # Without a universe the subjects are whoever the metrics returned.
@@ -700,7 +746,10 @@ def screen(
             subjects = sorted({s for df in values.values() for s in df["subject"]})
         else:
             subjects = picked.on(stop)
-        table = pd.DataFrame({"subject": subjects})
+        # Typed, because an empty list of subjects -- every metric pinned to a
+        # digest nobody recorded -- otherwise comes out float64 and refuses to
+        # merge against the string subjects on the other side.
+        table = pd.DataFrame({"subject": pd.Series(subjects, dtype=object)})
         for col, df in values.items():
             table = table.merge(df.rename(columns={"value": col}), on="subject", how="left")
 
@@ -837,8 +886,6 @@ __all__ = [
     "forward_returns",
     "metric_values",
     "parse_clauses",
-    "raw_metric_frame",
     "read_universe",
     "screen",
-    "stored_metric_values",
 ]

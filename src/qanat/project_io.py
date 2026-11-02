@@ -30,7 +30,6 @@ import yaml
 from qanat.models import (
     IngestionJobDefinition,
     JobSchedule,
-    Metric,
     Project,
     Stage,
     TransformJobDefinition,
@@ -42,8 +41,16 @@ from qanat.models import (
 PARTS: dict[str, tuple[str, ...]] = {
     "jobs.yaml": ("ingestion_job_definitions", "transform_job_definitions",
                   "job_schedules"),
-    "metrics.yaml": ("metrics",),
 }
+
+#: Files a tool used to write and no longer does. Read on load so an old project
+#: still opens, and named here so `migrate` can say what it is moving.
+#:
+#: `metrics.yaml` held a list of metric objects, each with its own `version:`
+#: integer. **A metric is a transform writing its own table now**, so the
+#: definitions in `jobs.yaml` are the whole record and this file has nothing
+#: left that it alone can hold.
+RETIRED_PARTS: tuple[str, ...] = ("metrics.yaml",)
 
 #: What `qanat.yaml` holds, and the only keys read out of it.
 ARCHITECTURE: tuple[str, ...] = (
@@ -82,8 +89,6 @@ def dump_project(project: Project) -> dict[str, Any]:
             _dump_transform(d) for d in project.transform_job_definitions]
     if project.job_schedules:
         data["job_schedules"] = [_dump_schedule(s) for s in project.job_schedules]
-    if project.metrics:
-        data["metrics"] = [_dump_metric(m) for m in project.metrics]
     if project.retention:
         data["retention"] = dict(project.retention)
     if project.time_columns:
@@ -145,20 +150,6 @@ def _dump_schedule(s: JobSchedule) -> dict[str, Any]:
         row["enabled"] = s.enabled
     return row
 
-
-def _dump_metric(m: Metric) -> dict[str, Any]:
-    row: dict[str, Any] = {"id": m.id, "version": m.version}
-    if m.unit:
-        row["unit"] = m.unit
-    if m.description:
-        row["description"] = m.description
-    row["sql"] = m.sql
-    # Where the definition came from: shipped with the product, or written by a
-    # caller. Only written when it is not the default, so an older file that
-    # says nothing keeps saying nothing.
-    if m.origin != "defined":
-        row["origin"] = m.origin
-    return row
 
 
 #: One writer at a time. An agent edits from a request thread and the scheduler

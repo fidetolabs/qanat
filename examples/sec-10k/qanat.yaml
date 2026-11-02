@@ -24,6 +24,12 @@ stages:
 - id: normalized
   kind: normalized
   description: the tagged numbers, and the document split into its Items
+# **The registry.** Every table in here is a metric, so nothing keeps a list:
+# one metric is one table, and metrics derive from each other -- a rank reads
+# the metric it ranks, which one shared table could not express.
+- id: metrics
+  kind: metrics
+  description: one number per subject per date -- screenable
 
 # ------------------------------------------------------------------- the clock --
 # Without this line the as-of views would not filter `documents` at all, and
@@ -40,6 +46,9 @@ time_columns:
   normalized.facts: as_of
   normalized.filing_prices: as_of
   normalized.spans: as_of
+  # One clock per metric table, because one metric is one table.
+  metrics.pe: date
+  metrics.net_margin: date
 
 # --------------------------------------------------------- the ingestion job --
 # What to fetch and where it lands. The cadence, if any, is a `job_schedules:`
@@ -63,11 +72,13 @@ returns:
   price_column: adjusted_close
 
 # ----------------------------------------------------------------- the metrics --
-# A formula with a name and a version. Arithmetic, no judgement: the judgement
-# is the threshold a caller puts next to it, and that never lives here.
+# **Transform jobs in `jobs.yaml`, filling their own tables in the metrics stage
+# above.** Arithmetic, no judgement: the judgement is the threshold a caller puts
+# next to it, and that never lives here.
 #
-# `:as_of` is replaced with the date being screened. Each one selects `subject`
-# and `value`, one row per company.
+# Each one selects `subject`, `date` and `value` -- one row per company per
+# filing date. `date` is the day the number became true, which is what makes it
+# a series a screen can read as of any past day.
 #
 # Two things both of these have to get right, and both were wrong first time.
 #
@@ -82,12 +93,12 @@ returns:
 # piece of work here, and these two metrics are a worked example of it, not a
 # finished map.
 # ----------------------------------------------------------------- the metrics --
-# A formula with a name and a version. Shared: `price / diluted EPS` is
-# arithmetic, so it is the same number for every caller. The threshold you
-# compare it against is the judgement, and that is yours -- it travels with the
-# screen call and is never stored here.
+# **They are transform jobs in `jobs.yaml`, filling their own tables in the
+# metrics stage above.** Shared: `price / diluted EPS` is arithmetic, so it is
+# the same number for every caller. The threshold you compare it against is the
+# judgement, and that is yours -- it travels with the screen call and is never
+# stored here.
 #
-# `origin: shipped` marks these two as the **starter set**: enough to screen
-# with on the day you install, and deliberately not a metric library. A
-# definition you write is labelled `defined`, and does not join this set by
-# being stored beside it.
+# The two there are the **starter set**: enough to screen with on the day you
+# install, and deliberately not a metric library. `define_metric` writes your own
+# beside them, in exactly the same shape.

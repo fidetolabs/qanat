@@ -50,7 +50,7 @@ Seven words belong to the screen:
 | **screen** | The verb, and the only one. Ask who passed a filter — on one date, or on every date in a window. A window of one is a single date, so there is one verb and not two. **There is no noun `screen`**: what you save is a *filter*, and what happened is a *run*. |
 | **filter** | A named rule, holding one or more clauses. Versioned. "My usual set" is a filter. **It lives entirely on the caller's side** — a screen takes its clauses, never the filter itself, so there is no name or version to send. |
 | **clause** | One condition inside a filter: a metric against a threshold. It has no name and no version of its own, and is never a table. **A screen is a flat list of them and every one has to pass** — which is why grouping them into named filters could never change a verdict, and why that shape is now refused rather than silently flattened. |
-| **metric** | A formula with a name and a version. Arithmetic, no judgement: `pe = price / diluted EPS`. Shared, because it is the same number for everybody. **A formula carrying a `date` of its own is a series, and `define_metric` writes a transform definition that materialises it into the metrics table.** One that takes the date as a parameter is a fact rescaled, and is computed on the call. |
+| **metric** | Arithmetic with no judgement in it: `pe = price / diluted EPS`. Shared, because it is the same number for everybody. **A `transform_job_definition` filling its own table in the metrics stage** — one metric, one table, so a metric can read another metric. The formula selects `subject`, `date` and `value`; `date` is the day each value became true. One naming `:as_of` is refused: it stored nothing, so it had no lineage and a screen had to run it. |
 | **threshold** | The number a clause compares a metric against. A judgement, so it belongs to whoever set it and never to the project. |
 | **as-of** | The date being asked about. Nothing published later is readable. |
 | **run** | One application of a set of clauses, with what ran recorded as data rather than as a pointer. |
@@ -86,8 +86,13 @@ in [contract.md](contract.md). `normalized` in the starter project is a name, no
 | --- | --- | --- |
 | `qanat.yaml` | `project`, `store`, `stages`, `time_columns`, `corpus`, `returns`, `retention`, `job_timeout` | **you** |
 | `jobs.yaml` | `ingestion_job_definitions`, `transform_job_definitions`, `job_schedules` | a tool |
-| `metrics.yaml` | `metrics` | a tool |
 | `universes.yaml` | `universes` | a tool |
+
+**There is no `metrics.yaml`.** A metric was a list of formula objects in one,
+each with its own `version:` integer; a metric is a `transform_job_definition`
+writing its own table now, so the definitions in `jobs.yaml` are the whole
+record — and the metrics stage is the registry, so nothing is kept beside them.
+`qanat migrate` moves an old one aside.
 
 **The boundary is human-written against tool-written, and the two were sharing a
 file.** `define_metric` loaded `qanat.yaml`, mutated the model and re-dumped the
@@ -120,11 +125,11 @@ refused at load with `qanat migrate` named.
 | `definition:` | job schedule | which definition this cadence fires, by id |
 | `cron:` | job schedule | the cron line |
 | `enabled:` | job schedule | off without being deleted |
-| `kind:` | stage | `raw` for a landed stage; otherwise a name you choose |
+| `kind:` | stage | `raw` for a landed stage, which is never edited; `metrics` for the one holding metric tables, which makes it the registry; otherwise a name you choose |
 | `time_columns:` | project | which column on a table says when a row became public. The one line the point-in-time reads depend on |
-| `metrics:` | project | the formulas this project defines, each with a version |
+| `metrics:` | **retired** | a list of formulas, each with a `version:` integer. A metric is a transform filling its own table now, so there is no list -- the metrics stage is the registry. `qanat migrate` moves an old one aside |
 | `returns:` | project | which table says what a company did next, so a screen can report it |
-| `corpus:` | project | which tables hold documents, their text, their facts and their computed metric values |
+| `corpus:` | project | which tables hold documents, their text and their facts. **No metrics entry** -- one metric is one table, so a single ref could not name them |
 | `key:` | transform definition | the columns identifying one output row. **With one it appends and never replaces** — what a materialised metric needs, since a corrected price has to leave the value somebody was shown readable |
 | `store:` | project | where the tables live: a directory for parquet, or a `.duckdb` path for one file |
 

@@ -151,17 +151,29 @@ can, while you are deciding what to try.
 
 ## 4 · Metric extraction
 
-A metric is a named, versioned SQL formula in `metrics.yaml`, written by `define_metric` and run
-against the project before it is stored — so a syntax error or an unknown column comes back as the
-database's own message rather than as a definition that fails on somebody else's screen. A changed
-formula is a **new version beside the old one**, because an answer somebody kept points at a
-version; bumping is refused rather than guessed.
+A metric is a **`transform_job_definition` writing its own table**, written by `define_metric` and
+run against the project before it is stored — so a syntax error or an unknown column comes back as
+the database's own message rather than as a definition that fails on somebody else's screen. It is
+run again straight after, so the metric answers immediately.
 
-**A formula carrying a `date` of its own is a series**, and `define_metric` writes a transform
-definition that materialises it into the metrics table — one row per subject per date per metric
-per version, keyed so a corrected price adds a row rather than replacing the value somebody was
-shown. One with `:as_of` in it takes the date as a parameter instead, which is a fact rescaled
-rather than a series, so it is computed when a screen asks and nothing is stored.
+**One table per metric, because metrics derive from each other.** A rank reads the metric it ranks,
+and with one shared `metrics` table that is a transform reading the table it writes: `check` refuses
+it, and the run order resolves a dependency per *table*, so a shared table counts as produced the
+moment any metric writes it and a chain cannot be sequenced at all. **The metrics stage is the
+registry** — every table in it is a metric, so `list_metrics` reads the pipeline rather than a list
+that could disagree with it.
+
+The table is keyed, so a corrected input adds a row rather than replacing the value somebody was
+shown. It carries no `metric` column — the table's name is the metric's name — and **no `version`
+column**: the version is the definition's digest, recorded on the execution that ran, and
+`metric_version_used` in a screen's `applied` is how you keep it. A literal in generated SQL could
+not be relied on to move when the formula did, and measured, it did not.
+
+**A formula selects `subject`, `date` and `value`, and `date` is the day each value became true.**
+One naming `:as_of` is refused: that kind took the date as a parameter and stored nothing, so a
+screen had to run the formula — and with no date to bind it ran over every row, which is how a
+screen could return a figure that was not public for months. A value computed on the call also
+leaves no row, so nothing can trace it.
 
 The formula is shared, because `price / diluted EPS` is arithmetic with no judgement in it. **The
 threshold next to it is an opinion and never lives here**, and nor does the filter it sits in. A

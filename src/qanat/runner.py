@@ -50,16 +50,25 @@ def _record_applied(store: Store, root: Path, definition: Definition) -> None:
 
 
 def _open(store: Store, definition: Definition, kind: str, targets: list[str],
-          scheduled_for: Any = None, schedule_id: str | None = None) -> tuple[int, int]:
+          root: Path, scheduled_for: Any = None,
+          schedule_id: str | None = None) -> tuple[int, int]:
     """The job for this instant, and a fresh execution of it.
 
     `scheduled_for` unset means now, which is the ad-hoc path: each call is its
     own job. The scheduler passes the cron instant instead, so firing the same
     instant twice adds an attempt to the job that is already there.
+
+    **The digest is taken here, before anything runs**, and handed to the
+    attempt. `_record_applied` writes the version table on success only -- which
+    is right for "what is the basis of the next comparison" and wrong for "what
+    wrote this row", because a failed attempt still wrote the rows it got to.
     """
+    from qanat.plan import definition_spec, digest
+
     when = scheduled_for if scheduled_for is not None else datetime.now(timezone.utc).replace(tzinfo=None)
     job_id = store.open_job(definition.id, kind, when, schedule_id)
-    return job_id, store.start_execution(job_id, definition.id, kind, targets)
+    version = digest(definition_spec(definition, root))
+    return job_id, store.start_execution(job_id, definition.id, kind, targets, version)
 
 
 @dataclass
@@ -83,7 +92,8 @@ class RunResult:
 def run_ingestion(store: Store, project: Project, root: Path,
                   src: IngestionJobDefinition, scheduled_for: Any = None,
                   schedule_id: str | None = None) -> RunResult:
-    job_id, execution = _open(store, src, "ingestion", [src.ref], scheduled_for, schedule_id)
+    job_id, execution = _open(store, src, "ingestion", [src.ref], root,
+                              scheduled_for, schedule_id)
     try:
         # What is the newest row this table already holds? An adapter that can
         # fetch incrementally uses it to ask only for what came after.
@@ -209,13 +219,20 @@ def _run_python(store: Store, ctx: Context, transform: TransformJobDefinition, s
     return total
 
 
-def _check_lookahead(store: Store, project: Project, transform: TransformJobDefinition, as_of: str) -> None:
+def _check_lookahead(store: Store, project: Project, transform: TransformJobDefinition,
+                     as_of: str, execution: int | None = None) -> None:
     """A screened transform may not write a row stamped after the moment it ran.
 
     The as-of views already keep the future out of what a transform reads. This catches
     the other way in -- a transform that built a timestamp itself, or read around the
     views with raw SQL -- and it fails the transform rather than warning, because a
     number computed from the future is worse than no number.
+
+    **Asked of the rows this execution wrote, not of the table.** A keyed table is
+    never rewritten, so one filled by an ordinary run keeps those rows forever --
+    and asking the table would accuse every later as-of run of having written
+    them. Measured on the leak battery: a metric table filled normally failed
+    every screened run after it.
     """
     import pandas as pd
 
@@ -231,7 +248,9 @@ def _check_lookahead(store: Store, project: Project, transform: TransformJobDefi
                 f"there carries the date under another name"
             ))
             continue
-        newest = store.max_time(ref, project.time_columns.get(ref))
+        newest = (store.max_time_written_by(ref, execution, project.time_columns.get(ref))
+                  if execution is not None
+                  else store.max_time(ref, project.time_columns.get(ref)))
         if newest is None:
             continue
         if pd.Timestamp(newest) > cut:
@@ -252,7 +271,7 @@ def run_transform(
     schedule_id: str | None = None,
 ) -> RunResult:
     job_id, execution = _open(store, transform, "transform", list(transform.writes),
-                           scheduled_for, schedule_id)
+                              root, scheduled_for, schedule_id)
     ctx = Context(store, project, root, transform, as_of=as_of)
     script = root / transform.script
     try:
@@ -267,7 +286,7 @@ def run_transform(
             else _run_python(store, ctx, transform, script)
         )
         if as_of:
-            _check_lookahead(store, project, transform, as_of)
+            _check_lookahead(store, project, transform, as_of, execution)
         _record_applied(store, root, transform)
         store.event("ok", transform.id, f"wrote {rows:,} rows to {', '.join(transform.writes)}")
         store.end_execution(execution, "ok", rows)
