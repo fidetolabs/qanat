@@ -3,10 +3,11 @@
 Deliberately small. The loop wakes once a second and fires whatever schedule row
 says it is due. A definition already running is never started twice.
 
-**A schedule is a row now, not a field.** So a definition may carry a daily and
-a weekly without being copied, and disabling one disturbs neither the others nor
-the definition. The clock walks schedules; the definition is what each one
-points at.
+**A schedule is a row now, not a field.** So two selections run on two clocks
+with a cadence welded into neither declaration, and disabling one disturbs
+neither the others nor the definition it points at. The clock walks schedules;
+the definition is what each one points at. **One row per definition** -- over a
+single selection the finer cron already does the coarser one's work.
 
 **It deletes nothing.** The loop used to apply every `retention:` policy once a
 minute, which made removal a side effect of the clock running -- a row that had
@@ -263,9 +264,10 @@ class Scheduler:
     def status(self) -> dict[str, dict[str, object]]:
         """One entry per schedule, plus the transforms that run on arrival instead.
 
-        Keyed on the schedule rather than on the definition, because a definition
-        with a daily and a weekly has two answers to "when next" and a dict keyed
-        on it could only hold one.
+        Keyed on the schedule rather than on the definition. A definition carries
+        one schedule, so the two keys now agree -- but a schedule is the thing
+        with a `next_at` and an `enabled`, and naming the row it belongs to is
+        what lets a caller disable one without reading the definition.
         """
         with self._lock:
             inflight = set(self._inflight)
@@ -291,9 +293,10 @@ class Scheduler:
     def by_definition(self) -> dict[str, list[dict[str, object]]]:
         """Every schedule, grouped by the definition it fires.
 
-        What a caller asking *"is anything running my subscription?"* wants, and
-        the shape `status()` cannot have now that several schedules may name one
-        definition.
+        What a caller asking *"is anything running my subscription?"* wants: it
+        answers for the definition, which is the thing somebody subscribed. A
+        list per definition because `check` is what holds it to one, so a file
+        edited past that refusal is reported rather than silently halved.
         """
         out: dict[str, list[dict[str, object]]] = {}
         for sid, row in self.status().items():

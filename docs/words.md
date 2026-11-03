@@ -6,7 +6,7 @@ Each word means exactly one thing, and there is no second word for it.
 | --- | --- |
 | **stage** | One layer of the pipeline, holding tables. Order in `qanat.yaml` is order in the pipeline. |
 | **table** | One dataset inside a stage. Always addressed `stage.table` — never as two fields. |
-| **connector** | *How* an ingestion job reaches outside: `sec`, `yfinance`, `rest`, `sql`, `csv`. |
+| **connector** | *How* an ingestion job reaches outside: `sec` and `yfinance`, and those two. `rest`, `sql` and `csv` shipped until 0.12.0 and no project declared one — a fixed pipeline is the product, so the roster is closed and `check` refuses a name nothing implements. |
 | **universe** | A csv of symbols, named by a connector's `from_universe`. Point-in-time when it carries `from` and `to`. **A file, not a key** — the `universes:` registry and `universe:` on a transform went with the stages that needed a basket. A screen takes its list with the call. |
 | **lineage** | Where a value came from: the execution that wrote its row, the job that execution was an attempt at, the definition behind that job, and which version of it. |
 
@@ -24,8 +24,10 @@ Each word means exactly one thing, and there is no second word for it.
 refused for carrying the other's fields.** They were one object called a
 `source`, with `schedule:` welded on as a field — so *what to fetch*, *how
 often* and *which table* were one edit, and "Microsoft daily, Apple weekly" had
-no answer. Several schedules may point at one definition; a definition with none
-is ordinary and runs when asked.
+no answer — two definitions, one cadence each. **A definition carries at most
+one schedule**, because over a single selection the finer cron already does
+everything the coarser one would; a definition with no schedule is ordinary and
+runs when asked. Until 0.12.0 it could carry several.
 
 **A retried job is one job and several executions.** Three attempts at the 07:00
 poll used to be three unrelated rows, so *"did the 07:00 poll succeed?"* had no
@@ -116,7 +118,7 @@ refused at load, with the key it got wrong named.
 | --- | --- | --- |
 | `from:` | transform definition | the tables it reads |
 | `to:` | either definition | the tables it writes |
-| `connector:` | ingestion definition | sec · yfinance · rest · sql · csv |
+| `connector:` | ingestion definition | sec · yfinance |
 | `key:` | ingestion definition | the columns that identify one row |
 | `script:` | transform definition | path to a `.sql` or `.py` file |
 | `options:` | either definition | free configuration, passed through |

@@ -99,12 +99,34 @@ def save_transform(project: Project, root: Path, raw: dict,
 def save_schedule(project: Project, root: Path, raw: dict) -> list[str]:
     """Add or replace one cadence over one definition.
 
-    Several may point at the same definition, which is the whole reason a
-    schedule is a row. Replacing is matched on the schedule's own id, so saving
-    a weekly one does not touch the daily one beside it.
+    A definition takes one, so this is in practice a replacement -- matched on
+    the schedule's own id, which means moving a cadence is a save of the new id
+    and a delete of the old one. `save_subscription` does both at once.
     """
     schedule = JobSchedule.model_validate(raw)
     return _edit(project, root, lambda d: upsert_schedule(d, schedule))
+
+
+def save_subscription(project: Project, root: Path, definition: dict,
+                      schedule: dict, drop: list[str] | None = None) -> list[str]:
+    """A selection and its cadence, written as one edit.
+
+    **A subscription is not two edits, and writing it as two left debris.** The
+    definition was saved, then the schedule -- so a schedule the contract
+    refused left the definition behind it in the file, with no cadence on it and
+    nothing to say it was half of a call that failed. One draft, one validation,
+    and a refusal touches nothing.
+    """
+    job = IngestionJobDefinition.model_validate(definition)
+    cadence = JobSchedule.model_validate(schedule)
+
+    def change(d: Project) -> None:
+        upsert_ingestion(d, job)
+        for dead in drop or []:
+            remove_schedule(d, dead)
+        upsert_schedule(d, cadence)
+
+    return _edit(project, root, change)
 
 
 def delete_schedule(project: Project, root: Path, schedule_id: str) -> list[str]:

@@ -93,7 +93,7 @@ def load(path: str | os.PathLike[str] | None = None) -> tuple[Project, Path]:
             "`transform_job_definitions:`,\n"
             "  and the `schedule:` field on either one is a `job_schedules:` row pointing "
             "at it by id --\n"
-            "  which is what lets one definition carry a daily and a weekly.\n"
+            "  so changing a cadence is not an edit to the selection.\n"
             "  There is no converter. Write the new keys, or start the project again."
         )
     stray = sorted(k for k in raw if part_for(k))
@@ -136,6 +136,41 @@ def load(path: str | os.PathLike[str] | None = None) -> tuple[Project, Path]:
             msg = err["msg"].removeprefix("Value error, ")
             lines.append(f"{where}: {msg}" if where else msg)
         raise ProjectError(f"{f.name} cannot be loaded.\n  " + "\n  ".join(lines)) from exc
+
+
+def _forms_of(definition) -> set[str]:
+    """The forms one definition polls. `form:` is a string or a list.
+
+    Empty for `yfinance`, which has no forms, and for a `sec` definition that
+    names none -- and those two mean the same thing to the overlap rule, which
+    is *every* form.
+    """
+    form = (definition.options or {}).get("form")
+    many = form if isinstance(form, (list, tuple)) else [form]
+    return {str(f).strip().upper() for f in many if str(f or "").strip()}
+
+
+def _filers_of(definition) -> set[str]:
+    """Who one definition polls, as written. `sec` and `yfinance` both say
+    `companies:`, so there is one reader for both.
+
+    A ticker and the CIK behind it read as two companies here, and so do two
+    definitions pointing at different `from_universe` files that happen to share
+    a symbol. **Both are misses rather than false alarms** -- this says nothing
+    where it cannot be sure, and a basket is resolved by reading a csv, which is
+    not work a validator that runs on every edit should be doing.
+
+    **The ticker-and-CIK half wants a company index to fix properly** -- one
+    place where a ticker, a CIK and a Yahoo symbol resolve to one company, so
+    nothing is held twice under two names. `sec.resolve_ciks` does that today by
+    asking EDGAR, which is a network call and therefore not something a
+    validator may do.
+    """
+    options = definition.options or {}
+    if options.get("from_universe"):
+        return {f"universe:{options['from_universe']}"}
+    return {str(c).strip().upper() for c in options.get("companies") or []
+            if str(c).strip()}
 
 
 def validate(p: Project, root: Path) -> Report:
@@ -215,7 +250,19 @@ def validate(p: Project, root: Path) -> Report:
         seen_ids.add(obj.id)
 
     # ---- ingestion job definitions --------------------------------------------
+    # **The registry is what says which connectors exist**, so the check is here
+    # rather than in a `Literal` on the field. `sec` and `yfinance` are what
+    # ship; a name with nothing behind it used to fail at the first poll, with
+    # a KeyError from inside the adapter lookup and no mention of the file it
+    # came from.
+    from qanat.connectors import ADAPTERS
+
     for s in p.ingestion_job_definitions:
+        if s.connector not in ADAPTERS:
+            r.errors.append(
+                f"ingestion job '{s.id}' names connector '{s.connector}', which nothing "
+                f"implements. There are {len(ADAPTERS)}: {', '.join(sorted(ADAPTERS))}"
+            )
         if s.stage not in stage_ids:
             r.errors.append(
                 f"ingestion job '{s.id}' writes to unknown stage '{s.stage}'")
@@ -234,6 +281,66 @@ def validate(p: Project, root: Path) -> Report:
                 f"schedule '{sch.id}' fires '{sch.definition}', which is not a definition in "
                 f"this project. Known: "
                 f"{', '.join(d.id for d in p.definitions) or '(none)'}"
+            )
+
+    # **One definition carries at most one schedule**, which reverses the
+    # relaxation that made a cadence a row in the first place. The relaxation
+    # bought one thing -- a definition carrying a daily and a weekly without
+    # being duplicated -- and that thing is not worth having: over one selection
+    # the finer cron already does everything the coarser one would, so the
+    # coarser one is the same fetch again on a subset of its ticks.
+    #
+    # What the row shape is still for is the other half, and that half stands:
+    # a schedule names no selection, so *two selections* on two cadences are two
+    # definitions, and neither has a cadence welded into it.
+    by_definition: dict[str, list[str]] = {}
+    for sch in p.job_schedules:
+        by_definition.setdefault(sch.definition, []).append(sch.id)
+    for did, sids in sorted(by_definition.items()):
+        if len(sids) > 1:
+            r.errors.append(
+                f"'{did}' is fired by {len(sids)} schedules ({', '.join(sorted(sids))}), and a "
+                f"definition takes one. Two cadences over one selection are the finer one "
+                f"doing the coarser one's work twice -- keep the cadence you want and drop the "
+                f"rest. A second *selection* on its own cadence is a second definition"
+            )
+
+    # **Two clocks must not poll one company.** A definition may overlap another
+    # freely -- it records what somebody decided to follow, and by the time a
+    # project has followed a dozen companies nearly every pair of definitions
+    # shares one. Overlap only costs something once both are on a clock, because
+    # then the same row is fetched twice from a host that rate-limits, and the
+    # second fetch cannot land a row the first did not.
+    #
+    # **Both connectors name their selection `companies:`**, so this is not an
+    # EDGAR rule with a yfinance one beside it. What differs is that `sec` also
+    # has a form, and a filer shared across two different forms is two piles of
+    # documents rather than one twice.
+    scheduled = {sch.definition for sch in p.job_schedules}
+    polling = [d for d in p.ingestion_job_definitions if d.id in scheduled]
+    for i, one in enumerate(polling):
+        for two in polling[i + 1:]:
+            # Two *different* upstreams into one table is a separate question,
+            # and `subscribe_filings` already refuses the case it owns.
+            if one.ref != two.ref or one.connector != two.connector:
+                continue
+            shared_filers = _filers_of(one) & _filers_of(two)
+            if not shared_filers:
+                continue
+            left, right = _forms_of(one), _forms_of(two)
+            # No `form:` means every form, so a definition without one overlaps
+            # any definition with one. `yfinance` has no forms at all, which is
+            # this same case and needs no branch of its own.
+            shared_forms = left & right
+            if left and right and not shared_forms:
+                continue
+            for_what = (f" for {', '.join(sorted(shared_forms))}" if shared_forms
+                        else "")
+            r.errors.append(
+                f"'{one.id}' and '{two.id}' are both on a clock and both poll "
+                f"{', '.join(sorted(shared_filers))}{for_what} into {one.ref}. The same row "
+                f"would be fetched twice and landed once. Drop one of the two schedules, or "
+                f"narrow a selection so they do not meet"
             )
 
     # ---- transform job definitions --------------------------------------------

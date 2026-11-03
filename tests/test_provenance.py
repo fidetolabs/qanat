@@ -31,7 +31,7 @@ time_columns:
 ingestion_job_definitions:
   - id: land
     to: [raw.docs]
-    connector: csv
+    connector: seed
     key: [id]
     options: {{path: ./seed/docs.csv}}
 transform_job_definitions:

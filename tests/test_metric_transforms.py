@@ -49,12 +49,12 @@ corpus:
 ingestion_job_definitions:
   - id: land_facts
     to: [raw.facts]
-    connector: csv
+    connector: seed
     key: [subject, as_of]
     options: {{path: ./seed/facts.csv}}
   - id: land_prices
     to: [raw.prices]
-    connector: csv
+    connector: seed
     key: [subject, as_of]
     options: {{path: ./seed/prices.csv}}
 """

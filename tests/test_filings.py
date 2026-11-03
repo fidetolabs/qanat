@@ -549,21 +549,54 @@ def test_list_steps_reads_the_cron_line_the_tool_wrote(written, edgar):
         session.close()
 
 
-def test_the_same_selection_at_two_hours_is_one_definition_and_two_cadences(
-        written, edgar):
-    """Subscribing to the same thing twice must not leave two selections."""
+def test_the_same_selection_at_a_new_hour_moves_the_cadence(written, edgar):
+    """Subscribing to the same thing twice must not leave two selections.
+
+    **Nor two cadences, which it did until 0.12.0.** A definition takes one
+    schedule, so asking again at a different hour is how an interval is changed
+    -- the second call moves the clock rather than adding one beside it, and
+    `*/9` polling a selection `*/6` already polls is the same fetch twice.
+    """
     p, _store, root = written
     first = filings.subscribe(p, root, ["AAPL"], forms=["10-K"], hour=6)
     again = filings.subscribe(p, root, ["AAPL"], forms=["10-K"], hour=9)
-    # Same selection, same definition. A different hour is a *different* cadence,
-    # so it is a second schedule over the one definition rather than an edit to
-    # the first -- which is the whole point of splitting them.
     assert first["definition"] == again["definition"] == "filings"
     assert first["new_definition"] is False and again["new_definition"] is False
     assert first["subscribed"] != again["subscribed"]
     assert len(p.ingestion_job_definitions) == 1
-    assert [s.cron for s in p.schedules_for("filings")] == ["0 6 * * *", "0 9 * * *"], \
-        "the second call added a cadence instead of replacing the first"
+    assert [s.cron for s in p.schedules_for("filings")] == ["0 9 * * *"], \
+        "the second call added a cadence instead of moving the first"
+    assert again["other_schedules"] == []
+
+
+def test_a_second_subscription_overlapping_a_live_one_is_refused(written, edgar):
+    """**Two clocks on one filer and form is the thing the validation stops**,
+    and the agent surface is where somebody would reach it: subscribe to AAPL,
+    then to AAPL and MSFT, and the second is a new definition that polls AAPL
+    again. The refusal names both.
+    """
+    p, _store, root = written
+    filings.subscribe(p, root, ["AAPL"], forms=["10-K"], hour=6)
+    with pytest.raises(filings.FilingsError) as exc:
+        filings.subscribe(p, root, ["AAPL", "MSFT"], forms=["10-K"], hour=7)
+    assert "AAPL" in str(exc.value) and "10-K" in str(exc.value)
+
+    # And nothing was left behind by the rejected call. `_edit` validates a copy
+    # for exactly this reason.
+    assert [d.id for d in p.ingestion_job_definitions] == ["filings"]
+    assert [s.cron for s in p.schedules_for("filings")] == ["0 6 * * *"]
+
+
+def test_two_subscriptions_that_do_not_meet_both_stand(written, edgar):
+    """Microsoft daily, Apple weekly -- the request the job model exists for. Two
+    definitions, one clock each, no filer in both."""
+    p, _store, root = written
+    first = filings.subscribe(p, root, ["MSFT"], forms=["10-K"], hour=7)
+    second = filings.subscribe(p, root, ["AAPL"], forms=["10-K"],
+                               every="monthly", hour=9)
+    assert first["definition"] != second["definition"]
+    assert second["other_definitions"] == [first["definition"]]
+    assert len(p.job_schedules) == 2
 
 
 def test_a_form_nothing_can_parse_is_refused_at_subscribe_time(written, edgar):
@@ -739,10 +772,12 @@ def test_a_subscription_over_two_forms_lands_both_and_labels_each_one(
 
 
 def test_a_corpus_fed_by_another_connector_is_not_taken_over(tmp_path, edgar):
-    """A csv-fed documents table is somebody's own pipeline, not an EDGAR poll."""
+    """A documents table somebody else's connector fills is their pipeline.
+
+    Several definitions may feed one table, but not several *upstreams*: the
+    rows a subscription lands are EDGAR's, and the ones already there are not.
+    """
     (tmp_path / "data").mkdir(parents=True, exist_ok=True)
-    (tmp_path / "seed").mkdir(parents=True, exist_ok=True)
-    (tmp_path / "seed" / "docs.csv").write_text("id\n1\n")
     write_project_text(tmp_path, textwrap.dedent("""\
         project: filings
         store: ./data/qanat.duckdb
@@ -752,9 +787,9 @@ def test_a_corpus_fed_by_another_connector_is_not_taken_over(tmp_path, edgar):
         ingestion_job_definitions:
           - id: docs
             to: [raw.documents]
-            connector: csv
+            connector: yfinance
             options:
-              path: ./seed/docs.csv
+              symbols: [AAPL]
         corpus:
           documents: raw.documents
     """))
@@ -763,7 +798,7 @@ def test_a_corpus_fed_by_another_connector_is_not_taken_over(tmp_path, edgar):
     project, _ = load(tmp_path)
     store = Store(project.store_url(tmp_path))
     try:
-        with pytest.raises(filings.FilingsError, match="csv connector"):
+        with pytest.raises(filings.FilingsError, match="yfinance connector"):
             filings.subscribe(project, tmp_path, ["AAPL"], forms=["10-K"])
     finally:
         store.close()

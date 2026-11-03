@@ -4,7 +4,7 @@ Nine words, and each one means exactly one thing:
 
     stage       an ordered stage that holds tables
     table       one dataset inside a stage, addressed `stage.table`
-    connector   how an ingestion job reaches outside: rest, sql, csv, sec, yfinance
+    connector   how an ingestion job reaches outside: sec, yfinance
 
     ingestion_job_definition   what to fetch, and which table it lands in
     transform_job_definition   which tables go in, which come out, and the script
@@ -49,7 +49,15 @@ from pydantic import (
 #: else is a name the user chose, and `check` enforces properties rather than
 #: names. This was an enum of five until the five described one workflow.
 StageKind = str
-Connector = Literal["rest", "sql", "csv", "sec", "yfinance"]
+#: **Two upstreams ship, and the registry is what says so rather than this
+#: type.** `rest`, `sql` and `csv` were here until 0.12.0 and no shipped project
+#: declared one: a project that can declare an arbitrary HTTP feed is a general
+#: ETL tool, and being one fixed pipeline instead is what keeps the surface
+#: small enough to drive by asking. A name with no adapter behind it is refused
+#: by `check`, which names the ones there are -- so registering an adapter is a
+#: thing a developer extending the package does, and not a thing a config can
+#: do by naming it. Was a `Literal` of five, for as long as five was true.
+Connector = str
 #: How a job lands its rows. `replace` is still how a derived table is rebuilt --
 #: it is a function of what is upstream of it, so rewriting it loses nothing. A
 #: An ingestion job is the other case: its rows are the thing nothing else can
@@ -111,8 +119,8 @@ def _no_cadence(raw: Any, what: str) -> Any:
             f"a {what} names no cadence, and this one says `{found[0]}:`. How often a "
             f"definition runs is a `job_schedules:` entry pointing at it -- "
             f"{{id: <name>, definition: {raw.get('id', '<this one>')!s}, cron: ...}} -- so "
-            f"one definition can carry a daily and a weekly without being copied, and so "
-            f"changing the cadence is not an edit to the selection"
+            f"changing the cadence is not an edit to the selection. A definition takes "
+            f"one schedule; a second selection on its own cadence is a second definition"
         )
     return raw
 

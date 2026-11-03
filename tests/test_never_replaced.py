@@ -32,7 +32,7 @@ time_columns:
 ingestion_job_definitions:
   - id: land
     to: [raw.prices]
-    connector: csv
+    connector: seed
     key: [symbol, as_of]
     options: {{path: ./seed/prices.csv}}
 """
@@ -58,7 +58,7 @@ def test_mode_replace_is_refused_with_the_fix_in_the_message(tmp_path: Path):
         stages:
           - {id: raw, kind: raw}
         ingestion_job_definitions:
-          - {id: land, to: [raw.prices], connector: csv, mode: replace,
+          - {id: land, to: [raw.prices], connector: seed, mode: replace,
              options: {path: ./seed/prices.csv}}
         """))
     with pytest.raises(ProjectError) as exc:
@@ -79,7 +79,7 @@ def test_an_append_with_no_key_is_warned_about(tmp_path: Path):
         stages:
           - {id: raw, kind: raw}
         ingestion_job_definitions:
-          - {id: land, to: [raw.prices], connector: csv,
+          - {id: land, to: [raw.prices], connector: seed,
              options: {path: ./seed/prices.csv}}
         """))
     project, root = load(tmp_path)

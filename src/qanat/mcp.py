@@ -26,8 +26,10 @@ is sent on every request, so an agent that wants filing rows should not carry
 thirty-odd definitions to use four.
 
 **`authoring` is the top rung and the default stops below it.** The authoring
-tools keep working, and the caller they serve is the
-professional bringing a feed in through the HTTP, SQL or CSV connector. But the
+tools keep working, and the caller they serve is somebody changing the shape of
+the pipeline rather than running it -- adding a stage, pointing a transform at a
+different table. **It used to be the professional bringing a feed in through the
+HTTP, SQL or CSV connector, and that caller is gone with those connectors.** The
 pipeline from a filing to a metric is the same in every project, so somebody
 screening filings has no use for the tools that rewire it -- and carrying them
 means an agent can rewire it by accident. The rung is the whole of the fix: a
@@ -989,9 +991,13 @@ def _ingest_filings(s: Session, args: dict) -> Any:
 
 @tool("subscribe_filings",
       "The same selection as find_filings, pointed forwards: when a matching filing "
-      "appears, it is ingested. The interval and the hour are yours. There is one "
-      "subscription per corpus -- a table has exactly one producer, so this sets the "
-      "selection rather than starting a second poll, and `forms` is a list so one "
+      "appears, it is ingested. The interval and the hour are yours. A new selection "
+      "writes its own subscription beside whatever is already polling -- several may "
+      "feed one documents table, and every row names the execution that landed it -- "
+      "but not one that polls a company and form something else already polls on a "
+      "clock, because that filing would be fetched twice and landed once. "
+      "Calling this twice with the same selection changes that subscription's cadence "
+      "rather than adding a second one. `forms` is a list so one "
       "subscription covers both of the forms that can be ingested. Call "
       "list_subscriptions afterwards: a schedule nothing reads is worse than no "
       "schedule, and that tool is the only thing that can tell you which you have.",
@@ -1211,11 +1217,14 @@ def _save_universe(s: Session, args: dict) -> Any:
       {"properties": {"id": {"type": "string"},
                       "to": {"type": "array", "items": {"type": "string"}},
                       "connector": {"type": "string",
-                                    "enum": ["rest", "sql", "csv", "sec", "yfinance"]},
+                                    "enum": ["sec", "yfinance"]},
                       "key": {"type": "array", "items": {"type": "string"}},
                       "schedule": {"type": "string",
                                    "description": "a cron line. Stored as its own cadence "
-                                                  "row, so this job may carry more than one"},
+                                                  "row, and a job carries at most one -- a "
+                                                  "second cadence over one selection is the "
+                                                  "finer of the two doing the coarser one's "
+                                                  "work twice"},
                       "options": {"type": "object"}},
        "required": ["id", "to", "connector"]}, writes=True,
       scope="authoring")

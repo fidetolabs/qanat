@@ -126,7 +126,7 @@ def test_saving_keeps_every_field_a_job_declares(tmp_path: Path):
         "stages": [{"id": "raw", "kind": "raw"}, {"id": "f", "kind": "features"},
                    {"id": "w", "kind": "weights"}],
         "ingestion_job_definitions": [
-            {"id": "s", "to": ["raw.t"], "connector": "csv",
+            {"id": "s", "to": ["raw.t"], "connector": "seed",
              "options": {"path": "./seed/x.csv"}, "key": ["symbol", "ts"]}],
         "transform_job_definitions": [
             {"id": "a", "from": ["raw.t"], "to": ["w.a"], "script": "a.py",
@@ -161,7 +161,7 @@ ingestion_job_definitions:
 - id: bars                       # the only feed
   to:
   - raw.bars
-  connector: csv
+  connector: seed
   # landed exactly as it arrived, never edited
   options:
     series: bars

@@ -327,10 +327,10 @@ def test_the_connector_asks_only_for_what_came_after(monkeypatch):
 
 
 def test_the_dispatcher_only_passes_since_to_adapters_that_take_it():
-    """`csv` and `rest` have no upstream to ask, so handing them a `since`
-    would be a TypeError on every poll."""
+    """`sec` cannot ask EDGAR for only what came after a date -- the submissions
+    index answers whole -- so handing it a `since` would be a TypeError on
+    every poll. The flag is opt-in for exactly that reason."""
     from qanat.connectors import ADAPTERS
 
     assert getattr(ADAPTERS["yfinance"], "wants_since", False)
-    assert not getattr(ADAPTERS["csv"], "wants_since", False)
     assert not getattr(ADAPTERS["sec"], "wants_since", False)

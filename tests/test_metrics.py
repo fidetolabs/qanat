@@ -33,7 +33,7 @@ stages:
 ingestion_job_definitions:
   - id: land
     to: [raw.docs]
-    connector: csv
+    connector: seed
     options:
       path: ./seed/docs.csv
 transform_job_definitions:

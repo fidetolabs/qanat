@@ -2,6 +2,64 @@
 
 ## Unreleased
 
+### Two connectors, because the product is one pipeline and not a way to build any
+
+`rest`, `sql` and `csv` are gone. **No shipped project declared one** — the examples use `sec` and
+`yfinance`, and the only thing left reaching for `csv` was the test suite, which now registers its
+own `seed` adapter and keeps its fixture off the network. A project that can declare an arbitrary
+HTTP feed is a general ETL tool; being a fixed pipeline instead is what keeps the surface small
+enough to drive by asking for things.
+
+`Connector` was a `Literal` of five and is now `str`, with **the registry as the roster**: `check`
+refuses a name nothing implements and lists the ones there are. An unknown connector used to reach
+the first poll and die on a `KeyError` inside the adapter lookup, naming no file. So registering an
+adapter is something a developer extending the package does, and not something a config can do by
+spelling a word.
+
+`${VAR}` expansion moved from `rest.py` to `connectors/env.py`. It was never about HTTP — `sec`
+reads the contact address through it, and that is the caller left.
+
+### A definition carries one schedule
+
+**This reverses the relaxation that made a cadence a row.** That change bought two things and only
+one of them was worth having. *Two selections on two cadences* is the request the job model exists
+for — Microsoft daily, Apple weekly — and it is two definitions with one schedule each, so it still
+holds. *Two cadences over one selection* was the other half: over a single selection the finer cron
+already does everything the coarser one would, so the coarser one is the same fetch again on a
+subset of its ticks. `check` refuses it now, and names which schedules to drop.
+
+Asking `subscribe_filings` for a selection it already polls at a different hour **moves** that
+subscription's cadence rather than writing a second one beside it.
+
+### Two clocks may not poll one company
+
+A definition may overlap another freely: it records what somebody decided to follow, and by the
+time a project follows a dozen companies nearly every pair of definitions shares one. **Overlap
+only costs something once both are on a clock** — then the same row is fetched twice from a host
+that rate-limits, and the second fetch cannot land a row the first did not, because the `key:` sees
+to that. So `check` refuses two *scheduled* definitions that poll one company into one table, and
+names the company and, where there is one, the form.
+
+**One rule, both connectors.** `sec` and `yfinance` both name their selection `companies:`. What
+`sec` adds is a form, and one filer across two different forms is two piles of documents rather than
+one pile twice — so the forms have to meet as well. **A definition naming no `form:` means every
+form** and overlaps anything, which covers an unrestricted `sec` definition and every `yfinance` one
+with no branch of its own. Two definitions on one table with *different* connectors are left alone,
+because they fetch different things.
+
+It compares selections as written, so a ticker and the CIK behind it read as two companies, and two
+different `from_universe` baskets sharing a symbol are not caught. Both are misses rather than
+false alarms. **Resolving a ticker and a CIK to one company wants a company index** — `sec` does it
+today by asking EDGAR, which is a network call and so closed to a validator that runs on every
+edit.
+
+### A subscription is one edit
+
+`subscribe_filings` wrote its definition and then its schedule, as two edits. **A schedule the
+contract refused left the definition behind it in the file** — no cadence on it, and nothing to say
+it was half of a call that failed. It is one draft and one validation now, so a refusal touches
+nothing.
+
 ### `qanat init` ships the spans producer, and an empty list stops meaning two things
 
 **0.11.0 shipped both ends of a join and nothing that makes it.** `sections.py` splits a filing

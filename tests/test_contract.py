@@ -20,7 +20,7 @@ BASE = {
         {"id": "features", "kind": "features"},
         {"id": "picks", "kind": "whatever-this-project-calls-it"},
     ],
-    "ingestion_job_definitions": [{"id": "s", "to": ["raw.bars"], "connector": "csv", "options": {"path": "./seed/x.csv"}}],
+    "ingestion_job_definitions": [{"id": "s", "to": ["raw.bars"], "connector": "seed", "options": {"path": "./seed/x.csv"}}],
 }
 
 

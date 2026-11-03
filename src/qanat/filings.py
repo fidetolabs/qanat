@@ -310,7 +310,7 @@ def subscribe(
     subscription that fills a table with documents nothing can parse is worse
     than no subscription, and the refusal costs one call instead of a month.
     """
-    from qanat.editor import EditorError, save_ingestion, save_schedule
+    from qanat.editor import EditorError, save_subscription
 
     if companies and from_universe:
         raise FilingsError(
@@ -401,15 +401,26 @@ def subscribe(
     # now a second definition, so there is nothing to overwrite.
     changed: list[dict[str, Any]] = []
 
+    sid = schedule_id_for(name, every, hour)
+
+    # **The cadence of a selection already polling is replaced, not added to.**
+    # A schedule id carries the interval and the hour, so the same selection at
+    # a new hour used to write a second row -- and a definition takes one
+    # schedule, so that is now refused by `check` rather than silently doubling
+    # the poll. Asking again with a different hour is how an interval is
+    # changed, so it has to mean that.
+    superseded = [s.id for s in project.schedules_for(name) if s.id != sid]
+
     try:
-        warnings = save_ingestion(project, root, {
-            "id": name, "to": [ref], "connector": "sec", "mode": "append",
-            "key": ["id"], "options": options,
-        })
-        sid = schedule_id_for(name, every, hour)
-        warnings += save_schedule(project, root, {
-            "id": sid, "definition": name, "cron": cron, "enabled": True,
-        })
+        warnings = save_subscription(
+            project, root,
+            definition={
+                "id": name, "to": [ref], "connector": "sec", "mode": "append",
+                "key": ["id"], "options": options,
+            },
+            schedule={"id": sid, "definition": name, "cron": cron, "enabled": True},
+            drop=superseded,
+        )
     except EditorError as exc:
         raise FilingsError(str(exc)) from exc
 

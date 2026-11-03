@@ -1,7 +1,11 @@
 """Connector adapters: how an ingestion job reaches outside the project.
 
-Add one by writing `fetch(job, root) -> DataFrame` and registering it in
-ADAPTERS. That is the whole plugin surface.
+**There are two, and that is the whole list.** `sec` is EDGAR and `yfinance` is
+market data, which is the pipeline this product is. A generic `rest`, `sql` and
+`csv` connector shipped alongside them until 0.12.0 and nothing used them: a
+project that can declare an arbitrary HTTP feed is a general ETL tool, and the
+decision to be a fixed pipeline instead is what makes the rest of the surface
+small enough to be driven by an agent.
 
 **This package was `qanat/sources/`, and the word is why it moved.** `source`
 meant a declaration in the config, a module in here, the `connector:` value, and
@@ -17,13 +21,10 @@ from pathlib import Path
 
 import pandas as pd
 
-from qanat.connectors import csv_connector, rest, sec, sql, yfinance_connector
+from qanat.connectors import sec, yfinance_connector
 from qanat.models import IngestionJobDefinition
 
 ADAPTERS: dict[str, Callable[..., pd.DataFrame]] = {
-    "rest": rest.fetch,
-    "sql": sql.fetch,
-    "csv": csv_connector.fetch,
     "sec": sec.fetch,
     "yfinance": yfinance_connector.fetch,
 }

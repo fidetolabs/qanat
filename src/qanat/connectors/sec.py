@@ -65,7 +65,7 @@ from typing import Any
 import httpx
 import pandas as pd
 
-from qanat.connectors.rest import expand
+from qanat.connectors.env import expand
 from qanat.models import IngestionJobDefinition
 
 SUBMISSIONS = "https://data.sec.gov/submissions/CIK{cik}.json"

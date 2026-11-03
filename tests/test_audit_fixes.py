@@ -133,49 +133,33 @@ def test_w13_a_float_widens_the_column_instead_of_being_rounded(tmp_path: Path):
     s.close()
 
 
-def test_w07_the_csv_connector_can_keep_a_zero_padded_ticker(tmp_path: Path):
-    """`pd.read_csv` with no options turned KRX 005930 into 5930, and the universe
-    file -- which lists it as text -- then joined to nothing."""
-    from qanat.connectors import fetch
-    from qanat.models import IngestionJobDefinition
-
-    (tmp_path / "t.csv").write_text("date,symbol\n2024-01-01,005930\n")
-    src = IngestionJobDefinition(id="k", writes=["raw.k"], connector="csv",
-                 options={"path": "./t.csv", "dtype": {"symbol": "str"}})
-    assert list(fetch(src, tmp_path)["symbol"]) == ["005930"]
-
-    bad = IngestionJobDefinition(id="k", writes=["raw.k"], connector="csv",
-                 options={"path": "./t.csv", "dtypo": {}})
-    with pytest.raises(ValueError, match="does not know the option"):
-        fetch(bad, tmp_path)
-
-
-def test_r05_r06_the_shapes_the_public_web_actually_returns():
-    """A single object could not be landed at all, and `records:` had no way to
-    reach element 1 of a `[metadata, rows]` body."""
-    from qanat.connectors.rest import _flatten, dig
-
-    one = {"data": {"amount": "79235.53", "base": "BTC", "currency": "USD"}}
-    assert len(_flatten(one, {"records": "data"})) == 1
-
-    two = [{"page": 1}, [{"date": "2024", "value": 1}, {"date": "2023", "value": 2}]]
-    assert len(dig(two, "1")) == 2
-
-    with pytest.raises(KeyError, match="no segment"):
-        dig({"a": 1}, "nope")
+# **W07 and R05/R06 went with their connectors in 0.12.0.** W07 was the csv
+# connector turning KRX `005930` into `5930`, and R05/R06 were the body shapes
+# the public web answers with. Neither connector ships, so neither regression
+# has a surface to come back on -- and a test keeping a deleted module alive is
+# how the module comes back.
 
 
 def test_w15_an_unset_env_var_says_which_one():
     """It became an empty string, producing `Illegal header value b'Bearer '` or a
     request sent with a blank key -- and sometimes the actively wrong "rest needs
-    options.url" when the option was set and the variable was not."""
-    from qanat.connectors.rest import MissingEnv, _body
+    options.url" when the option was set and the variable was not.
+
+    **`rest` is gone and the fix is not**: `expand` moved to `connectors/env.py`
+    and `sec` reads the contact address through it, which is the live caller.
+    """
+    from qanat.connectors.env import expand
+    from qanat.connectors.sec import user_agent
     from qanat.models import IngestionJobDefinition
 
-    src = IngestionJobDefinition(id="px", writes=["raw.p"], connector="rest",
-                 options={"url": "https://example.invalid/${QANAT_NOT_SET_ANYWHERE}"})
-    with pytest.raises(MissingEnv, match="QANAT_NOT_SET_ANYWHERE"):
-        _body(src, None)
+    missing: set[str] = set()
+    assert expand("${QANAT_NOT_SET_ANYWHERE}/x", missing) == "${QANAT_NOT_SET_ANYWHERE}/x"
+    assert missing == {"QANAT_NOT_SET_ANYWHERE"}
+
+    src = IngestionJobDefinition(id="px", writes=["raw.p"], connector="sec",
+                 options={"user_agent": "${QANAT_NOT_SET_ANYWHERE}"})
+    with pytest.raises(ValueError, match="QANAT_NOT_SET_ANYWHERE"):
+        user_agent(src)
 
 
 # ------------------------------------------------------------- the graph rules
@@ -196,7 +180,7 @@ def _project(tmp_path: Path, steps: str, files: dict) -> tuple:
         "project: t\nstore: ./data/q.duckdb\n"
         "stages:\n  - {id: raw, kind: raw}\n  - {id: f, kind: features}\n"
         "  - {id: weights, kind: weights}\n"
-        "ingestion_job_definitions:\n  - {id: b, to: [raw.b], connector: csv, key: [date, symbol], "
+        "ingestion_job_definitions:\n  - {id: b, to: [raw.b], connector: seed, key: [date, symbol], "
         "options: {path: ./seed/b.csv}}\n"
         "transform_job_definitions:\n"
         "  - {id: norm, from: [raw.b], to: [f.prices], script: transforms/norm.sql}\n"
@@ -331,7 +315,7 @@ def test_g05_ctx_sql_is_held_to_the_same_rule(tmp_path: Path):
     project = Project(
         name="t",
         stages=[Stage(id="raw", kind="raw"), Stage(id="w", kind="weights")],
-        ingestion_job_definitions=[IngestionJobDefinition(id="b", writes=["raw.bars"], connector="csv")],
+        ingestion_job_definitions=[IngestionJobDefinition(id="b", writes=["raw.bars"], connector="seed")],
         transform_job_definitions=[TransformJobDefinition(id="a", reads=[], writes=["w.h"], script="a.py")],
     )
     store = Store(tmp_path / "t.duckdb")

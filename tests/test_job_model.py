@@ -38,7 +38,7 @@ stages:
 ingestion_job_definitions:
   - id: land
     to: [raw.docs]
-    connector: csv
+    connector: seed
     key: [id]
     options: {path: ./seed/docs.csv}
 transform_job_definitions:
@@ -102,16 +102,218 @@ def test_a_definition_with_no_schedule_stays_ordinary_and_runnable(tmp_path: Pat
         store.close()
 
 
-# ---- A2 (half of it): one definition, several cadences -----------------------
-def test_one_definition_may_carry_two_cadences(tmp_path: Path):
+# ---- A2 (half of it): one definition, one cadence ----------------------------
+def test_one_definition_carries_one_cadence(tmp_path: Path):
+    """**This passed until 0.12.0, and the thing it allowed is not worth having.**
+
+    A cadence became a row so that two *selections* could run on two clocks
+    without a cadence welded into either declaration, and that half stands. Two
+    cadences over *one* selection is the other half, and over one selection the
+    finer cron already does everything the coarser one would -- so the coarser
+    one is the same fetch again on a subset of its ticks.
+    """
     root = _project(tmp_path, BASE + """\
 job_schedules:
   - {id: land_daily,  definition: land, cron: "0 6 * * *"}
   - {id: land_weekly, definition: land, cron: "0 6 * * 1"}
 """)
     project, where = load(root)
+    rep = validate(project, where)
+    assert not rep.ok
+    assert any("land_daily" in e and "land_weekly" in e for e in rep.errors), rep.errors
+    assert any("a definition takes one" in e for e in rep.errors), rep.errors
+
+
+def test_one_cadence_each_over_two_definitions_still_holds(tmp_path: Path):
+    """The request the plan exists for -- Microsoft daily, Apple weekly -- is two
+    definitions with one schedule each, so narrowing to one clock per definition
+    leaves it reachable."""
+    root = _project(tmp_path, BASE + """\
+job_schedules:
+  - {id: land_daily, definition: land, cron: "0 6 * * *"}
+""")
+    project, where = load(root)
     assert validate(project, where).ok
-    assert [s.cron for s in project.schedules_for("land")] == ["0 6 * * *", "0 6 * * 1"]
+    assert [s.cron for s in project.schedules_for("land")] == ["0 6 * * *"]
+
+
+# ---- two clocks over one company and form ------------------------------------
+#: Two `sec` definitions landing one documents table. Who each polls is the
+#: argument; everything else about them is identical.
+TWO_POLLS = """\
+project: j
+store: ./data
+stages:
+  - {id: raw, kind: raw}
+ingestion_job_definitions:
+  - id: wide
+    to: [raw.documents]
+    connector: sec
+    key: [id]
+    options: {companies: [%s], form: [%s]}
+  - id: narrow
+    to: [raw.documents]
+    connector: sec
+    key: [id]
+    options: {companies: [%s], form: [%s]}
+corpus:
+  documents: raw.documents
+job_schedules:
+%s"""
+
+BOTH_ON_A_CLOCK = """\
+  - {id: wide_daily,   definition: wide,   cron: "0 6 * * *"}
+  - {id: narrow_daily, definition: narrow, cron: "0 7 * * *"}
+"""
+
+
+def _two_polls(tmp_path: Path, left: str, lforms: str, right: str, rforms: str,
+               schedules: str = BOTH_ON_A_CLOCK) -> Path:
+    write_project_text(tmp_path, TWO_POLLS % (left, lforms, right, rforms, schedules))
+    return tmp_path
+
+
+def test_two_clocks_polling_one_company_and_form_are_refused(tmp_path: Path):
+    """**One filing fetched twice and landed once.** EDGAR rate-limits, and the
+    second fetch cannot land a row the first did not -- the `key:` sees to that.
+    So the cost is real and the benefit is zero."""
+    project, where = load(_two_polls(tmp_path, "AAPL, MSFT", "10-K", "AAPL", "10-K"))
+    rep = validate(project, where)
+    assert not rep.ok
+    said = " ".join(rep.errors)
+    assert "wide" in said and "narrow" in said
+    assert "AAPL" in said and "10-K" in said
+    assert "MSFT" not in said, "the shared half is what it should name, not the rest"
+
+
+def test_an_overlap_with_no_clock_on_it_is_left_alone(tmp_path: Path):
+    """**A definition records what somebody decided to follow**, and by the time
+    a project follows a dozen companies nearly every pair shares one. Overlap
+    costs nothing until both are polling, so only then is it refused."""
+    project, where = load(_two_polls(
+        tmp_path, "AAPL, MSFT", "10-K", "AAPL", "10-K",
+        schedules='  - {id: wide_daily, definition: wide, cron: "0 6 * * *"}\n'))
+    assert validate(project, where).ok
+
+
+def test_two_clocks_on_different_companies_are_fine(tmp_path: Path):
+    project, where = load(_two_polls(tmp_path, "AAPL", "10-K", "MSFT", "10-K"))
+    assert validate(project, where).ok
+
+
+def test_two_clocks_on_different_forms_are_fine(tmp_path: Path):
+    """The same filer on two forms is two piles of documents, not one twice."""
+    project, where = load(_two_polls(tmp_path, "AAPL", "10-K", "AAPL", "10-Q"))
+    assert validate(project, where).ok
+
+
+#: Two `yfinance` definitions landing one prices table. No forms anywhere --
+#: which is the case a `sec` definition naming no `form:` also lands in.
+TWO_FEEDS = """\
+project: j
+store: ./data
+stages:
+  - {id: raw, kind: raw}
+ingestion_job_definitions:
+  - id: wide
+    to: [raw.prices]
+    connector: yfinance
+    key: [subject, date]
+    options: {companies: [%s]}
+  - id: narrow
+    to: [raw.prices]
+    connector: yfinance
+    key: [subject, date]
+    options: {companies: [%s]}
+job_schedules:
+  - {id: wide_daily,   definition: wide,   cron: "0 6 * * *"}
+  - {id: narrow_daily, definition: narrow, cron: "0 7 * * *"}
+"""
+
+
+def test_two_clocks_polling_one_symbol_are_refused(tmp_path: Path):
+    """**The same waste as the EDGAR case, and the same rule.** Both connectors
+    name their selection `companies:`; what yfinance lacks is a form, and a
+    definition with no form means every form."""
+    write_project_text(tmp_path, TWO_FEEDS % ("AAPL, MSFT", "AAPL"))
+    project, where = load(tmp_path)
+    rep = validate(project, where)
+    assert not rep.ok
+    said = " ".join(rep.errors)
+    assert "AAPL" in said and "raw.prices" in said
+    assert "MSFT" not in said
+    assert " for " not in said, "there is no form to name, so none is named"
+
+
+def test_two_clocks_on_different_symbols_are_fine(tmp_path: Path):
+    write_project_text(tmp_path, TWO_FEEDS % ("AAPL", "MSFT"))
+    project, where = load(tmp_path)
+    assert validate(project, where).ok
+
+
+def test_a_definition_naming_no_form_overlaps_one_that_does(tmp_path: Path):
+    """No `form:` is not "no forms", it is *every* form. So a definition without
+    one cannot sit on a clock beside a 10-K poll of the same filer."""
+    project, where = load(_two_polls(tmp_path, "AAPL", "10-K", "AAPL", ""))
+    rep = validate(project, where)
+    assert not rep.ok
+    assert any("AAPL" in e for e in rep.errors), rep.errors
+
+
+def test_two_connectors_on_one_table_are_not_this_rule(tmp_path: Path):
+    """A sec poll and a yfinance poll of one filer fetch different things. Two
+    upstreams into one table is its own question, and not this one."""
+    write_project_text(tmp_path, """\
+project: j
+store: ./data
+stages:
+  - {id: raw, kind: raw}
+ingestion_job_definitions:
+  - id: filings
+    to: [raw.mixed]
+    connector: sec
+    key: [id]
+    options: {companies: [AAPL], form: [10-K]}
+  - id: prices
+    to: [raw.mixed]
+    connector: yfinance
+    key: [id]
+    options: {companies: [AAPL]}
+job_schedules:
+  - {id: filings_daily, definition: filings, cron: "0 6 * * *"}
+  - {id: prices_daily,  definition: prices,  cron: "0 7 * * *"}
+""")
+    project, where = load(tmp_path)
+    assert validate(project, where).ok
+
+
+def test_a_transform_carries_one_cadence_too(tmp_path: Path):
+    """The rule is about a definition, and a transform is one.
+
+    Nothing outside is fetched twice here, so the cost is cheaper than the
+    ingestion case -- but a transform is a function of what is upstream of it,
+    so the coarser of two crons recomputes what the finer one just wrote.
+    """
+    root = _project(tmp_path, BASE + """\
+job_schedules:
+  - {id: shape_hourly, definition: shape, cron: "0 * * * *"}
+  - {id: shape_daily,  definition: shape, cron: "0 6 * * *"}
+""")
+    project, where = load(root)
+    rep = validate(project, where)
+    assert not rep.ok
+    assert any("shape_hourly" in e and "shape_daily" in e for e in rep.errors), rep.errors
+
+
+def test_a_connector_nothing_implements_is_refused_by_check(tmp_path: Path):
+    """It used to reach the first poll and die inside the adapter lookup, with a
+    KeyError that named no file. The registry is the roster, so this is the one
+    place that can say what the names are."""
+    root = _project(tmp_path, BASE.replace("connector: seed", "connector: ftp"))
+    project, where = load(root)
+    rep = validate(project, where)
+    assert any("ftp" in e and "nothing implements" in e for e in rep.errors), rep.errors
+    assert any("sec" in e and "yfinance" in e for e in rep.errors), rep.errors
 
 
 def test_a_schedule_pointing_at_nothing_is_refused_by_check(tmp_path: Path):
@@ -280,11 +482,17 @@ def test_the_word_source_survives_only_as_row_provenance():
 
 
 def test_the_connector_package_is_named_for_what_it_is():
+    """**Two adapters ship**, which is the pipeline this product is. `rest`,
+    `sql` and `csv` were here until 0.12.0 and no shipped project declared one.
+    `seed` is the suite's own, registered by the autouse fixture, so it is
+    subtracted by name rather than silently tolerated."""
     import qanat.connectors
 
-    assert set(qanat.connectors.ADAPTERS) == {"rest", "sql", "csv", "sec", "yfinance"}
-    with pytest.raises(ImportError):
-        __import__("qanat.sources")
+    assert set(qanat.connectors.ADAPTERS) - {"seed"} == {"sec", "yfinance"}
+    for gone in ("qanat.sources", "qanat.connectors.rest",
+                 "qanat.connectors.sql", "qanat.connectors.csv_connector"):
+        with pytest.raises(ImportError):
+            __import__(gone)
 
 
 def test_the_old_spellings_are_refused_rather_than_aliased(tmp_path: Path):

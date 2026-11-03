@@ -76,8 +76,9 @@ corpus:
 JOBS_YAML = """\
 # --------------------------------------------------------- the ingestion jobs --
 # What to fetch, and the one table it lands in. **No cadence here** -- how often
-# this runs is a `job_schedules:` row pointing at it, below, so one definition
-# can carry a daily and a weekly without being copied.
+# this runs is a `job_schedules:` row pointing at it, below, so changing the
+# cadence is not an edit to the selection. One row per definition: two cadences
+# over one selection would be the finer doing the coarser one's work twice.
 #
 # `key:` names the columns that identify one row. A filing that arrives again
 # with the same values is not stored twice; one that arrives with a changed

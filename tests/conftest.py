@@ -106,7 +106,7 @@ stages:
 ingestion_job_definitions:
   - id: daily_prices
     to: [raw.daily_prices]
-    connector: csv
+    connector: seed
     key: [symbol, ts]
     options:
       path: ./seed/daily_prices.csv
@@ -114,7 +114,7 @@ ingestion_job_definitions:
 
   - id: news
     to: [raw.news]
-    connector: csv
+    connector: seed
     key: [symbol, ts]
     options:
       path: ./seed/news.csv
@@ -169,11 +169,12 @@ transform_job_definitions:
       description: annualised realised volatility, as a screenable metric
 
 # ------------------------------------------------------------ the schedules --
-# One cron line each, over one definition. `daily_prices` carries two, which is
-# the thing a field on the definition could not express.
+# One cron line each, over one definition, and one schedule per definition.
+# `daily_prices` carried a second at `*/30` to show a definition holding two
+# cadences; that is refused as of 0.12.0, because over one selection the finer
+# cron already does everything the coarser one would.
 job_schedules:
   - {id: daily_prices_2m,  definition: daily_prices, cron: "*/2 * * * *"}
-  - {id: daily_prices_30m, definition: daily_prices, cron: "*/30 * * * *"}
   - {id: news_5m,          definition: news,         cron: "*/5 * * * *"}
   - {id: normalize_2m,     definition: normalize,    cron: "*/2 * * * *"}
   - {id: momentum_3m,      definition: momentum,     cron: "*/3 * * * *"}
@@ -337,6 +338,49 @@ FILES = {
 }
 
 SYMBOL_LIST = ["AAPL", "MSFT", "NVDA", "AMZN", "META", "JPM", "XOM", "SPY"]
+
+
+# ------------------------------------------------------------ the `seed` connector --
+# **The suite brings its own connector, because the product ships two and both
+# need the network.** `sec` is EDGAR and `yfinance` is a market feed; a test can
+# have neither, and the shape a test asserts on -- a definition, a key, a table
+# it lands in -- is the same whatever is upstream of it.
+#
+# This was the `csv` connector, which shipped until 0.12.0 and was used by
+# nothing but these tests. **A test needing a cheap adapter is not a reason for
+# a product to offer one**, so it moved in here, where naming it `seed` says
+# what it is for. Registering it is the whole plugin surface: a name in
+# `ADAPTERS` and a `fetch(job, root)`.
+_SEED_READ_CSV = (
+    "sep", "header", "names", "usecols", "dtype", "skiprows", "nrows",
+    "na_values", "parse_dates", "thousands", "decimal", "encoding",
+)
+
+
+def _seed_fetch(job, root: Path, on_warn=None) -> pd.DataFrame:
+    path = (job.options or {}).get("path")
+    if not path:
+        raise ValueError(f"ingestion job '{job.id}': seed needs options.path")
+    kw = {k: v for k, v in (job.options or {}).items() if k in _SEED_READ_CSV}
+    return pd.read_csv(root / path, **kw)
+
+
+@pytest.fixture(autouse=True)
+def seed_connector():
+    """`connector: seed` works for the length of one test and no longer.
+
+    Restored afterwards rather than registered once at import, so nothing the
+    suite does to the roster outlives the test that did it. **A test asserting
+    on what ships has to subtract this one by name** -- `set(ADAPTERS) -
+    {"seed"}` -- because autouse means it is there during every test.
+    """
+    from qanat.connectors import ADAPTERS
+
+    before = dict(ADAPTERS)
+    ADAPTERS["seed"] = _seed_fetch
+    yield
+    ADAPTERS.clear()
+    ADAPTERS.update(before)
 
 
 #: Run the whole suite against a parquet store with

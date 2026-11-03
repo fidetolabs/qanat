@@ -73,7 +73,9 @@ and nobody edits it. The ones after hold what you worked out. You name them.
 **Transforms.** A `.sql` file, or a `.py` file with a `run(ctx)`. One says which
 tables it reads and writes, and it can only read what it declared.
 
-**Sources.** Five connectors: SEC EDGAR, Yahoo Finance, HTTP, SQL and CSV.
+**Sources.** Two connectors: SEC EDGAR and Yahoo Finance. That is the pipeline
+this is — the generic HTTP, SQL and CSV connectors shipped until 0.12.0 and were
+declared by nothing.
 
 **Metrics.** A formula with a name and a version. Shared, because
 `price / diluted EPS` is arithmetic with no judgement in it. The threshold you
@@ -355,10 +357,12 @@ end, [docs/contract.md](https://github.com/fidetolabs/qanat/blob/main/docs/contr
 something breaks, open an [issue](https://github.com/fidetolabs/qanat/issues) or
 say so on [Discord](https://discord.gg/JUmwATScS8).
 
-**Two data connectors so far.** SEC EDGAR, which reads 10-K filings, and Yahoo
-Finance, which reads prices. Anything else you bring yourself through the HTTP,
-SQL or CSV connectors. More will be added one at a time, each finished before
-the next is started.
+**Two data connectors, and that is the design rather than the progress.** SEC
+EDGAR, which reads 10-K and 10-Q filings, and Yahoo Finance, which reads prices.
+A generic HTTP, SQL and CSV connector shipped until 0.12.0 and nothing declared
+one: being a fixed pipeline is what keeps the surface small enough to drive by
+asking. More upstreams will be added one at a time, each finished before the
+next is started.
 
 **You write the formulas and pick the numbers.** Qanat works out what you asked
 for and reports what came out. Choosing a threshold is your job.

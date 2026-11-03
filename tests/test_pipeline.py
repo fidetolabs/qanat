@@ -380,7 +380,7 @@ def test_a_source_declaring_mode_replace_is_refused_at_load(tmp_path: Path):
     write_project_text(tmp_path, 
         "project: t\nstore: ./data\n"
         "stages:\n  - {id: raw, kind: raw}\n"
-        "ingestion_job_definitions:\n  - {id: b, to: [raw.b], connector: csv, mode: replace, "
+        "ingestion_job_definitions:\n  - {id: b, to: [raw.b], connector: seed, mode: replace, "
         "options: {path: ./seed/b.csv}}\n"
     )
     with pytest.raises(ProjectError) as exc:
