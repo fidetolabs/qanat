@@ -124,6 +124,51 @@ above.
 contents page and again throughout the prose, so most matches are not the heading. A boundary
 tool that returns a confident wrong offset is worse than one that admits it guessed.
 
+### Three of them read a `spans` table, and a project has to have one
+
+`list_sections`, `read_section` and `search_documents` all read the table `corpus.spans` names,
+and `read_company` returns its sections half out of the same place. `qanat init` scaffolds
+`transforms/parse_spans.py` and points `corpus:` at what it writes, so a fresh project has this
+already.
+
+**A project scaffolded before 0.11.1 does not, and nothing rewrites `qanat.yaml` for it.** Three
+edits, in the project that needs them:
+
+```bash
+# 1. the producer, copied out of the scaffold
+python -c "from qanat.scaffold import PARSE_SPANS_PY as s; \
+           open('transforms/parse_spans.py','w').write(s)"
+```
+
+```yaml
+# 2. qanat.yaml -- the clock, then the corpus entry. Both, or the table is
+#    either unfilterable by date or not looked in at all.
+time_columns:
+  normalized.spans: as_of
+
+corpus:
+  spans: normalized.spans
+```
+
+```yaml
+# 3. jobs.yaml -- the transform job, beside parse_facts
+transform_job_definitions:
+  - id: parse_spans
+    from: [raw.documents]
+    to:   [normalized.spans]
+    script: transforms/parse_spans.py
+    options:
+      reads: raw.documents
+```
+
+Then `qanat check`, and run `parse_spans` once over the documents already landed — it reads
+`raw.documents` and nothing else, so it needs no re-fetch.
+
+**Until all three are done, `read_company` says so rather than answering `sections: []`.** An
+empty list is the right answer for a filing whose form has no Item vocabulary, so it is not also
+the answer to a project that was never told where its spans live; the `sections` key is absent and
+`sections_unavailable` carries the reason.
+
 ## `--scope`
 
 Four scopes, nested. Each one contains the one before it, and **`full` is the default — not the

@@ -1,5 +1,57 @@
 # Changelog
 
+## Unreleased
+
+### `qanat init` ships the spans producer, and an empty list stops meaning two things
+
+**0.11.0 shipped both ends of a join and nothing that makes it.** `sections.py` splits a filing
+into its Items, `reading.py` has three tools that read a `spans` table, `models.py` declares
+`Corpus.spans`, and `ingest_filings` closes every successful landing by telling the user to run the
+transforms "to get facts and spans". **The scaffold wrote `parse_facts.py` and no producer for
+`spans`**, and named `facts` under `corpus:` and not `spans`.
+
+So on any scaffolded project `list_sections`, `read_section` and `search_documents` could not run at
+all, and `read_company` returned its sections half as `[]`. Generality was not the reason for the
+asymmetry: `parse_facts.py` imports `qanat.xbrl` and is exactly as connector-shaped as a section
+splitter is.
+
+#### The empty list was the dangerous half
+
+`read_company` collapsed three different situations into `sections: []` — no `corpus.spans` at all,
+a table named but never built, and a filing whose form has no Item vocabulary. **Only the third is
+an answer.** A caller cannot tell them apart and reads all three as the third, which is how an
+agent reported that Apple's filings in a project carry no readable prose, numbers only, while the
+prose sat in the store the whole time.
+
+`list_sections` got this right in the same release — it raises with the fix in the message — and
+`_spans_for` caught that same error and returned `{}`. The rule the product already states
+elsewhere, in `check_coverage`'s own description: a screen before the oldest row *"returns a list of
+nobody — which is not the same answer as nobody passing."*
+
+Now the `sections` key is **absent** when it cannot be answered, and `sections_unavailable` carries
+the reason and names the fix. The honest empty list is unchanged.
+
+#### A tag becomes a space
+
+`examples/sec-10k/transforms/split_sections.py` built its text as
+`"".join(parse(raw).itertext())`, which closes one table cell against the next: `<td>12</td><td>34</td>`
+reads as 1,234, and a CIK beside a year came back as `00003201932025`. Section detection was
+unharmed — the same 11 spans on a 10-Q either way — but `read_section` returns that text, so an
+agent read glued numbers out of a table. Both the example and the scaffolded producer now strip
+tags to a space and unescape afterwards.
+
+#### An existing project needs three edits, and nothing makes them for you
+
+`qanat.yaml` is hand-authored and nothing rewrites it, so fixing the scaffold leaves every project
+made before this release still inert. The three edits — the producer, two `qanat.yaml` lines, one
+`jobs.yaml` definition — are in [docs/agents.md](docs/agents.md). **No re-fetch:** `parse_spans`
+reads `raw.documents` and nothing else.
+
+Verified on a project holding five real filings: 78 spans across all five, Apple's 2026 Q3 10-Q
+splitting into 11 sections every one found by the `ordered` rule, and `search_documents` returning
+14 hits for "tariffs" in that 10-Q's MD&A. **The splitter and the readers needed no change** — only
+the join between them was absent.
+
 ## 0.11.0 — 2026-11-01
 
 ### A job is four objects, and the architecture file stops being machine-written

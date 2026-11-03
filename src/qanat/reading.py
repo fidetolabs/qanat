@@ -566,20 +566,27 @@ def read_company(store: Store, project: Project, filer: str,
     )
     ids = [str(x) for x in filings["id"]]
 
-    spans_by_doc = _spans_for(store, project, ids)
+    spans_by_doc, no_spans = _spans_for(store, project, ids)
     facts_by_doc = _facts_for(store, project, ids, concept, int(concepts))
 
     out = []
     for r in filings.itertuples():
-        out.append({
+        row = {
             "document": str(r.id),
             "form": r.form,
             "filed": str(r.filed)[:10],
             "period_end": None if not r.period_end else str(r.period_end)[:10],
-            "sections": spans_by_doc.get(str(r.id), []),
             "facts": facts_by_doc.get(str(r.id), {"total": 0, "taxonomies": {},
                                                   "concepts_total": 0, "concepts": []}),
-        })
+        }
+        # **The key is absent, not empty.** `sections: []` is the right answer
+        # for a filing whose form has no vocabulary, so it may not also be the
+        # answer to a project that was never told where its spans live.
+        if no_spans is None:
+            row["sections"] = spans_by_doc.get(str(r.id), [])
+        else:
+            row["sections_unavailable"] = no_spans
+        out.append(row)
     return {
         "filer": who,
         "returned": len(out),
@@ -592,21 +599,31 @@ def read_company(store: Store, project: Project, filer: str,
     }
 
 
-def _spans_for(store: Store, project: Project, ids: list[str]) -> dict[str, list[dict]]:
+def _spans_for(store: Store, project: Project,
+               ids: list[str]) -> tuple[dict[str, list[dict]], str | None]:
     """Each document's sections: name, length and the rule that found it.
 
     Never `text`. On a filings corpus that column is nearly every byte in the
     table, and this tool's whole promise is that its answer does not grow with
     the length of a filing.
+
+    **Returns the reason beside the rows, because an empty list is an answer.**
+    No spans configured and no sections detected used to collapse to the same
+    `[]`, and a caller cannot tell "not set up" from "nothing in this filing" --
+    so this said Apple's filings carry no prose while the prose sat in the
+    store. `list_sections` raises with the fix in the message; this returns it.
     """
     if not ids:
-        return {}
+        return {}, None
     try:
         spans = _table(project, "spans")
-    except ReadingError:
-        return {}
+    except ReadingError as exc:
+        return {}, str(exc)
     if not store.exists(spans):
-        return {}
+        return {}, (
+            f"'{spans}' does not exist yet, so no sections have been read out of "
+            f"these filings. Run the transform that writes it."
+        )
     holes = ", ".join("?" * len(ids))
     rows = store.query(
         f"""SELECT document, section, n_chars, char_start, char_end, rule
@@ -627,7 +644,7 @@ def _spans_for(store: Store, project: Project, ids: list[str]) -> dict[str, list
             "rule": r.rule,
             "pages": max(1, -(-int(r.n_chars) // PAGE)),
         })
-    return out
+    return out, None
 
 
 def _facts_for(store: Store, project: Project, ids: list[str],

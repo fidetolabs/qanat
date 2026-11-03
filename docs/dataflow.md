@@ -103,7 +103,12 @@ failure no later check catches. `dims` is stored as sorted JSON because it is th
 be recovered later — segment revenue and consolidated revenue are the same concept and the same
 period.
 
-**`split_sections` → `normalized.spans`, 904 rows**, each carrying the rule that found it. Three
+**`split_sections` → `normalized.spans`, 904 rows**, each carrying the rule that found it. The
+scaffold writes this transform as `parse_spans.py`; it is the same join under the name that pairs
+with `parse_facts`. Offsets index what `text_of` returns and nothing else, and **a tag becomes a
+space there rather than nothing** — closing one table cell against the next reads
+`<td>12</td><td>34</td>` as 1,234, and a CIK beside a year came back as `00003201932025`. The span
+count is unaffected either way; the text an agent reads is not. Three
 things in a 10-K match the obvious pattern and only one is a heading: the contents page (all
 twenty-three Item strings inside 1,200 characters in Apple's 2025 filing), the cross-references in
 the prose (nineteen of them, more than the fourteen real headings), and the heading itself. The

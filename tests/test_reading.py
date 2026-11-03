@@ -565,3 +565,55 @@ def test_list_companies_is_on_the_data_scope_and_writes_nothing():
     assert entry["writes"] is False
     assert entry["scope"] == "data"
     assert "list_companies" in {t["name"] for t in tools_for("data")}
+
+
+# ----------------------------------------- an empty list is not a configuration
+# `read_company` used to answer `sections: []` whether the project had no spans
+# table, had one that was never built, or held a filing whose form has no
+# vocabulary. The first two are a setup gap and the third is the honest answer,
+# and a caller that cannot tell them apart reads all three as the third -- which
+# is how an agent reported that Apple's filings carry no prose while the prose
+# sat in the store. `list_sections` raised with the fix in the message in the
+# same release, which is the proof this was a bug and not a policy.
+def _no_spans(rich, project):
+    from qanat.reading import read_company
+
+    return read_company(rich, project, "AAPL", limit=1)["filings"][0]
+
+
+def test_read_company_does_not_answer_a_missing_corpus_with_an_empty_list(rich):
+    """No `corpus.spans` at all: the key is absent, and the message names the fix."""
+    bare = Project(project="t", stages=[Stage(id="raw", kind="raw")],
+                   corpus=Corpus(documents="raw.documents", facts="normalized.facts"))
+    filing = _no_spans(rich, bare)
+    assert "sections" not in filing, "absence is what a caller can see"
+    assert "corpus" in filing["sections_unavailable"]
+    assert "qanat.yaml" in filing["sections_unavailable"], "and where to write it"
+
+
+def test_read_company_says_so_when_the_spans_table_was_never_built(rich):
+    """Configured but unwritten is a third thing, and it has its own sentence."""
+    unbuilt = Project(project="t", stages=[Stage(id="raw", kind="raw")],
+                      corpus=Corpus(documents="raw.documents", facts="normalized.facts",
+                                    spans="normalized.nothing_here"))
+    filing = _no_spans(rich, unbuilt)
+    assert "sections" not in filing
+    assert "normalized.nothing_here" in filing["sections_unavailable"]
+    assert "transform" in filing["sections_unavailable"], "and what to run"
+
+
+def test_a_filing_with_no_detectable_sections_still_answers_with_an_empty_list(rich):
+    """The honest empty list survives. A form with no vocabulary has no spans,
+    and that is an answer rather than a gap."""
+    from qanat.reading import read_company
+
+    out = read_company(rich, a_project(), "AAPL")
+    for filing in out["filings"]:
+        assert "sections_unavailable" not in filing
+        assert isinstance(filing["sections"], list)
+
+    # A25Q is in `raw.documents` and in no row of `normalized.spans`, so this is
+    # the real empty list and not a store that happens to answer every id.
+    by_doc = {f["document"]: f for f in out["filings"]}
+    assert by_doc["A25Q"]["sections"] == []
+    assert by_doc["A25"]["sections"], "while a document that has them keeps them"

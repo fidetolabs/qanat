@@ -1,9 +1,9 @@
 """Each filing split into its Items, as rows of `spans`.
 
 One row is one section: which document, which Item, the character range it
-occupies, and the text. Offsets are into the normalised text -- runs of
-whitespace collapsed -- which is what `qanat.sections.normalise` returns and the
-only string the offsets mean anything against.
+occupies, and the text. Offsets index `text_of(raw)` below and nothing else: a
+caller re-reading a span has to arrive at the same string, so the stripping and
+the normalising both live in one function.
 
 **`rule` says how the boundary was decided, and it is not decoration.** A 10-K
 names every Item on its contents page and again in cross-references through the
@@ -24,16 +24,36 @@ no vocabulary for.
 """
 
 import gzip
+import html as html_module
+import re
 
 import pandas as pd
 
 from qanat.sections import normalise, split, vocabulary
-from qanat.xbrl import parse
+
+#: Markup that carries no prose. Dropped whole, because a `<style>` body is
+#: CSS that would otherwise land in the middle of a section's text.
+NOT_PROSE = re.compile(r"(?is)<(script|style)[^>]*>.*?</\1>")
+TAG = re.compile(r"<[^>]+>")
 
 COLUMNS = [
     "document", "section", "char_start", "char_end", "n_chars", "rule",
     "text", "source", "as_of",
 ]
+
+
+def text_of(raw):
+    """The filing's prose, in the one string offsets are defined against.
+
+    **A tag becomes a space rather than nothing.** This used to be
+    `"".join(parse(raw).itertext())`, which closes one table cell against the
+    next: `<td>12</td><td>34</td>` reads as 1,234, and a CIK beside a year came
+    back as `00003201932025`. Section detection was unharmed -- the same 11
+    spans either way on a 10-Q -- but `read_section` returns this text, so an
+    agent read glued numbers out of a table.
+    """
+    text = TAG.sub(" ", NOT_PROSE.sub(" ", raw.decode("utf-8", "replace")))
+    return normalise(html_module.unescape(text))
 
 
 def expected(form):
@@ -56,7 +76,7 @@ def run(ctx):
             ctx.log(f"{doc.id}: no vocabulary for {form}, so no sections. The facts "
                     f"still parse", "info")
             continue
-        text = normalise("".join(parse(gzip.decompress(path.read_bytes())).itertext()))
+        text = text_of(gzip.decompress(path.read_bytes()))
         spans = split(text, form)
         for s in spans:
             rows.append({

@@ -51,6 +51,7 @@ stages:
 time_columns:
   raw.documents: published_at
   normalized.facts: as_of
+  normalized.spans: as_of
   # One clock per metric table, because one metric is one table.
   metrics.net_margin: date
 
@@ -63,6 +64,7 @@ time_columns:
 # metric is one table in the metrics stage, and the stage is the registry.
 corpus:
   documents: raw.documents
+  spans: normalized.spans
   facts: normalized.facts
 
 """
@@ -105,6 +107,17 @@ transform_job_definitions:
     from: [raw.documents]
     to:   [normalized.facts]
     script: transforms/parse_facts.py
+    options:
+      reads: raw.documents
+
+  # The other half of the same document. `parse_facts` pulls the tagged
+  # numbers; this cuts the prose into named sections, which is what the
+  # reading tools page through. **Both read `raw.documents` and neither reads
+  # the other**, so the order between them does not matter.
+  - id: parse_spans
+    from: [raw.documents]
+    to:   [normalized.spans]
+    script: transforms/parse_spans.py
     options:
       reads: raw.documents
 
@@ -264,6 +277,118 @@ def run(ctx):
     return df.drop_duplicates(IDENTITY, keep="first").reset_index(drop=True)
 '''
 
+PARSE_SPANS_PY = '''\
+"""Every named section of every filing, as rows of `spans`.
+
+One row is one section: which document, which Item, the character range it
+occupies, and the text. `qanat.sections` does the splitting -- it knows the Item
+vocabularies and nothing about HTML -- so this transform is the join: open the
+gzip, turn markup into text, and hand that text to `split`.
+
+**`rule` says how the boundary was decided, and it is not decoration.** A 10-K
+names every Item on its contents page and again in cross-references through the
+prose, so most matches for "Item 1A" are not the heading. A tool that returns a
+confident wrong offset is worse than one that admits it guessed, so the rule
+travels with the row and a caller can distrust it.
+
+**The form is passed, never guessed.** A 10-Q numbers its Items inside Parts and
+a 10-K numbers them straight through, so one vocabulary applied to both finds
+Item 1A and Item 4 of a quarterly report and misses the statements and the MD&A.
+A form with no vocabulary yields no spans, which is the honest answer rather
+than a confident wrong offset.
+
+**Offsets index `normalise(text_of(raw))` and nothing else.** A caller
+re-reading a span has to arrive at the same string, so the stripping and the
+normalising both live in `text_of` below and are not inlined anywhere else.
+
+`found` and `missing` go in the log rather than the table: a section that is
+absent has no character range, and a row with no offsets is not a span.
+"""
+
+import gzip
+import html as html_module
+import re
+
+import pandas as pd
+
+from qanat.sections import normalise, split, vocabulary
+
+#: Markup that carries no prose. Dropped whole, because a `<style>` body is
+#: CSS that would otherwise land in the middle of a section's text.
+NOT_PROSE = re.compile(r"(?is)<(script|style)[^>]*>.*?</\1>")
+TAG = re.compile(r"<[^>]+>")
+
+COLUMNS = [
+    "document", "subject", "section", "char_start", "char_end", "n_chars",
+    "rule", "text", "source", "as_of",
+]
+
+
+def text_of(raw: bytes) -> str:
+    """The filing's prose, in the one string offsets are defined against.
+
+    **A tag becomes a space rather than nothing.** `<td>12</td><td>34</td>` is
+    two numbers, and closing one cell against the next reads them as 1,234 --
+    which is how a CIK came back as `00003201932025`, two table cells glued.
+    Unescaping comes after the strip, so an escaped `&lt;td&gt;` in the prose is
+    never mistaken for markup of its own.
+    """
+    text = TAG.sub(" ", NOT_PROSE.sub(" ", raw.decode("utf-8", "replace")))
+    return normalise(html_module.unescape(text))
+
+
+def expected(form):
+    """Every section this form has, so the log can name what was missed."""
+    return sorted({name for options in vocabulary(form).values()
+                   for name, _pattern in options})
+
+
+def run(ctx):
+    rows = []
+    for doc in ctx.read("raw.documents").itertuples():
+        path = ctx.root / doc.body_path
+        if not path.exists():
+            ctx.log(f"{doc.id}: {doc.body_path} is missing, skipped", "warn")
+            continue
+        form = getattr(doc, "doc_type", None)
+        wanted = expected(form)
+        if not wanted:
+            # Not a warning: a form without a vocabulary is a form this cannot
+            # split, and saying so once is the whole report. The facts still parse.
+            ctx.log(f"{doc.id}: no vocabulary for {form}, so no sections", "info")
+            continue
+        found = split(text_of(gzip.decompress(path.read_bytes())), form)
+        for s in found:
+            rows.append({
+                "document": doc.id,
+                "subject": doc.entity,
+                "section": s.section,
+                "char_start": s.start,
+                "char_end": s.end,
+                "n_chars": s.end - s.start,
+                # How the boundary was decided. Detection is a heuristic on a
+                # document it has not seen, so this travels with the row.
+                "rule": s.rule,
+                "text": s.text,
+                "source": doc.source,
+                # The day this became public, which is the only date a
+                # point-in-time read may filter on.
+                "as_of": doc.published_at,
+            })
+        missing = [x for x in wanted if x not in {s.section for s in found}]
+        ctx.log(
+            f"{doc.id}: {len(found)}/{len(wanted)} {form} sections"
+            + (f", missing {', '.join(missing)}" if missing else ""),
+            "warn" if len(missing) > 4 else "info",
+        )
+
+    df = pd.DataFrame(rows, columns=COLUMNS)
+    if df.empty:
+        return df
+    df["as_of"] = pd.to_datetime(df["as_of"], errors="coerce")
+    return df.drop_duplicates(["document", "section"], keep="first").reset_index(drop=True)
+'''
+
 README = """\
 # {name}
 
@@ -295,6 +420,11 @@ the first run goes to the network for them.
 
 `qanat check` will warn that nothing reads `normalized.facts`. That is correct:
 a metric is a query over the facts, not another stage.
+
+Two transforms read `raw.documents`, because a filing is two things. The tagged
+numbers come out as `normalized.facts`, and the prose comes out as
+`normalized.spans` -- the named Items the reading tools page through. Run both
+before asking an agent for the text of a filing.
 """
 
 FILES = {
@@ -303,6 +433,7 @@ FILES = {
     "transforms/metrics/net_margin.sql": NET_MARGIN_SQL,
     "README.md": README,
     "transforms/parse_facts.py": PARSE_FACTS_PY,
+    "transforms/parse_spans.py": PARSE_SPANS_PY,
 }
 
 
