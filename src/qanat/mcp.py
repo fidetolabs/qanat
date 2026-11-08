@@ -259,45 +259,33 @@ def _known_table(s: Session, ref: str) -> str:
     )
 
 
+def _catalog(fn, *a, **kw):
+    """A catalog read, with its refusal turned into one the agent can act on."""
+    from qanat.catalog import CatalogError
+
+    try:
+        return fn(*a, **kw)
+    except CatalogError as exc:
+        raise ToolError(str(exc)) from exc
+
+
 # ---- discover ----------------------------------------------------------------
 @tool("list_tables", "Every table this project declares, with its stage, producer and row count.",
       {"properties": {}},
       scope="data")
 def _list_tables(s: Session, args: dict) -> Any:
-    out = []
-    writers = s.project.writers()
-    for ref in s.project.tables():
-        info = s.store.table_info(ref)
-        stage = s.project.stage(ref.split(".")[0])
-        out.append({
-            "ref": ref,
-            "stage": ref.split(".")[0],
-            "stage_kind": stage.kind if stage else None,
-            # A list: several definitions may write one table, and a single
-            # `producer` string could only name one of them.
-            "written_by": writers.get(ref, []),
-            "rows": info.rows if info else 0,
-            "written": info is not None,
-        })
-    return {"project": s.project.name, "tables": out}
+    from qanat.catalog import tables
+
+    return tables(s.store, s.project)
 
 
 @tool("describe_table", "One table's columns, types, row count and time column.",
       {"properties": {"ref": {"type": "string", "description": "stage.table"}}, "required": ["ref"]},
       scope="data")
 def _describe_table(s: Session, args: dict) -> Any:
-    ref = _known_table(s, _need(args, "ref"))
-    info = s.store.table_info(ref)
-    if info is None:
-        raise ToolError(f"'{ref}' is declared but has not been written yet. Run `run` first.")
-    return {
-        "ref": ref,
-        "rows": info.rows,
-        "updated_at": info.updated_at,
-        "time_column": s.store.time_column(ref, s.project.time_columns.get(ref)),
-        "newest": s.store.max_time(ref, s.project.time_columns.get(ref)),
-        "columns": [{"name": c, "type": t} for c, t in info.columns],
-    }
+    from qanat.catalog import describe
+
+    return _catalog(describe, s.store, s.project, _need(args, "ref"))
 
 
 @tool("sample_table", "Rows from a table. With as_of, only rows that existed at that timestamp.",
@@ -306,11 +294,10 @@ def _describe_table(s: Session, args: dict) -> Any:
        "required": ["ref"]},
       scope="data")
 def _sample_table(s: Session, args: dict) -> Any:
-    ref = _known_table(s, _need(args, "ref"))
-    limit = int(args.get("limit") or 20)
-    df = s.store.read(ref, limit=limit, as_of=args.get("as_of") or None)
-    return {"ref": ref, "as_of": args.get("as_of"), "rows": len(df),
-            "sample": json.loads(df.to_json(orient="records", date_format="iso"))}
+    from qanat.catalog import sample
+
+    return _catalog(sample, s.store, s.project, _need(args, "ref"),
+                    limit=int(args.get("limit") or 20), as_of=args.get("as_of") or None)
 
 
 @tool("profile_table",
@@ -322,12 +309,9 @@ def _sample_table(s: Session, args: dict) -> Any:
       {"properties": {"ref": {"type": "string"}}, "required": ["ref"]},
       scope="data")
 def _profile_table(s: Session, args: dict) -> Any:
-    ref = _known_table(s, _need(args, "ref"))
-    prof = s.store.profile(ref)
-    if prof is None:
-        raise ToolError(f"{ref} has not been written yet, so there is nothing to profile. "
-                        "Run the job that writes it first.")
-    return prof
+    from qanat.catalog import profile
+
+    return _catalog(profile, s.store, s.project, _need(args, "ref"))
 
 
 @tool("trace_table", "What feeds a table, what it feeds, and everything downstream that "
@@ -335,24 +319,9 @@ def _profile_table(s: Session, args: dict) -> Any:
       {"properties": {"ref": {"type": "string"}}, "required": ["ref"]},
       scope="data")
 def _lineage(s: Session, args: dict) -> Any:
-    from qanat.project import edges
+    from qanat.catalog import trace
 
-    ref = _known_table(s, _need(args, "ref"))
-    es = edges(s.project)
-    upstream = [{"from": a, "definition": d} for a, b, d in es if b == ref]
-    downstream = [{"to": b, "definition": d} for a, b, d in es if a == ref]
-
-    reach, seen = [], {ref}
-    frontier = [ref]
-    while frontier:
-        cur = frontier.pop()
-        for a, b, _st in es:
-            if a == cur and b not in seen:
-                seen.add(b)
-                reach.append(b)
-                frontier.append(b)
-    return {"ref": ref, "upstream": upstream, "downstream": downstream,
-            "reaches": reach}
+    return _catalog(trace, s.project, _need(args, "ref"))
 
 
 @tool("list_definitions",
@@ -373,73 +342,18 @@ def _lineage(s: Session, args: dict) -> Any:
       }, "required": []},
       scope="research")
 def _list_steps(s: Session, args: dict) -> Any:
-    from qanat.runner import order
+    from qanat.catalog import definitions
 
-    def cadences(did: str) -> list[dict[str, Any]]:
-        # A list, because a definition may carry several. The cadence is not a
-        # field on the definition any more, so this is a join rather than a read.
-        return [{"id": x.id, "cron": x.cron, "enabled": x.enabled}
-                for x in s.project.schedules_for(did)]
-
-    def last_date(ref: str) -> str | None:
-        span = s.store.time_range(ref, s.project.time_columns.get(ref))
-        return None if span is None else span[1][:10]
-
-    def freshness(x: Any) -> dict[str, Any]:
-        """How far this definition's output has been filled, against its inputs.
-
-        **A stored table only knows the days its last run covered**, and a read
-        past that quietly returns an older value: the newest row at or before
-        the date asked is still the rule, so a metric that is a week behind
-        answers last week's number without saying so. That was the one real
-        advantage the computed-on-the-call kind had, and this is the answer to
-        it -- saying so rather than computing.
-
-        Only tables with a clock can be compared. One without is not behind or
-        current; there is nothing to measure.
-        """
-        mine = [d for d in (last_date(w) for w in x.writes) if d]
-        theirs = [d for d in (last_date(r) for r in x.reads) if d]
-        out: dict[str, Any] = {
-            "filled_to": max(mine) if mine else None,
-            "inputs_to": max(theirs) if theirs else None,
-        }
-        if out["filled_to"] and out["inputs_to"]:
-            out["behind"] = out["filled_to"] < out["inputs_to"]
-        return out
-
-    stage = str(args.get("stage") or "").strip()
-    chosen = [x for x in order(s.project)
-              if not stage or any(w.startswith(f"{stage}.") for w in x.writes)]
-    rows = [{"id": x.id, "from": x.reads, "to": x.writes, "script": x.script,
-             "schedules": cadences(x.id), "options": x.options,
-             **freshness(x)}
-            for x in chosen]
-    return {
-        "ingestion": [] if stage else [
-            {"id": x.id, "to": x.writes, "connector": x.connector,
-             "schedules": cadences(x.id), "options": x.options}
-            for x in s.project.ingestion_job_definitions],
-        "transforms": rows,
-    }
+    return definitions(s.store, s.project, str(args.get("stage") or ""))
 
 
 @tool("read_script", "The script a transform runs.",
       {"properties": {"id": {"type": "string"}}, "required": ["id"]},
       scope="research")
 def _read_step(s: Session, args: dict) -> Any:
-    sid = _need(args, "id")
-    known = s.project.transform_job_definitions
-    definition = next((x for x in known if x.id == sid), None)
-    if definition is None:
-        raise ToolError(
-            f"no transform '{sid}'. Transforms: {', '.join(x.id for x in known)}")
-    path = s.root / definition.script
-    if not path.is_file():
-        raise ToolError(
-            f"transform '{sid}' points at {definition.script}, which is not on disk")
-    return {"id": sid, "script": definition.script, "language": path.suffix.lstrip("."),
-            "source": path.read_text()}
+    from qanat.catalog import script
+
+    return _catalog(script, s.project, s.root, _need(args, "id"))
 
 
 # ---- validate and plan -------------------------------------------------------
