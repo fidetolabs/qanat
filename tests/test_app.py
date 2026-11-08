@@ -1,8 +1,8 @@
-"""The web door: pages and a JSON API over the same service layer as `/mcp`.
+"""The app door: pages and a JSON API over the same service layer as `/mcp`.
 
 What these hold is the plan's A5 and the scope rule: every route answers what
 the matching tool answers, a write is refused below the scope its tool needs,
-and the web layer holds no SQL of its own.
+and the app layer holds no SQL of its own.
 """
 
 from __future__ import annotations
@@ -19,7 +19,7 @@ from qanat.mcp_http import create_app
 from qanat.store import Store
 
 QANAT_YAML = """\
-project: webtest
+project: apptest
 store: ./data/q.duckdb
 stages:
   - {id: raw, kind: raw}
@@ -102,30 +102,30 @@ def build(root: Path) -> Path:
 
 
 def client(root: Path, scope: str = "authoring", token: str | None = None) -> TestClient:
-    return TestClient(create_app(str(root), scope, token=token, web=True),
+    return TestClient(create_app(str(root), scope, token=token, pages=True),
                       base_url="http://127.0.0.1")
 
 
 @pytest.fixture
-def web(tmp_path: Path) -> TestClient:
+def app(tmp_path: Path) -> TestClient:
     c = client(build(tmp_path))
     yield c
     c.app.state.qanat_session.close()
 
 
-def test_the_page_and_its_files_are_served(web):
-    assert "<title>qanat</title>" in web.get("/").text
-    assert web.get("/static/app.js").status_code == 200
-    assert web.get("/static/../api.py").status_code == 404
+def test_the_page_and_its_files_are_served(app):
+    assert "<title>qanat</title>" in app.get("/").text
+    assert app.get("/static/app.js").status_code == 200
+    assert app.get("/static/../api.py").status_code == 404
 
 
-def test_health_says_what_this_scope_can_do(web):
-    h = web.get("/api/health").json()
-    assert h["project"] == "webtest" and h["scope"] == "authoring"
+def test_health_says_what_this_scope_can_do(app):
+    h = app.get("/api/health").json()
+    assert h["project"] == "apptest" and h["scope"] == "authoring"
     assert h["can"]["save_filter"] and h["can"]["define_metric"]
 
 
-def test_without_web_there_are_no_pages(tmp_path):
+def test_without_the_app_flag_there_are_no_pages(tmp_path):
     c = TestClient(create_app(str(build(tmp_path)), "authoring"),
                    base_url="http://127.0.0.1")
     try:
@@ -159,36 +159,36 @@ def test_the_page_shell_passes_without_the_token_and_the_api_does_not(tmp_path):
         c.app.state.qanat_session.close()
 
 
-def test_a_filter_saved_on_the_page_is_the_one_mcp_lists(web):
+def test_a_filter_saved_on_the_page_is_the_one_mcp_lists(app):
     clauses = [{"metric": "pe", "op": "<", "value": 32}, {"metric": "roe", "op": ">", "value": 1}]
-    saved = web.put("/api/filters/cheap", json={"clauses": clauses, "description": "d"})
+    saved = app.put("/api/filters/cheap", json={"clauses": clauses, "description": "d"})
     assert saved.status_code == 200, saved.text
 
     from qanat import mcp
 
-    session = web.app.state.qanat_session
+    session = app.app.state.qanat_session
     out = mcp._dispatch(session, {"jsonrpc": "2.0", "id": 1, "method": "tools/call",
                                   "params": {"name": "list_filters", "arguments": {}}},
                         mcp.tools_for("authoring"))
     assert json.loads(out["result"]["content"][0]["text"])["filters"][0]["id"] == "cheap"
 
-    by_name = web.post("/api/screen", json={"filter": "cheap", "as_of": "2025-12-01"}).json()
-    inline = web.post("/api/screen", json={"clauses": clauses, "as_of": "2025-12-01"}).json()
+    by_name = app.post("/api/screen", json={"filter": "cheap", "as_of": "2025-12-01"}).json()
+    inline = app.post("/api/screen", json={"clauses": clauses, "as_of": "2025-12-01"}).json()
     assert by_name["filter"] == "cheap" and inline["filter"] is None
     assert [r["subject"] for r in by_name["rows"] if r["passed"]] == [CIK]
     assert by_name["rows"] == inline["rows"]
 
-    both = web.post("/api/screen", json={"filter": "cheap", "clauses": clauses,
+    both = app.post("/api/screen", json={"filter": "cheap", "clauses": clauses,
                                          "as_of": "2025-12-01"})
     assert both.status_code == 400 and "not both" in both.json()["detail"]
-    assert web.delete("/api/filters/cheap").status_code == 200
-    assert web.get("/api/filters").json()["filters"] == []
+    assert app.delete("/api/filters/cheap").status_code == 200
+    assert app.get("/api/filters").json()["filters"] == []
 
 
-def test_what_i_hold_shows_each_filing_and_its_stages(web):
-    cos = web.get("/api/companies").json()
+def test_what_i_hold_shows_each_filing_and_its_stages(app):
+    cos = app.get("/api/companies").json()
     assert cos["companies"][0]["ticker"] == "AAPL"
-    p = web.get("/api/companies/AAPL/filings").json()
+    p = app.get("/api/companies/AAPL/filings").json()
     assert [f["document"] for f in p["filings"]] == ["A25", "A24"]
     newest = p["filings"][0]
     assert newest["raw"] is True and newest["facts"] == 1 and newest["sections"] == 2
@@ -196,54 +196,54 @@ def test_what_i_hold_shows_each_filing_and_its_stages(web):
     assert p["metrics"] == ["pe", "roe"]
 
 
-def test_a_value_traces_back_to_the_filing_under_it(web):
-    t = web.get("/api/metrics/pe/trace?company=AAPL&as_of=2025-12-01").json()
+def test_a_value_traces_back_to_the_filing_under_it(app):
+    t = app.get("/api/metrics/pe/trace?company=AAPL&as_of=2025-12-01").json()
     assert t["value"] == 31.0
     assert t["computed_from"] == [{"from": "raw.prices", "definition": "pe"}]
     assert t["filing"]["document"] == "A25"
     assert t["facts"]["facts"][0]["concept"] == "us-gaap:Revenues"
 
 
-def test_metrics_list_define_read_back_and_remove(web):
-    assert {m["id"] for m in web.get("/api/metrics").json()["metrics"]} == {"pe", "roe"}
+def test_metrics_list_define_read_back_and_remove(app):
+    assert {m["id"] for m in app.get("/api/metrics").json()["metrics"]} == {"pe", "roe"}
     sql = "SELECT subject, as_of AS date, close * 2 AS value FROM raw__prices"
-    r = web.post("/api/metrics", json={"id": "double", "sql": sql, "unit": "USD"})
+    r = app.post("/api/metrics", json={"id": "double", "sql": sql, "unit": "USD"})
     assert r.status_code == 200, r.text
-    assert web.get("/api/metrics/double/formula").json()["sql"].strip() == sql
-    assert "double" in {m["id"] for m in web.get("/api/metrics").json()["metrics"]}
-    bad = web.post("/api/metrics", json={"id": "bad", "sql": "SELECT nope FROM nowhere"})
+    assert app.get("/api/metrics/double/formula").json()["sql"].strip() == sql
+    assert "double" in {m["id"] for m in app.get("/api/metrics").json()["metrics"]}
+    bad = app.post("/api/metrics", json={"id": "bad", "sql": "SELECT nope FROM nowhere"})
     assert bad.status_code == 400
-    asked = web.delete("/api/metrics/double")
+    asked = app.delete("/api/metrics/double")
     assert asked.status_code == 400 and "no filter saved" in asked.json()["detail"]
-    gone = web.delete("/api/metrics/double?force=true")
+    gone = app.delete("/api/metrics/double?force=true")
     assert gone.status_code == 200, gone.text
 
 
-def test_the_table_reader_honours_as_of(web):
-    tables = {t["ref"] for t in web.get("/api/tables").json()["tables"]}
+def test_the_table_reader_honours_as_of(app):
+    tables = {t["ref"] for t in app.get("/api/tables").json()["tables"]}
     assert {"raw.documents", "metrics.pe"} <= tables
-    now = web.get("/api/tables/metrics.pe").json()
-    then = web.get("/api/tables/metrics.pe?as_of=2025-01-01").json()
+    now = app.get("/api/tables/metrics.pe").json()
+    then = app.get("/api/tables/metrics.pe?as_of=2025-01-01").json()
     assert now["sample"]["rows"] == 4 and then["sample"]["rows"] == 2
-    assert web.get("/api/tables/metrics.pe/profile").status_code == 200
-    assert web.get("/api/tables/metrics.pe/trace").json()["upstream"][0]["from"] == "raw.prices"
-    assert web.get("/api/tables/raw.nope").status_code == 400
+    assert app.get("/api/tables/metrics.pe/profile").status_code == 200
+    assert app.get("/api/tables/metrics.pe/trace").json()["upstream"][0]["from"] == "raw.prices"
+    assert app.get("/api/tables/raw.nope").status_code == 400
 
 
-def test_coverage_definitions_and_executions_answer(web):
-    assert web.get("/api/coverage").json()["to"]
-    defs = web.get("/api/definitions").json()
+def test_coverage_definitions_and_executions_answer(app):
+    assert app.get("/api/coverage").json()["to"]
+    defs = app.get("/api/definitions").json()
     assert {d["id"] for d in defs["transforms"]} >= {"pe", "roe"}
-    assert "executions" in web.get("/api/executions").json()
+    assert "executions" in app.get("/api/executions").json()
 
 
-def test_an_unknown_route_is_a_404_not_the_page(web):
-    assert web.get("/api/nope").status_code == 404
+def test_an_unknown_route_is_a_404_not_the_page(app):
+    assert app.get("/api/nope").status_code == 404
 
 
-def test_the_web_layer_holds_no_sql():
+def test_the_app_layer_holds_no_sql():
     """A5. A route calls one service function; the store is only handed over."""
-    api = (Path(__file__).parent.parent / "src" / "qanat" / "web" / "api.py").read_text()
+    api = (Path(__file__).parent.parent / "src" / "qanat" / "app" / "api.py").read_text()
     assert not re.search(r"\b(SELECT|INSERT|UPDATE|DELETE FROM|JOIN)\b", api)
     assert not re.search(r"store\.\w+\(", api), "a route reached into the store"
 

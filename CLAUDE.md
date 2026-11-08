@@ -23,7 +23,7 @@ uv run pytest audit/batteries -m audit         # opt-in: slow, and one battery c
 already answers, which is a second place the behaviour can quietly differ.
 Running one prints where it went. **`qanat mcp` serves; `qanat schedule` runs the
 clock and serves nothing; `qanat mcp --http --schedule` is one machine doing
-both.** `--web` adds the pages beside `/mcp` -- a flag, not a verb, because the
+both.** `--app` adds the pages beside `/mcp` -- a flag, not a verb, because the
 server is the thing being started. **`qanat migrate` rewrites a project written in the old vocabulary** --
 it runs on a file that cannot be loaded yet, so no tool could reach it.
 
@@ -66,8 +66,8 @@ stays true.** The table is the contract; the test is the enforcement.
 | **No SEC request goes out without a contact.** Refused before the request, not after. | `test_a_missing_contact_is_refused_before_any_request` · `test_sec.py` |
 | **A split is kept as an event, not only as an adjustment.** A split made every old price wrong once already — see 0.7.0. | `test_a_split_is_kept_as_an_event_not_only_as_an_adjustment` · `test_sec.py` |
 | **The HTTP surface checks Host and token.** | `test_a_host_we_do_not_answer_to_is_refused` · `test_a_token_is_required_when_one_is_set` · `test_mcp_http.py` |
-| **The web door holds no logic and no SQL.** A route calls one service function; a page needing an answer no function gives gets that function in the service layer first. It never calls `/mcp`, and `/mcp` never calls it. | `test_the_web_layer_holds_no_sql` · `test_web.py` |
-| **A web write follows the scope like the tool doing the same write.** A server started at `research` serves pages that read and refuses the ones that write. Only the page shell passes without the token. | `test_a_write_below_its_tools_scope_is_refused` · `test_the_page_shell_passes_without_the_token_and_the_api_does_not` · `test_web.py` |
+| **The app door holds no logic and no SQL.** A route calls one service function; a page needing an answer no function gives gets that function in the service layer first. It never calls `/mcp`, and `/mcp` never calls it. | `test_the_app_layer_holds_no_sql` · `test_app.py` |
+| **An app write follows the scope like the tool doing the same write.** A server started at `research` serves pages that read and refuses the ones that write. Only the page shell passes without the token. | `test_a_write_below_its_tools_scope_is_refused` · `test_the_page_shell_passes_without_the_token_and_the_api_does_not` · `test_app.py` |
 
 **A rule with no test does not belong in this table.** Counts, module lists and "currently uses X"
 rot on the next commit; put them in `CONTRIBUTING.md` or nowhere.

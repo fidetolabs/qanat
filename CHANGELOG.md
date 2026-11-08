@@ -2,9 +2,9 @@
 
 ## Unreleased
 
-### A web door, for the one engineer running this Qanat
+### An app door, for the one engineer running this Qanat
 
-`qanat mcp --http --web` serves pages and a JSON API at `/`, beside `/mcp`, in
+`qanat mcp --http --app` serves pages and a JSON API at `/`, beside `/mcp`, in
 the same process and behind the same Host and token guard. **A flag, not a
 verb**: `serve` was removed in 0.10.0 and the CLI stays five verbs.
 
@@ -13,7 +13,7 @@ exist and can be ingested, which are held and how far each has got -- raw,
 facts, sections, metrics -- which metrics exist and what one value rests on,
 the saved filters, and any table's rows as of a date.
 
-- **Two doors over one service layer, and neither calls the other.** The web
+- **Two doors over one service layer, and neither calls the other.** The app
   API covers what a page needs and an agent does not; MCP keeps tools no page
   calls. A route reads its arguments and calls one function.
 - **`catalog.py`** holds what `mcp.py` used to work out inside five handlers --
@@ -40,7 +40,7 @@ the saved filters, and any table's rows as of a date.
 - **`sample_table` with `as_of` refused any table whose clock the project
   declares.** `store.read` asked only the default column names and never
   `time_columns`, so `raw.documents: published_at` -- in every scaffolded project
-  -- was "a table with no time column". Found by running the web door's table
+  -- was "a table with no time column". Found by running the app door's table
   reader against a live project; both doors share the fix.
 
 ### The operator's filters, saved in `filters.yaml` and run by name

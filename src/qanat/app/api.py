@@ -1,7 +1,7 @@
 """The routes. Each one: read the request, call one service function, answer.
 
 No SQL here and no `store.` call beyond handing the store to a service
-function -- `test_the_web_layer_holds_no_sql` reads this file to hold that.
+function -- `test_the_app_layer_holds_no_sql` reads this file to hold that.
 """
 
 from __future__ import annotations

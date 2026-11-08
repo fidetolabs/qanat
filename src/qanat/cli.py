@@ -311,8 +311,8 @@ def cmd_mcp(args) -> int:
               "research to add screens. See docs/agents.md.", file=sys.stderr)
         return 2
 
-    if args.web and not args.http:
-        print("qanat mcp: --web needs --http. The pages are served by the HTTP server, "
+    if args.app and not args.http:
+        print("qanat mcp: --app needs --http. The pages are served by the HTTP server, "
               "beside /mcp.", file=sys.stderr)
         return 2
 
@@ -331,7 +331,7 @@ def cmd_mcp(args) -> int:
 
         return serve_http(getattr(args, "project", None), scope=args.scope,
                           host=args.host, port=args.port, token=args.token,
-                          web=args.web)
+                          pages=args.app)
 
     return _serve_with_clock(args)
 
@@ -366,7 +366,7 @@ def _serve_with_clock(args) -> int:
     sched = Scheduler(store, project, root, workers=args.workers)
     state = AppState(store=store, project=project, root=root, sched=sched)
     app = create_app(None, args.scope, token=token, allow_hosts=named, state=state,
-                     web=args.web)
+                     pages=args.app)
     sched.start()
     if args.run_now:
         import threading
@@ -378,8 +378,8 @@ def _serve_with_clock(args) -> int:
     print(f"\n  {c('qanat', B)} {D}v{__version__}{X}  {project.name}")
     print(f"  mcp      {c(f'http://{args.host}:{args.port}/mcp', B)} "
           f"{D}scope {args.scope}{X}")
-    if args.web:
-        print(f"  web      {c(f'http://{args.host}:{args.port}/', B)}")
+    if args.app:
+        print(f"  app      {c(f'http://{args.host}:{args.port}/', B)}")
     print(f"  schedule {D}{len(sched._schedules)} schedule(s) on a clock, in this process{X}")
     print(f"  store    {D}{project.store_url(root)}{X}\n")
     sys.stdout.flush()  # uvicorn blocks next, and a piped stdout would never flush
@@ -425,7 +425,7 @@ def build_parser() -> argparse.ArgumentParser:
     mc.add_argument("--schedule", action="store_true",
                     help="with --http: also run the clock in this process. Without it "
                          "nothing here reads a cron line")
-    mc.add_argument("--web", action="store_true",
+    mc.add_argument("--app", action="store_true",
                     help="with --http: also serve the pages and their API at /, for the "
                          "person running this Qanat. Writes follow --scope like the tools")
     mc.add_argument("--host", default="127.0.0.1", help="with --http (default: 127.0.0.1)")

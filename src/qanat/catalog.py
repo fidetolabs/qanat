@@ -3,8 +3,8 @@
 **Moved out of `mcp.py`** so a second door reads the same answers. The tools
 behind `list_tables`, `describe_table`, `sample_table`, `trace_table` and
 `list_definitions` worked these out inside the handler -- the freshness check in
-particular, which is the one thing that says a metric is a week behind -- and a
-web page needing the same answer would have had to copy it. Two copies drift, so
+particular, which is the one thing that says a metric is a week behind -- and an app
+page needing the same answer would have had to copy it. Two copies drift, so
 the logic lives here and both doors call it.
 """
 

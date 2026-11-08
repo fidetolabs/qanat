@@ -1,4 +1,4 @@
-"""The web door: pages and a JSON API for the one engineer running this Qanat.
+"""The app door: pages and a JSON API for the one engineer running this Qanat.
 
 **A second adapter over the same service layer, and it holds no logic.** Every
 route reads its arguments, calls one function in `filings`, `metrics`, `screen`,
@@ -15,12 +15,12 @@ the same write is offered at the scope this server was started with, so a
 server pinned at `research` serves pages that read and refuses the ones that
 write. One person, no login: a scope is a capability, not an identity.
 
-Started with `qanat mcp --http --web`, in the same process and behind the same
+Started with `qanat mcp --http --app`, in the same process and behind the same
 Host and token guard as `/mcp`.
 """
 
 from __future__ import annotations
 
-from qanat.web.api import mount
+from qanat.app.api import mount
 
 __all__ = ["mount"]
