@@ -209,7 +209,7 @@ async function metrics(view, [picked]) {
         <div>${t.filing ? `the filing: ${h(t.filing.form)} filed ${h(t.filing.filed)} <span class="muted mono">${h(t.filing.document)}</span>` : "no filing at or before that date"}</div>
         ${(t.facts.facts || []).length ? `<div class="muted">The filing's tagged facts, first 20 of ${num(t.facts.total ?? t.facts.facts.length, 0)}. The metric reads <code>${h(t.computed_from.map((u) => u.from).join(", "))}</code>; which rows its formula picked is in the formula.</div>
           <table><tr><th>Concept</th><th class="num">Value</th><th>Unit</th><th>Period</th></tr>
-          ${t.facts.facts.slice(0, 20).map((f) => `<tr><td class="mono">${h(f.concept)}</td><td class="num">${num(f.value)}</td><td>${h(f.unit || "")}</td><td class="mono">${h(f.period_end || f.period || "")}</td></tr>`).join("")}</table>` : ""}`;
+          ${t.facts.facts.slice(0, 20).map((f) => `<tr><td class="mono">${h(f.concept)}</td><td class="num">${num(f.value)}</td><td>${h(f.unit || "")}</td><td class="mono">${h(String(f.period_end || f.period || "").slice(0, 10))}</td></tr>`).join("")}</table>` : ""}`;
     } catch (e) { fail(e); }
   };
 }
