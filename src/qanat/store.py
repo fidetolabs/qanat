@@ -640,6 +640,33 @@ class Store:
         self._build_now_views()
         self.con.execute(f"SET search_path='{self._search_path()}'")
 
+    def take_writer_lock(self) -> None:
+        """Open the metadata file now, rather than on the first write.
+
+        **The metadata file is the writer lock, and it was taken too late.** A
+        parquet store is `tables/` plus `meta.duckdb`; DuckDB holds an exclusive
+        lock on the second, and a read-only attach does not escape it. Every real
+        write path reaches it before touching a file, because `open_job` calls
+        `_meta()` -- so the lock already *is* the writer lock.
+
+        What was wrong is the moment. `__init__` leaves it closed and `_meta()`
+        opens it lazily, which is right for a reader and wrong for a program that
+        is about to serve: two servers on one project with different ports both
+        started, both answered reads, and **the second failed on its first write**
+        -- an hour later, as a 500 on a page, with nothing naming the other
+        process.
+
+        A long-running program calls this while it is starting, so `StoreBusy`
+        lands where somebody is still looking at the terminal. A reader must not
+        call it: taking the lock is the one thing a parquet store exists to let a
+        reader skip.
+
+        On a DuckDB-file store the lock was taken in `__init__` and there is
+        nothing left to do.
+        """
+        if self.kind == "parquet":
+            self._meta()
+
     # ---- reading while something else is writing ------------------------------
     @property
     def rcon(self):

@@ -234,11 +234,17 @@ def cmd_check(args) -> int:
 
 # -------------------------------------------------------------- open a project
 def _opened(args):
-    """Load, hold against the contract, repair a half-finished screen, report drift.
+    """Load, hold against the contract, take the writer lock, repair a
+    half-finished screen, report drift.
 
     Shared by the two long-running commands, because both of them have to do all
-    four before they are any use, and doing three of them is a process that looks
+    five before they are any use, and doing four of them is a process that looks
     healthy and is not.
+
+    **The lock is taken here rather than on the first write.** Both callers serve
+    or run for as long as they are up, so a project already held by another
+    program has to be refused while somebody is still watching the terminal --
+    not an hour later, as a 500 on a page.
     """
     from qanat.plan import plan as plan_project
     from qanat.project import validate
@@ -254,6 +260,10 @@ def _opened(args):
         return None
 
     store = Store(project.store_url(root))
+    # Before the repair and before any port is bound. Opening the store is not
+    # enough on a parquet store: `meta.duckdb` is attached lazily so a reader
+    # never has to take the lock, which means a writer has to ask for it.
+    store.take_writer_lock()
     _repair_after_crash(store, project, root)
     for ch in plan_project(project, root, store).changes:
         print(f"  {c('drift', Y)} {ch.target} · "

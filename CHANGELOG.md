@@ -2,6 +2,44 @@
 
 ## Unreleased
 
+### A serving program takes the writer lock while it starts
+
+**`meta.duckdb` is the writer lock, and it was taken too late.** A parquet store
+is `tables/` plus `meta.duckdb`; DuckDB holds an exclusive lock on the second,
+and **a read-only attach does not escape it** -- measured on duckdb 1.5.6, a
+second process is refused in both modes while the first holds the file.
+
+Every real write path already reaches it before touching a file, because
+`filings.ingest` and the runner both call `open_job` and `open_job` calls
+`_meta()`. **So the lock already was the writer lock. Only the moment was
+wrong.** `__init__` leaves it closed and the attach is lazy, which is right for a
+reader and wrong for a program about to serve:
+
+| after | `meta.duckdb` open |
+| --- | --- |
+| opening the Store | no |
+| writing a table | no |
+| `remember_key`, or any job | **yes** |
+
+What that cost: **two servers on one project with different ports both started**,
+both answered reads, and the second failed on its first write -- an hour later,
+as a 500 on a page, with nothing naming the process that held it. `serve_http`
+carried the comment *"open now, so a busy database is reported at startup"*, and
+on a parquet store that comment was false.
+
+`Store.take_writer_lock()` is now called while `qanat serve`, `qanat mcp` and
+`qanat schedule` are starting, **before any port is bound.** A reader must not
+call it -- skipping the lock is the whole point of a parquet store, and
+`test_opening_a_store_does_not_take_the_writer_lock` holds that a plain open, a
+data write and a read all leave it shut.
+
+**Over stdio too, and that is deliberate.** A server already holding the store
+used to make an agent's tools fail on the first ingest; now `qanat mcp` exits
+non-zero with the reason on stderr, which looks worse and is better.
+
+`qanat check` is untouched and still answers against a held project: it reads the
+project files and never opens a store.
+
 ### `qanat serve` is the HTTP server, and the doors are flags on it
 
 **`qanat mcp --http` had stopped describing its own program.** Over stdio the

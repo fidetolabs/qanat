@@ -1280,7 +1280,11 @@ def serve_stdio(project_path: str | None = None, scope: str = DEFAULT_SCOPE) -> 
     set_actor("agent")
     try:
         session = Session(project_path)
-        _ = session.store  # open now, so a busy database is reported before a client connects
+        # Open AND take the writer lock now, so a store held elsewhere is reported
+        # before a client connects rather than on the first ingest. Opening alone
+        # does not take it on a parquet store -- `meta.duckdb` is opened lazily --
+        # which is why this is two calls and not one.
+        session.store.take_writer_lock()
     except Exception as exc:  # noqa: BLE001
         print(f"qanat mcp: {exc}", file=sys.stderr)
         return 1

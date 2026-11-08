@@ -262,3 +262,22 @@ def test_serve_is_not_a_removed_command_any_more():
     from qanat.cli import MOVED
 
     assert "serve" not in MOVED
+
+
+def test_the_server_takes_the_writer_lock_while_it_starts(tmp_path: Path):
+    """`create_app` opened the store and the comment said that reported a busy
+    database at startup. **On a parquet store it did not:** `meta.duckdb` is
+    attached lazily so a reader never takes the lock, so the first write was
+    where a second server would have found out.
+
+    A DuckDB-file store took its lock in `__init__` and was always right, which
+    is why the hole only ever showed on the kind the corpus actually uses.
+    """
+    write_project(tmp_path, "demo")
+    app = create_app(str(tmp_path), "research")
+    try:
+        store = app.state.qanat_session.store
+        held = store.kind == "duckdb" or store._meta_open
+        assert held, "the server must hold the writer lock before it serves"
+    finally:
+        app.state.qanat_session.close()

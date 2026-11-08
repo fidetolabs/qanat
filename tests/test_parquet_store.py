@@ -402,3 +402,81 @@ def test_the_metadata_tables_are_not_built_in_memory(tmp_path: Path):
         assert where == [("meta",)], f"metadata lives in {where}"
     finally:
         s.close()
+
+
+# --------------------------------------------- the lock, taken when it is asked for
+#
+# `meta.duckdb` is the writer lock. It is attached lazily so that a reader never
+# takes it -- which is the whole point of a parquet store -- and that means a
+# program about to serve has to ask for it, or it finds out on its first write.
+
+
+def test_opening_a_store_does_not_take_the_writer_lock(tmp_path: Path):
+    """The lazy attach, stated as a property rather than left implied. Writing
+    data does not take it either: the lock guards the run log, not the rows."""
+    s = Store(str(tmp_path / "corpus"))
+    try:
+        assert not s._meta_open
+        s.write("raw.p", rows(4))
+        assert not s._meta_open, "a data write must not drag the log open"
+        s.read("raw.p")
+        assert not s._meta_open, "a read must never take the writer lock"
+    finally:
+        s.close()
+
+
+def test_taking_the_writer_lock_opens_the_log(tmp_path: Path):
+    s = Store(str(tmp_path / "corpus"))
+    try:
+        s.take_writer_lock()
+        assert s._meta_open
+        assert (tmp_path / "corpus" / "meta.duckdb").exists()
+        s.take_writer_lock()          # idempotent: a second call is not an error
+        assert s._meta_open
+    finally:
+        s.close()
+
+
+def test_a_second_program_is_refused_when_it_asks_for_the_lock(tmp_path: Path):
+    """What `qanat serve` and `qanat mcp` now do at startup.
+
+    **Before this, both started.** The lock was taken by whichever one wrote
+    first, and the other failed on its first write -- an hour later, as a 500 on
+    a page, with nothing naming the process that held it. A reader is still not
+    blocked, which is the line below the refusal.
+    """
+    corpus = tmp_path / "corpus"
+    Store(str(corpus)).write("raw.p", rows(4))
+
+    holder = textwrap.dedent(f"""
+        import sys, time
+        sys.path.insert(0, {str(Path(__file__).parents[1] / "src")!r})
+        from qanat.store import Store
+        s = Store({str(corpus)!r})
+        s.take_writer_lock()
+        print("held", flush=True)
+        time.sleep(5)
+        s.close()
+    """)
+    proc = subprocess.Popen([sys.executable, "-c", holder], stdout=subprocess.PIPE, text=True)
+    try:
+        assert proc.stdout.readline().strip() == "held"
+
+        # The refusal, and it arrives when the lock is asked for rather than on
+        # some later write.
+        second = Store(str(corpus))
+        try:
+            with pytest.raises(StoreBusy, match="held by another process"):
+                second.take_writer_lock()
+        finally:
+            second.close()
+
+        # And the thing a parquet store exists for: a reader still gets through.
+        reader = Store(str(corpus))
+        try:
+            assert reader.query("select count(*) c from raw__p").c[0] == 4
+        finally:
+            reader.close()
+    finally:
+        proc.kill()
+        proc.wait(timeout=10)

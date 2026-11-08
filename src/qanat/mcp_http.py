@@ -171,7 +171,11 @@ def create_app(
         session.state = state
     else:
         session = Session(project_path)
-        _ = session.store  # open now, so a busy database is reported at startup
+        # And take the writer lock, so a store held by another program is reported
+        # here rather than on the first write a door takes. Opening alone does not
+        # take it: `meta.duckdb` is attached lazily, by design, so that a reader
+        # never has to.
+        session.store.take_writer_lock()
 
     sessions = Sessions()
     allowed = allowed_hosts(allow_hosts)
