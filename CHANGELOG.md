@@ -2,6 +2,32 @@
 
 ## Unreleased
 
+### A web door, for the one engineer running this Qanat
+
+`qanat mcp --http --web` serves pages and a JSON API at `/`, beside `/mcp`, in
+the same process and behind the same Host and token guard. **A flag, not a
+verb**: `serve` was removed in 0.10.0 and the CLI stays five verbs.
+
+Everything an agent could do over MCP and a person could not see: which filings
+exist and can be ingested, which are held and how far each has got -- raw,
+facts, sections, metrics -- which metrics exist and what one value rests on,
+the saved filters, and any table's rows as of a date.
+
+- **Two doors over one service layer, and neither calls the other.** The web
+  API covers what a page needs and an agent does not; MCP keeps tools no page
+  calls. A route reads its arguments and calls one function.
+- **`catalog.py`** holds what `mcp.py` used to work out inside five handlers --
+  the table listing, describing, sampling, tracing, and the freshness check
+  behind `list_definitions` -- so the page and the tool cannot drift. Plus two
+  answers a page needs and no tool gives: a filing's progress and a value's trace.
+- **A write follows the scope.** A route is allowed when the tool doing the same
+  write is offered at the server's `--scope`. Only the page shell (`/`,
+  `/static/*`) passes without the token; the page asks for it.
+- **`remove_metric`'s refusal names the saved filters that use the metric.** It
+  said nothing here could check, which stopped being true with `filters.yaml`.
+  Still refused without `force`, because a caller's own filter cannot be seen.
+- **`metrics.formula`** reads a metric's formula back out of its generated script.
+
 ### The operator's filters, saved in `filters.yaml` and run by name
 
 **This reverses "nothing here stores a filter".** That rule was right while it

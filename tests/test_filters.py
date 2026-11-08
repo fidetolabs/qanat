@@ -192,3 +192,13 @@ def test_the_tools_round_trip_through_the_session(project):
         assert both.get("isError")
     finally:
         session.close()
+
+
+def test_removing_a_metric_names_the_saved_filters_that_use_it(project):
+    from qanat.metrics import MetricError
+    from qanat.metrics import remove as remove_metric
+
+    p, root, _ = project
+    filters.save(p, root, "cheap", CHEAP_AND_PROFITABLE)
+    with pytest.raises(MetricError, match="saved filter cheap"):
+        remove_metric(p, root, mid="pe")

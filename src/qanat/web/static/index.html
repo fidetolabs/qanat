@@ -1,0 +1,25 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>qanat</title>
+  <link rel="stylesheet" href="/static/app.css">
+</head>
+<body>
+  <header class="top">
+    <a class="brand" href="#/">qanat <span id="project" class="muted"></span></a>
+    <nav>
+      <a href="#/filings" data-view="filings">Find &amp; ingest</a>
+      <a href="#/holdings" data-view="holdings">What I hold</a>
+      <a href="#/metrics" data-view="metrics">Metrics</a>
+      <a href="#/filters" data-view="filters">Filters</a>
+      <a href="#/tables" data-view="tables">Tables</a>
+    </nav>
+    <span id="scope" class="pill"></span>
+  </header>
+  <main id="view"></main>
+  <div id="toast" class="toast" hidden></div>
+  <script src="/static/app.js"></script>
+</body>
+</html>

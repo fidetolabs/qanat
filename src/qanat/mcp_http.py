@@ -133,6 +133,7 @@ def create_app(
     token: str | None = None,
     allow_hosts: list[str] | None = None,
     state: Any = None,
+    web: bool = False,
 ):
     """A FastAPI app that answers MCP on one endpoint.
 
@@ -199,7 +200,11 @@ def create_app(
                 status_code=403,
                 content={"detail": f"request from {origin} was refused."},
             )
-        if token:
+        # The page shell holds no data, and a browser cannot attach a bearer
+        # header to a page load -- so it alone passes without the token, and every
+        # call it then makes to /api sends the token the person typed.
+        shell = web and (request.url.path == "/" or request.url.path.startswith("/static/"))
+        if token and not shell:
             sent = request.headers.get("authorization", "")
             prefix, _, value = sent.partition(" ")
             # Constant time, because a token that can be guessed one character at
@@ -295,6 +300,13 @@ def create_app(
             "sessions": len(sessions),
         }
 
+    if web:
+        # The pages and their API, over the same session and the same lock. A
+        # second door onto the service layer, not onto this one.
+        from qanat.web import mount
+
+        mount(app, session, store_lock, scope)
+
     app.state.qanat_session = session
     app.state.scope = scope
     app.state.qanat_state = state
@@ -315,8 +327,9 @@ def serve_http(
     host: str = "127.0.0.1",
     port: int = 8421,
     token: str | None = None,
+    web: bool = False,
 ) -> int:
-    """Serve MCP over HTTP until interrupted."""
+    """Serve MCP over HTTP until interrupted, and the pages too with `web`."""
     import sys
 
     import uvicorn
@@ -334,7 +347,7 @@ def serve_http(
 
     try:
         named = [] if host in ("0.0.0.0", "::", "") else [host]
-        app = create_app(project_path, scope, token=token, allow_hosts=named)
+        app = create_app(project_path, scope, token=token, allow_hosts=named, web=web)
     except ScopeError as exc:
         print(f"qanat mcp: {exc}", file=sys.stderr)
         return 2
@@ -345,7 +358,8 @@ def serve_http(
     name = app.state.qanat_session.project.name
     print(
         f"qanat mcp: {name} · scope {scope} · {len(tools_for(scope))} of {len(TOOLS)} tools "
-        f"· http://{host}:{port}/mcp{'' if token else ' · no token (loopback only)'}",
+        f"· http://{host}:{port}/mcp{'' if token else ' · no token (loopback only)'}"
+        f"{f' · pages at http://{host}:{port}/' if web else ''}",
         file=sys.stderr,
     )
     uvicorn.run(app, host=host, port=port, log_level="warning")

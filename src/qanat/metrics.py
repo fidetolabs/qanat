@@ -196,6 +196,28 @@ def transform_sql(mid: str, sql: str) -> str:
     )
 
 
+def formula(project: Project, root: Path, mid: str) -> str:
+    """The formula a metric was defined with, read back out of its script.
+
+    `transform_sql` wraps it in a fixed frame, so it comes back exactly as it
+    went in. A script somebody edited by hand, against the header's advice, comes
+    back whole rather than guessed at.
+    """
+    from qanat.models import TransformJobDefinition
+
+    d = project.definition(transform_id(mid))
+    if not isinstance(d, TransformJobDefinition):
+        raise MetricError(f"no metric called '{mid}'. This project has: "
+                          f"{', '.join(project.metric_ids()) or '(none defined)'}")
+    path = root / d.script
+    if not path.is_file():
+        raise MetricError(f"metric '{mid}' points at {d.script}, which is not on disk")
+    text = path.read_text()
+    _head, sep, rest = text.partition("FROM (\n")
+    body, sep2, _ = rest.rpartition("\n) AS _m")
+    return body if sep and sep2 else text
+
+
 def tables_read(project: Project, sql: str) -> list[str]:
     """Which of this project's tables a formula reads.
 
@@ -383,11 +405,11 @@ def remove(
 ) -> dict[str, Any]:
     """Drop a metric: its definition, its script, and any cadence over it.
 
-    **What this cannot check is who still names it, and saying so is the point.**
-    A filter is one caller's research criteria and lives on the caller's side of
-    the line, so nothing here can see whether a filter still points at this
-    metric. The caller can. So removing one is refused unless it is asked for in
-    as many words.
+    **Who still names it is checked as far as it can be, and the rest is said.**
+    A filter saved in `filters.yaml` is this project's and is named in the
+    refusal. A filter a caller keeps for themselves lives on their side of the
+    line, and nothing here can see it. So removing one is refused unless it is
+    asked for in as many words.
 
     The values already written are left where they are. They name the executions
     that wrote them and stay readable, which is the rule a corrected input
@@ -402,11 +424,14 @@ def remove(
         raise MetricError(f"no metric called '{mid}'. This project has: {known}")
 
     if not force:
+        saved = [f.id for f in project.filters if any(c.metric == mid for c in f.clauses)]
+        named = (f"the saved filter{'s' if len(saved) > 1 else ''} {', '.join(saved)} "
+                 f"in filters.yaml name{'' if len(saved) > 1 else 's'} it, and "
+                 if saved else "no filter saved in filters.yaml names it, but ")
         raise MetricError(
-            f"removing '{mid}' leaves nothing for a filter naming it to resolve, and "
-            f"this server cannot check whether one does: a filter is one caller's "
-            f"criteria and is held by the caller, not here. Whoever holds it is the "
-            f"only one who knows. Pass force: true to remove it anyway"
+            f"removing '{mid}' leaves nothing for a filter naming it to resolve: "
+            f"{named}a filter a caller keeps for themselves cannot be seen from here. "
+            f"Pass force: true to remove it anyway"
         )
 
     ref = metric_ref(project, mid)

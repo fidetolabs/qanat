@@ -17,6 +17,7 @@ uv run qanat check                      # hold it against the stage contract
 uv run qanat mcp                        # serve it to an agent over stdio
 uv run qanat schedule --run-now         # the clock, serving nothing
 uv run qanat mcp --http --schedule      # both, at http://127.0.0.1:8421/mcp
+uv run qanat mcp --http --web --scope authoring   # and the pages, at http://127.0.0.1:8421/
 ```
 
 There is no `qanat run`: running the graph is the `run` tool, which is what an
@@ -73,6 +74,7 @@ table below if you want to know why the pieces are arranged this way rather than
 | --- | --- | --- |
 | Project file | `qanat.yaml` | Stages, the clock, the corpus, retention, store URL. **Nothing writes it** |
 | Job files | `jobs.yaml` · `metrics.yaml` | What a tool writes: definitions, cadences, formulas |
+| Filters file | `filters.yaml` | The operator's saved filters. Tool-written; **not a definition**, it runs nothing |
 | Contract | `src/qanat/project.py` | Validates the stage rules |
 | Runner | `src/qanat/runner.py` | Opens a job, records each execution, runs the definition |
 | Scheduler | `src/qanat/scheduler.py` | Cron + retention cleanup |
@@ -80,9 +82,12 @@ table below if you want to know why the pieces are arranged this way rather than
 | Reading | `src/qanat/reading.py` | The reading tools. Every one of them filters in SQL |
 | Filings — XBRL | `src/qanat/xbrl.py` | Inline XBRL: contexts, units, scale, signs |
 | Filings — sections | `src/qanat/sections.py` | Section boundaries, and the span each one records |
-| Screen | `src/qanat/screen.py` | Which companies passed, on a date or over a window |
+| Screen | `src/qanat/screen.py` | Which companies passed, on a date or over a window. `run` takes a saved filter or clauses |
+| Filters | `src/qanat/filters.py` | The operator's saved filters: list, save, remove, and their clauses |
+| Catalog | `src/qanat/catalog.py` | What a project holds: tables, definitions and their freshness, a filing's progress, a value's trace |
 | MCP (stdio) | `src/qanat/mcp.py` | The tool surface, and the four scopes |
 | MCP (HTTP) | `src/qanat/mcp_http.py` | The same tools on `/mcp`, with Host and token checks |
+| Web | `src/qanat/web/` | With `--web`: pages and a JSON API at `/`, for the person running this Qanat. Calls the service layer, never `/mcp`, and holds no logic |
 | CLI | `src/qanat/cli.py` | `init`, `check`, `migrate`, `mcp`, `schedule`. Nothing else |
 | Filings | `src/qanat/filings.py` | Which filings exist, which parse, and landing the chosen ones |
 | Metrics | `src/qanat/metrics.py` | Defining a metric, and refusing a formula that will not run |
