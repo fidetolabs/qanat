@@ -16,8 +16,9 @@ qanat init demo && cd demo
 uv run qanat check                      # hold it against the stage contract
 uv run qanat mcp                        # serve it to an agent over stdio
 uv run qanat schedule --run-now         # the clock, serving nothing
-uv run qanat mcp --http --schedule      # both, at http://127.0.0.1:8421/mcp
-uv run qanat mcp --http --app --scope authoring   # and the pages, at http://127.0.0.1:8421/
+uv run qanat serve --mcp --schedule     # both, at http://127.0.0.1:8421/mcp
+uv run qanat serve --app --scope authoring   # the pages alone, at http://127.0.0.1:8421/
+uv run qanat serve --mcp --app --scope authoring  # one process, both doors
 ```
 
 There is no `qanat run`: running the graph is the `run` tool, which is what an

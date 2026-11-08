@@ -259,13 +259,13 @@ def test_the_cli_is_five_verbs_and_nothing_else():
     for action in build_parser()._actions:
         if getattr(action, "choices", None):
             verbs |= set(action.choices)
-    assert verbs == {"init", "check", "mcp", "schedule"}
+    assert verbs == {"init", "check", "mcp", "serve", "schedule"}
 
 
 def test_every_removed_command_names_what_replaced_it():
     from qanat.cli import MOVED, main
 
-    assert set(MOVED) == {"ls", "graph", "plan", "prune", "run", "screen", "serve"}
+    assert set(MOVED) == {"ls", "graph", "plan", "prune", "run", "screen"}
     for name, instead in MOVED.items():
         assert instead, f"{name} says nothing about where it went"
         assert main([name]) == 2, f"{name} should exit 2, not run"

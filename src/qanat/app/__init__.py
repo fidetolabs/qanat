@@ -15,8 +15,9 @@ the same write is offered at the scope this server was started with, so a
 server pinned at `research` serves pages that read and refuses the ones that
 write. One person, no login: a scope is a capability, not an identity.
 
-Started with `qanat mcp --http --app`, in the same process and behind the same
-Host and token guard as `/mcp`.
+Started with `qanat serve --app`, or beside `/mcp` with `qanat serve --mcp --app`
+-- one process, one store, one lock, and the same Host and token guard either
+way.
 """
 
 from __future__ import annotations

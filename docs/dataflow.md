@@ -254,11 +254,13 @@ to a caller who may change the pipeline. But each scope is a published contract,
 out of `data` breaks what somebody built against it worse than adding one would. Moving them is a
 separate decision, not a cleanup.
 
-**The command line is four verbs**, because this is reached by an agent: `init`, `check`, `mcp`,
-`schedule`. `ls`, `graph`, `plan`, `prune`, `run`, `screen` and `serve` were each a second door onto
+**The command line is five verbs**, because this is reached by an agent: `init`, `check`, `mcp`,
+`serve`, `schedule`. `ls`, `graph`, `plan`, `prune`, `run` and `screen` were each a second door onto
 a question a tool already answers, which is a second place the behaviour can quietly differ. Running
-one prints where it went. The clock and the server are separable now — `qanat schedule` is the clock,
-`qanat mcp --http` the server, and `--schedule` puts both in one process.
+one prints where it went. The clock and the server are separable — `qanat schedule` is the clock,
+`qanat serve --mcp` the server, and `--schedule` puts both in one process. **`serve` names the
+program and `--mcp` / `--app` name its doors**, because `qanat mcp --http` was an HTTP server
+wearing the name of one endpoint on it.
 
 Two transports, one dispatcher. `qanat mcp` speaks JSON-RPC on a pipe, which is right for one person
 on one machine and cannot be the hosted one — a request arriving at a server has nowhere to keep a

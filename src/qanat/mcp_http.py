@@ -28,10 +28,11 @@ import os
 import secrets
 import threading
 import time
+from collections.abc import Sequence
 from typing import Any
 
 import anyio
-from fastapi import FastAPI, Request
+from fastapi import APIRouter, FastAPI, Request
 from fastapi.responses import JSONResponse, Response
 
 from qanat import __version__
@@ -133,15 +134,26 @@ def create_app(
     token: str | None = None,
     allow_hosts: list[str] | None = None,
     state: Any = None,
-    pages: bool = False,
+    doors: Sequence[str] = ("mcp",),
 ):
-    """A FastAPI app that answers MCP on one endpoint.
+    """A FastAPI app carrying the doors it is asked for.
+
+    **`doors` names what gets mounted, and nothing is mounted by default but
+    `/mcp`.** `mcp` puts the tool endpoint on; `app` puts the pages and `/api`
+    on. Both is one program with two doors, which is the ordinary case for one
+    engineer. `/health` is the server answering for itself and is not a door.
 
     `state` is how a served process hands over a store it has already opened, along
     with the scheduler running against it. Without it this opens the project
-    itself, which is the plain `qanat mcp --http` case.
+    itself, which is the plain `qanat serve` case.
     """
     from qanat.store import set_actor
+
+    serves_mcp, serves_app = "mcp" in doors, "app" in doors
+    if not (serves_mcp or serves_app):
+        # A programming error rather than a user's: the CLI refuses an empty
+        # `--mcp --app` pair with a message, and nothing else builds one.
+        raise ValueError("create_app needs at least one door: 'mcp' or 'app'")
 
     rank(scope)  # fail before binding a port rather than on the first call
     offered = tools_for(scope)
@@ -170,12 +182,17 @@ def create_app(
     store_lock = threading.Lock()
 
     app = FastAPI(
-        title=f"qanat mcp · {session.project.name}",
+        title=f"qanat · {session.project.name}",
         version=__version__,
         docs_url=None,
         redoc_url=None,
         openapi_url=None,
     )
+
+    #: The `/mcp` routes, held off the app until `doors` asks for them. Collected
+    #: on a router rather than registered straight on the app because a decorator
+    #: runs when it is read, and there is no removing a route afterwards.
+    mcp_door = APIRouter()
 
     @app.middleware("http")
     async def guard(request: Request, call_next):  # type: ignore[no-untyped-def]
@@ -203,7 +220,7 @@ def create_app(
         # The page shell holds no data, and a browser cannot attach a bearer
         # header to a page load -- so it alone passes without the token, and every
         # call it then makes to /api sends the token the person typed.
-        shell = pages and (request.url.path == "/" or request.url.path.startswith("/static/"))
+        shell = serves_app and (request.url.path == "/" or request.url.path.startswith("/static/"))
         if token and not shell:
             sent = request.headers.get("authorization", "")
             prefix, _, value = sent.partition(" ")
@@ -217,7 +234,7 @@ def create_app(
                 )
         return await call_next(request)
 
-    @app.post("/mcp")
+    @mcp_door.post("/mcp")
     async def post_mcp(request: Request):  # type: ignore[no-untyped-def]
         try:
             body = await request.json()
@@ -270,7 +287,7 @@ def create_app(
         payload = replies if isinstance(body, list) else replies[0]
         return JSONResponse(content=payload, headers=headers)
 
-    @app.get("/mcp")
+    @mcp_door.get("/mcp")
     async def get_mcp():  # type: ignore[no-untyped-def]
         """No server-initiated messages, so no stream to open.
 
@@ -282,7 +299,7 @@ def create_app(
             content={"detail": "this server sends nothing on its own; POST to /mcp."},
         )
 
-    @app.delete("/mcp")
+    @mcp_door.delete("/mcp")
     async def delete_mcp(request: Request):  # type: ignore[no-untyped-def]
         sid = request.headers.get("mcp-session-id")
         if not sid or not sessions.close(sid):
@@ -300,9 +317,16 @@ def create_app(
             "sessions": len(sessions),
         }
 
-    if pages:
+    if serves_mcp:
+        # The tool endpoint. A router rather than routes straight on the app, so
+        # that `qanat serve --app` serves the pages with *nothing* at `/mcp` --
+        # a person who wanted a browser did not ask for a tool endpoint on their
+        # port.
+        app.include_router(mcp_door)
+
+    if serves_app:
         # The pages and their API, over the same session and the same lock. A
-        # second door onto the service layer, not onto this one.
+        # second door onto the service layer, not onto `/mcp`.
         from qanat.app import mount
 
         mount(app, session, store_lock, scope)
@@ -310,6 +334,7 @@ def create_app(
     app.state.qanat_session = session
     app.state.scope = scope
     app.state.qanat_state = state
+    app.state.doors = tuple(doors)
     return app
 
 
@@ -327,9 +352,9 @@ def serve_http(
     host: str = "127.0.0.1",
     port: int = 8421,
     token: str | None = None,
-    pages: bool = False,
+    doors: Sequence[str] = ("mcp",),
 ) -> int:
-    """Serve MCP over HTTP until interrupted, and the pages too with `pages`."""
+    """Serve the doors asked for, over HTTP, until interrupted."""
     import sys
 
     import uvicorn
@@ -338,7 +363,7 @@ def serve_http(
     loopback = host in ("127.0.0.1", "::1", "localhost")
     if not loopback and not token:
         print(
-            f"qanat mcp: refusing to serve {host} with no token. Anything that can reach "
+            f"qanat serve: refusing to serve {host} with no token. Anything that can reach "
             f"this address could author and run against your project. Pass --token or set "
             f"QANAT_MCP_TOKEN.",
             file=sys.stderr,
@@ -347,19 +372,24 @@ def serve_http(
 
     try:
         named = [] if host in ("0.0.0.0", "::", "") else [host]
-        app = create_app(project_path, scope, token=token, allow_hosts=named, pages=pages)
+        app = create_app(project_path, scope, token=token, allow_hosts=named, doors=doors)
     except ScopeError as exc:
-        print(f"qanat mcp: {exc}", file=sys.stderr)
+        print(f"qanat serve: {exc}", file=sys.stderr)
         return 2
     except Exception as exc:  # noqa: BLE001
-        print(f"qanat mcp: {exc}", file=sys.stderr)
+        print(f"qanat serve: {exc}", file=sys.stderr)
         return 1
 
     name = app.state.qanat_session.project.name
+    where = []
+    if "mcp" in doors:
+        where.append(f"http://{host}:{port}/mcp · scope {scope} · "
+                     f"{len(tools_for(scope))} of {len(TOOLS)} tools")
+    if "app" in doors:
+        where.append(f"pages at http://{host}:{port}/")
     print(
-        f"qanat mcp: {name} · scope {scope} · {len(tools_for(scope))} of {len(TOOLS)} tools "
-        f"· http://{host}:{port}/mcp{'' if token else ' · no token (loopback only)'}"
-        f"{f' · pages at http://{host}:{port}/' if pages else ''}",
+        f"qanat serve: {name} · " + " · ".join(where)
+        + ("" if token else " · no token (loopback only)"),
         file=sys.stderr,
     )
     uvicorn.run(app, host=host, port=port, log_level="warning")

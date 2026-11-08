@@ -350,7 +350,7 @@ def test_the_docker_entrypoint_only_calls_flags_that_exist(tmp_path: Path):
     used = set(re.findall(r"--[a-z-]+", ep))
 
     known = set()
-    for cmd in ("init", "mcp", "schedule"):
+    for cmd in ("init", "mcp", "serve", "schedule"):
         out = subprocess.run(["uv", "run", "qanat", cmd, "--help"],
                              capture_output=True, text=True, timeout=120, check=True).stdout
         known |= set(re.findall(r"--[a-z-]+", out))

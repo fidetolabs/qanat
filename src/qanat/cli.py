@@ -1,8 +1,9 @@
-"""qanat -- the command line. Four verbs, and each one is here for a reason.
+"""qanat -- the command line. Five verbs, and each one is here for a reason.
 
     qanat init [dir]     scaffold a project that runs green with no keys
     qanat check          hold the pipeline against the stage contract
-    qanat mcp            serve this project to an agent, over stdio or --http
+    qanat mcp            serve this project to an agent, over stdio
+    qanat serve          the HTTP server: --mcp, --app, --schedule
     qanat schedule       run the clock, and serve nothing
 
 **This is reached by an agent, so most of what was here was the wrong door.**
@@ -36,8 +37,36 @@ used to be one process -- scheduler and MCP server together, with
 `--no-schedule` to turn the clock off and no way at all to run the clock alone.
 That is backwards for the two deployments that exist: a recorder wants a clock
 and no server, and a hosted reader wants a server over a store somebody else
-fills. `qanat schedule` is the clock; `qanat mcp --http` is the server;
-`qanat mcp --http --schedule` is both, for one machine doing both jobs.
+fills. `qanat schedule` is the clock, and it serves nothing.
+
+**`serve` is back, and it is not what it was.** It went in 0.10.0 because it
+forced the clock on; splitting the clock out fixed that, and the clock is an
+optional flag here. What brought it back is that `qanat mcp --http` had stopped
+describing its own program. **Over stdio this process is the client's child --
+no port, no HTTP, and a clock cannot live in it. With `--http` it was an HTTP
+server that happened to carry MCP on one endpoint.** Those are two programs, not
+two settings, and `--http` was the tell: **a flag that changes what the program
+is belongs in the verb.**
+
+It was wrong a second way once the pages arrived. An HTTP server carrying only
+pages was still called `mcp`, and `/mcp` was on the port whether the person
+wanted it or not -- there was no flag to take it off.
+
+    qanat mcp                      stdio. The agent's child process
+    qanat serve --mcp              /mcp only
+    qanat serve --app              the pages only, nothing at /mcp
+    qanat serve --mcp --app        both, one program
+    qanat serve --app --schedule   the pages and the clock
+    qanat schedule                 the clock alone, no port
+
+**The verb names the program, and a flag only ever adds a door.** Never
+subtracts: there is no `--no-mcp` and no `qanat app`, so each arrangement has
+exactly one spelling and no two spellings can disagree. **`qanat serve` with no
+door is refused** -- serving nothing is not a default.
+
+**Doors are free and programs are not.** The store takes one writer, so two
+`qanat serve` on one project is the thing that breaks; two doors in one process
+share a store and a lock, and cannot.
 """
 
 from __future__ import annotations
@@ -84,8 +113,6 @@ MOVED = {
              "call that drops them",
     "run": "the `run` tool",
     "screen": "the `screen` tool",
-    "serve": "`qanat mcp --http --schedule` for both, or `qanat schedule` for the "
-             "clock alone and `qanat mcp --http` for the server alone",
 }
 
 
@@ -298,12 +325,12 @@ def _repair_after_crash(store, project, root) -> None:
 
 # ------------------------------------------------------------------------- mcp
 def cmd_mcp(args) -> int:
-    """Serve this project to an agent. A clock only if one is asked for.
+    """Serve this project to an agent, over stdio. Nothing else.
 
-    `--schedule` is what `serve` used to be, and it is a flag here rather than a
-    command of its own because the server is the thing being started and the
-    clock is a property of this process. Without it, nothing in this process
-    reads a cron line -- which `list_subscriptions` reports rather than hides.
+    **This process is the client's child.** It reads stdin and writes stdout,
+    there is no port, and a clock started here would die with the conversation --
+    which `list_subscriptions` reports rather than hides. `qanat serve` is the
+    HTTP server, and it is a different program rather than this one with a flag.
     """
     if getattr(args, "read_only", False):
         print("qanat mcp: --read-only is gone. It split 33 tools into 23 and 10, which is "
@@ -311,33 +338,57 @@ def cmd_mcp(args) -> int:
               "research to add screens. See docs/agents.md.", file=sys.stderr)
         return 2
 
-    if args.app and not args.http:
-        print("qanat mcp: --app needs --http. The pages are served by the HTTP server, "
-              "beside /mcp.", file=sys.stderr)
+    # Both are kept as suppressed flags rather than dropped, so they can say
+    # where they went instead of dying in argparse as an unrecognised argument.
+    if getattr(args, "http", False):
+        print("qanat mcp: --http is gone. `qanat mcp` is the stdio server -- your "
+              "client's child, with no port. The HTTP server is its own verb now: "
+              "`qanat serve --mcp`, or `qanat serve --mcp --app` to add the pages.",
+              file=sys.stderr)
         return 2
 
-    if not args.http:
-        if args.schedule:
-            print("qanat mcp: --schedule needs --http. Over stdio this server is your "
-                  "client's child, so a clock started here dies with the conversation. "
-                  "Run `qanat schedule` beside it instead.", file=sys.stderr)
-            return 2
-        from qanat.mcp import serve_stdio
+    if getattr(args, "schedule", False):
+        print("qanat mcp: --schedule is gone from here. Over stdio this server is your "
+              "client's child, so a clock started here dies with the conversation. Run "
+              "`qanat schedule` beside it, or `qanat serve --mcp --schedule` for one "
+              "process doing both.", file=sys.stderr)
+        return 2
 
-        return serve_stdio(getattr(args, "project", None), scope=args.scope)
+    from qanat.mcp import serve_stdio
+
+    return serve_stdio(getattr(args, "project", None), scope=args.scope)
+
+
+# ----------------------------------------------------------------------- serve
+def cmd_serve(args) -> int:
+    """The HTTP server, carrying the doors the flags name.
+
+    **The verb is the program and the flags are its doors.** `--mcp` is the tool
+    endpoint for an agent or for hosted Margiana; `--app` is the pages and `/api`
+    for the person running this Qanat; `--schedule` puts the clock in this
+    process too. Neither door calls the other, and both reach the store through
+    one lock, so **two doors here are not two writers** -- two of *these
+    processes* on one project would be.
+    """
+    doors = tuple(d for d, on in (("mcp", args.mcp), ("app", args.app)) if on)
+    if not doors:
+        print("qanat serve: name at least one door. `--mcp` for the tool endpoint, "
+              "`--app` for the pages, or both for one process serving both. Serving "
+              "nothing is not a default.", file=sys.stderr)
+        return 2
 
     if not args.schedule:
         from qanat.mcp_http import serve_http
 
         return serve_http(getattr(args, "project", None), scope=args.scope,
                           host=args.host, port=args.port, token=args.token,
-                          pages=args.app)
+                          doors=doors)
 
-    return _serve_with_clock(args)
+    return _serve_with_clock(args, doors)
 
 
-def _serve_with_clock(args) -> int:
-    """MCP over HTTP with a scheduler in the same process.
+def _serve_with_clock(args, doors: tuple[str, ...]) -> int:
+    """The same server with a scheduler in the same process.
 
     One machine doing both jobs. The store is opened once and handed to both, so
     there is one writer rather than two processes contending for it.
@@ -366,7 +417,7 @@ def _serve_with_clock(args) -> int:
     sched = Scheduler(store, project, root, workers=args.workers)
     state = AppState(store=store, project=project, root=root, sched=sched)
     app = create_app(None, args.scope, token=token, allow_hosts=named, state=state,
-                     pages=args.app)
+                     doors=doors)
     sched.start()
     if args.run_now:
         import threading
@@ -376,9 +427,10 @@ def _serve_with_clock(args) -> int:
         threading.Thread(target=run_all, args=(store, project, root), daemon=True).start()
 
     print(f"\n  {c('qanat', B)} {D}v{__version__}{X}  {project.name}")
-    print(f"  mcp      {c(f'http://{args.host}:{args.port}/mcp', B)} "
-          f"{D}scope {args.scope}{X}")
-    if args.app:
+    if "mcp" in doors:
+        print(f"  mcp      {c(f'http://{args.host}:{args.port}/mcp', B)} "
+              f"{D}scope {args.scope}{X}")
+    if "app" in doors:
         print(f"  app      {c(f'http://{args.host}:{args.port}/', B)}")
     print(f"  schedule {D}{len(sched._schedules)} schedule(s) on a clock, in this process{X}")
     print(f"  store    {D}{project.store_url(root)}{X}\n")
@@ -414,34 +466,43 @@ def build_parser() -> argparse.ArgumentParser:
     ch = sub.add_parser("check", help="hold the pipeline against the stage contract")
     ch.set_defaults(func=cmd_check)
 
-    mc = sub.add_parser("mcp", help="serve this project to an agent, over stdio or --http")
+    _SCOPE_HELP = ("which tools to offer: data reads tables, research adds screens "
+                   "and coverage, full adds ingest and metric definitions, authoring "
+                   f"adds the pipeline itself (default: {DEFAULT_SCOPE})")
+
+    mc = sub.add_parser("mcp", help="serve this project to an agent, over stdio")
     mc.add_argument("--scope", choices=list(SCOPES), default=DEFAULT_SCOPE,
-                    help="which tools to offer: data reads tables, research adds screens "
-                         "and coverage, full adds ingest and metric definitions, authoring "
-                         f"adds the pipeline itself (default: {DEFAULT_SCOPE})")
-    mc.add_argument("--http", action="store_true",
-                    help="serve MCP over HTTP instead of stdio, for a client that is not "
-                         "on this machine")
-    mc.add_argument("--schedule", action="store_true",
-                    help="with --http: also run the clock in this process. Without it "
-                         "nothing here reads a cron line")
-    mc.add_argument("--app", action="store_true",
-                    help="with --http: also serve the pages and their API at /, for the "
-                         "person running this Qanat. Writes follow --scope like the tools")
-    mc.add_argument("--host", default="127.0.0.1", help="with --http (default: 127.0.0.1)")
-    mc.add_argument("--port", type=int, default=8421, help="with --http (default: 8421)")
-    mc.add_argument("--token", help="with --http: the bearer token a caller must send. "
-                                    "Required to bind anything but loopback. Also "
-                                    "QANAT_MCP_TOKEN")
-    mc.add_argument("--workers", type=int, default=4, help="with --schedule")
-    mc.add_argument("--run-now", action="store_true",
-                    help="with --schedule: fire every definition once at startup")
-    mc.add_argument("--log-level", default="warning")
-    mc.add_argument("--force", action="store_true",
-                    help="with --schedule: run even if the contract fails")
-    # Removed, and kept only so it can say what replaced it rather than die in argparse.
+                    help=_SCOPE_HELP)
+    # Three that went, kept only so they can say where rather than die in argparse
+    # as an unrecognised argument.
+    mc.add_argument("--http", action="store_true", help=argparse.SUPPRESS)
+    mc.add_argument("--schedule", action="store_true", help=argparse.SUPPRESS)
     mc.add_argument("--read-only", action="store_true", help=argparse.SUPPRESS)
     mc.set_defaults(func=cmd_mcp)
+
+    sv = sub.add_parser("serve", help="the HTTP server: --mcp, --app, --schedule")
+    sv.add_argument("--mcp", action="store_true",
+                    help="serve the tool endpoint at /mcp, for an agent or a hosted "
+                         "client that is not on this machine")
+    sv.add_argument("--app", action="store_true",
+                    help="serve the pages and their API at /, for the person running "
+                         "this Qanat. Writes follow --scope like the tools")
+    sv.add_argument("--schedule", action="store_true",
+                    help="also run the clock in this process. Without it nothing here "
+                         "reads a cron line")
+    sv.add_argument("--scope", choices=list(SCOPES), default=DEFAULT_SCOPE,
+                    help=_SCOPE_HELP)
+    sv.add_argument("--host", default="127.0.0.1", help="(default: 127.0.0.1)")
+    sv.add_argument("--port", type=int, default=8421, help="(default: 8421)")
+    sv.add_argument("--token", help="the bearer token a caller must send. Required to "
+                                    "bind anything but loopback. Also QANAT_MCP_TOKEN")
+    sv.add_argument("--workers", type=int, default=4, help="with --schedule")
+    sv.add_argument("--run-now", action="store_true",
+                    help="with --schedule: fire every definition once at startup")
+    sv.add_argument("--log-level", default="warning")
+    sv.add_argument("--force", action="store_true",
+                    help="with --schedule: run even if the contract fails")
+    sv.set_defaults(func=cmd_serve)
 
     sc = sub.add_parser("schedule", help="run the clock, and serve nothing")
     sc.add_argument("--workers", type=int, default=4)

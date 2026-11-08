@@ -45,9 +45,12 @@ is a second place the behaviour can quietly differ. Running one prints where it 
 Going the other way, `define_transform`, `define_ingestion` and `define_universe` have no CLI at
 all. You author a transform in your editor; an agent authors one through the API.
 
-Four commands have no tool. `init` and `prune` because an agent works inside a project that
-already exists and does not drop tables; `mcp` because it is the transport; `ls` because it is
-three tools here; and `serve` because of process lifetime, not authority.
+Four of the five commands have no tool. `init`, because an agent works inside a project that
+already exists. `mcp` and `serve`, because they are the transport. And `schedule`, because of
+process lifetime, not authority -- there is nothing for a `start_scheduler` tool to start that
+would still be there after the call. `check` is the one with a tool, and `check_project` is it.
+(`prune` and `ls` are gone rather than toolless: an agent does not drop tables, and `ls` was
+three tools in one dump.)
 
 **A clock cannot live in a stdio server, and that is a fact rather than a rule.** Over stdio
 this server is your client's child, so a thread it started would die with the conversation —
@@ -225,16 +228,23 @@ the line is drawn in the wrong place.
 `--read-only` is gone. It split the tools 23 and 10, which was a fact about the implementation and
 not a promise anybody could build on.
 
-## `--http`
+## `qanat serve`
 
 `qanat mcp` speaks JSON-RPC on stdin and stdout, which is the right transport for one person on
 one machine and cannot be the hosted one. A request arriving at a server has nowhere to keep a
 child process, and the client is somewhere else entirely.
 
+**So the HTTP server is its own verb.** It used to be `qanat mcp --http`, and that name stopped
+describing the program: over stdio there is no port and no clock, with `--http` there was both, and
+**a flag that changes what the program is belongs in the verb.** `--mcp` and `--app` then name the
+doors it carries, and a person who only wants the pages no longer opens a tool endpoint on their
+port.
+
 ```bash
-qanat mcp --http --port 8421 --scope research --token "$QANAT_MCP_TOKEN"
-qanat mcp --http --schedule --port 8421 --token "$QANAT_MCP_TOKEN"   # plus the clock
-qanat schedule --run-now                                            # the clock, serving nothing
+qanat serve --mcp --port 8421 --scope research --token "$QANAT_MCP_TOKEN"
+qanat serve --mcp --schedule --port 8421 --token "$QANAT_MCP_TOKEN"   # plus the clock
+qanat serve --app --scope research                                    # the pages, no /mcp
+qanat schedule --run-now                                              # the clock, serving nothing
 ```
 
 This is MCP's Streamable HTTP transport on `/mcp`. `POST` carries JSON-RPC and gets JSON back.
@@ -254,7 +264,7 @@ store behind a lock. Two projects means two processes. Many tenants means a proc
 each. This is the real limit on how far the HTTP transport goes today.
 
 **`--schedule` is this server with a clock.** It opens the store, starts the scheduler, and
-mounts the same endpoint, so one process holds the store and everything reaches the project
+mounts whichever doors were asked for, so one process holds the store and everything reaches the project
 through it. That includes the unattended falsification pass, which used to be handed a dozen curl
 endpoints and is now given `--scope research` and the tools that go with it. The scope is what
 stops the pass editing the strategy it is meant to be attacking; it used to be a sentence in a
@@ -264,7 +274,7 @@ prompt.
 one command with `--no-schedule` to turn the clock off, and no way at all to run the clock alone
 — backwards for the two deployments that exist. A recorder wants a clock and no open port:
 `qanat schedule`. A hosted reader wants a server over a store something else fills:
-`qanat mcp --http`. One machine doing both jobs asks for both.
+`qanat serve --mcp`. One machine doing both jobs asks for both.
 
 **`list_subscriptions` reports which one you have.** Over stdio nothing in the process reads a
 cron line, so it says so rather than saying "updating daily".

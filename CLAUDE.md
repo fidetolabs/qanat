@@ -18,14 +18,25 @@ uv run pytest audit/batteries -m audit         # opt-in: slow, and one battery c
 ```
 
 **The command line is five verbs and that is deliberate.** `init`, `check`,
-`migrate`, `mcp`, `schedule`. `ls`, `graph`, `plan`, `prune`, `run`, `screen` and
-`serve` were removed in 0.10.0 -- each was a person's door onto a question a tool
-already answers, which is a second place the behaviour can quietly differ.
-Running one prints where it went. **`qanat mcp` serves; `qanat schedule` runs the
-clock and serves nothing; `qanat mcp --http --schedule` is one machine doing
-both.** `--app` adds the pages beside `/mcp` -- a flag, not a verb, because the
-server is the thing being started. **`qanat migrate` rewrites a project written in the old vocabulary** --
-it runs on a file that cannot be loaded yet, so no tool could reach it.
+`mcp`, `serve`, `schedule`. `ls`, `graph`, `plan`, `prune`, `run` and `screen`
+were removed in 0.10.0 -- each was a person's door onto a question a tool already
+answers, which is a second place the behaviour can quietly differ. Running one
+prints where it went. **There is no `migrate`:** a 0.10.x project is refused at
+load with the keys it got wrong named.
+
+**`qanat mcp` is stdio and `qanat serve` is the HTTP server, because `--http`
+changed what the program was.** Over stdio the process is the client's child --
+no port, and a clock cannot live in it. **The verb names the program and a flag
+only ever adds a door**, never subtracts, so each arrangement has one spelling:
+
+    qanat mcp                      stdio, the agent's child
+    qanat serve --mcp              /mcp only
+    qanat serve --app              the pages only, nothing at /mcp
+    qanat serve --mcp --app        both, one program
+    qanat schedule                 the clock alone, no port
+
+**Doors are free and programs are not.** Two doors in one process share a store
+and one lock; two `qanat serve` on one project is the thing that breaks.
 
 `CONTRIBUTING.md` has setup, the architecture table and how to add a connector. Read it instead of
 reading `src/` — it is two dozen modules and you need two of them.

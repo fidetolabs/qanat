@@ -2,11 +2,47 @@
 
 ## Unreleased
 
+### `qanat serve` is the HTTP server, and the doors are flags on it
+
+**`qanat mcp --http` had stopped describing its own program.** Over stdio the
+process is the client's child -- no port, no HTTP, and a clock cannot live in it.
+With `--http` it was an HTTP server that happened to carry MCP on one endpoint.
+Those are two programs rather than two settings, and **`--http` was the tell: a
+flag that changes what the program is belongs in the verb.**
+
+It was wrong a second way once the pages arrived. An HTTP server carrying only
+pages was still called `mcp`, and `/mcp` was on the port whether the person
+wanted it or not -- `create_app` always mounted it and there was no flag to take
+it off. One engineer wanting a browser does not want a tool endpoint exposed
+beside it.
+
+    qanat mcp                      stdio. The agent's child process
+    qanat serve --mcp              /mcp only
+    qanat serve --app              the pages only, nothing at /mcp
+    qanat serve --mcp --app        both, one program
+    qanat serve --app --schedule   the pages and the clock
+    qanat schedule                 the clock alone, no port
+
+**The verb names the program and a flag only ever adds a door.** Never
+subtracts: there is no `--no-mcp` and no `qanat app`, so each arrangement has
+exactly one spelling and no two spellings can disagree. `qanat serve` with no
+door is refused -- serving nothing is not a default. `qanat mcp --http` and
+`qanat mcp --schedule` exit 2 and name where they went, rather than dying in
+argparse as an unrecognised argument.
+
+**`serve` came back and it is not what it was.** It went in 0.10.0 because it
+forced the clock on, with `--no-schedule` to turn it off and no way to run the
+clock alone. Splitting out `qanat schedule` fixed that, and the clock stays an
+optional flag here. **Five verbs:** `init`, `check`, `mcp`, `serve`, `schedule`.
+
+**Doors are free and programs are not.** Two doors in one process share one
+store and one lock, so they can never be two writers; two `qanat serve` on one
+project is the thing that breaks, because the store takes one writer.
+
 ### An app door, for the one engineer running this Qanat
 
-`qanat mcp --http --app` serves pages and a JSON API at `/`, beside `/mcp`, in
-the same process and behind the same Host and token guard. **A flag, not a
-verb**: `serve` was removed in 0.10.0 and the CLI stays five verbs.
+`qanat serve --app` serves pages and a JSON API at `/`, and `--mcp --app` puts
+them beside `/mcp` in the same process, behind the same Host and token guard.
 
 Everything an agent could do over MCP and a person could not see: which filings
 exist and can be ingested, which are held and how far each has got -- raw,

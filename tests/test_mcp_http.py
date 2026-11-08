@@ -173,3 +173,92 @@ def test_a_batch_is_answered_as_a_batch(tmp_path: Path):
     body = res.json()
     assert isinstance(body, list) and len(body) == 2
     assert {m["id"] for m in body} == {1, 2}
+
+
+# ---------------------------------------------------------------- the doors
+#
+# `qanat serve --mcp --app` is one program with two doors, and either one may be
+# left off. These hold the half of that which is not "does the page load": that a
+# door nobody asked for is **not on the port**.
+
+
+def _doors(tmp_path: Path, doors) -> TestClient:
+    write_project(tmp_path, "demo")
+    app = create_app(str(tmp_path), "research", doors=doors)
+    return TestClient(app, headers={"Host": "127.0.0.1"})
+
+
+def test_the_app_door_alone_puts_nothing_at_mcp(tmp_path: Path):
+    """A person who wanted a browser did not ask for a tool endpoint on their
+    port. `--app` used to be a flag on `qanat mcp`, where there was no way to
+    take `/mcp` off at all."""
+    c = _doors(tmp_path, ("app",))
+    try:
+        assert c.get("/").status_code == 200
+        assert c.get("/api/health").status_code == 200
+        assert c.get("/mcp").status_code == 404
+        assert c.post("/mcp", json={"jsonrpc": "2.0", "id": 1, "method": "ping"}).status_code == 404
+    finally:
+        c.app.state.qanat_session.close()
+
+
+def test_the_mcp_door_alone_puts_nothing_at_the_pages(tmp_path: Path):
+    c = _doors(tmp_path, ("mcp",))
+    try:
+        assert c.get("/mcp").status_code == 405      # the spec's answer, not a 404
+        assert c.get("/").status_code == 404
+        assert c.get("/api/health").status_code == 404
+    finally:
+        c.app.state.qanat_session.close()
+
+
+def test_both_doors_do_not_care_which_order_they_were_named(tmp_path: Path):
+    """One arrangement, one spelling: `--mcp --app` and `--app --mcp` are the
+    same server, so neither can mean something the other does not."""
+    for order in (("mcp", "app"), ("app", "mcp")):
+        c = _doors(tmp_path, order)
+        try:
+            assert c.get("/").status_code == 200
+            assert c.get("/mcp").status_code == 405
+            assert c.app.state.doors == order
+        finally:
+            c.app.state.qanat_session.close()
+
+
+def test_a_server_with_no_door_is_refused(tmp_path: Path):
+    """Serving nothing is not a default. The CLI says this in words; here it is
+    a programming error, because nothing but the CLI builds one."""
+    write_project(tmp_path, "demo")
+    with pytest.raises(ValueError, match="at least one door"):
+        create_app(str(tmp_path), "research", doors=())
+
+
+# ------------------------------------------------------- the verb, not the flag
+#
+# `--http` changed what the program was: over stdio this process is the client's
+# child with no port, and with `--http` it was an HTTP server. Two programs, so
+# two verbs -- and the flag has to say where it went rather than die in argparse.
+
+
+def test_mcp_refuses_the_flags_that_became_a_verb():
+    from qanat.cli import main
+
+    assert main(["mcp", "--http"]) == 2
+    assert main(["mcp", "--http", "--schedule"]) == 2
+    assert main(["mcp", "--schedule"]) == 2
+
+
+def test_serve_with_no_door_names_both(capsys):
+    from qanat.cli import main
+
+    assert main(["serve"]) == 2
+    said = capsys.readouterr().err
+    assert "--mcp" in said and "--app" in said
+
+
+def test_serve_is_not_a_removed_command_any_more():
+    """It went in 0.10.0 for forcing the clock on, and the clock is a flag here.
+    So it is a verb again, and `MOVED` must not still be answering for it."""
+    from qanat.cli import MOVED
+
+    assert "serve" not in MOVED

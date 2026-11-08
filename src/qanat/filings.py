@@ -570,7 +570,7 @@ def subscriptions(
                 "nothing in this process is reading these cron lines. Over stdio the "
                 "server is the client's child, so a thread started here dies with the "
                 "conversation -- a clock cannot live in it. These will run when a "
-                "recorder runs: `qanat schedule`, or `qanat mcp --http --schedule`"
+                "recorder runs: `qanat schedule`, or `qanat serve --mcp --schedule`"
             ),
         },
         "note": (

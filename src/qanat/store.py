@@ -357,7 +357,7 @@ class Store:
                     "  A DuckDB file takes one writer at a time, so the CLI, the scheduler and\n"
                     "  an agent cannot each open it. Pick one:\n"
                     "    · stop whatever is serving this project, then run this again, or\n"
-                    "    · reach it through the process that already has it: `qanat mcp --http`\n"
+                    "    · reach it through the process that already has it: `qanat serve --mcp`\n"
                     "      serves MCP from one that holds the store, or\n"
                     "    · move the project to a parquet store (`store: ./data`), which takes any\n"
                     "      number of readers beside the writer"

@@ -102,7 +102,7 @@ def build(root: Path) -> Path:
 
 
 def client(root: Path, scope: str = "authoring", token: str | None = None) -> TestClient:
-    return TestClient(create_app(str(root), scope, token=token, pages=True),
+    return TestClient(create_app(str(root), scope, token=token, doors=("mcp", "app")),
                       base_url="http://127.0.0.1")
 
 
