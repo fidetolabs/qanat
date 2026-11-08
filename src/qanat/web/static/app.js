@@ -34,6 +34,16 @@ const num = (v, d = 4) => (v === null || v === undefined ? "—" : Number(v).toL
 const mark = (on, label) => `<span class="mark ${on ? "yes" : "no"}">${h(label)}</span>`;
 const lock = (what) => (HEALTH.can[what] ? "" : `disabled title="needs a wider --scope"`);
 
+// One pass of the transforms over what has landed: facts, sections, metrics.
+async function runTransforms(btn, out) {
+  btn.disabled = true; out.textContent = "Running the transforms…";
+  try {
+    const r = await post("/api/run", {});
+    out.innerHTML = r.results.map((x) => `<div class="${x.status === "ok" ? "yes" : "no"}">${h(x.definition)}: ${h(x.status)} · ${num(x.rows, 0)} rows${x.error ? ` · ${h(x.error)}` : ""}</div>`).join("");
+    toast(r.ok ? "Transforms ran" : "Some transforms failed", !r.ok);
+  } catch (e) { fail(e); } finally { btn.disabled = false; }
+}
+
 // ---- routing -------------------------------------------------------------------
 const VIEWS = { "": home, filings, holdings, metrics, filters, tables };
 async function route() {
@@ -97,12 +107,12 @@ function drawFound(out, r) {
       <div class="row"><b>${r.found} found</b><span class="muted">${h(r.ingestable_note || "")}</span></div>
       <table><tr><th></th><th>Company</th><th>Form</th><th>Filed</th><th>Period</th><th>Ingestable</th><th>Held</th></tr>
       ${r.filings.map((f, i) => {
-        const can = f.ingestable === true || f.ingestable === "yes" || f.pile === 1;
+        const can = f.pile === r.ingested_pile;
         const held = f.ingested_here;
         return `<tr><td>${can && !held ? `<input type="checkbox" data-i="${i}">` : ""}</td>
           <td>${h(f.company)} <span class="muted">${h(f.company_name || "")}</span></td><td>${h(f.form)}</td>
           <td class="mono">${h(f.filed)}</td><td class="mono">${h(f.period_end || "—")}</td>
-          <td>${mark(can, can ? "yes" : String(f.ingestable || "no"))}</td><td>${mark(held, held ? "held" : "—")}</td></tr>`;
+          <td>${mark(can, can ? "yes" : "not today")} <span class="muted">${h(f.ingestable)}</span></td><td>${mark(held, held ? "held" : "—")}</td></tr>`;
       }).join("")}</table>
       <div class="row" style="margin-top:12px"><button id="go" ${lock("ingest")}>Ingest selected</button><span id="res" class="muted"></span></div>
     </div>`;
@@ -115,6 +125,11 @@ function drawFound(out, r) {
       $("#res").innerHTML = `${done.landed} landed, ${done.refused} refused` +
         done.filings.filter((x) => !x.ingested).map((x) => `<div class="err">${h(x.accession)}: ${h(x.reason)}</div>`).join("");
       toast(`${done.landed} filing(s) landed`);
+      if (done.landed) {
+        $("#res").insertAdjacentHTML("beforeend", `<div class="row" style="margin-top:8px"><span>Landed as raw documents. Facts, sections and metrics come from the transforms.</span>
+          <button id="run" ${lock("run")}>Run the transforms</button></div><div id="ran" class="muted"></div>`);
+        $("#run").onclick = () => runTransforms($("#run"), $("#ran"));
+      }
     } catch (e) { fail(e); } finally { $("#go").disabled = false; }
   };
 }
@@ -125,10 +140,12 @@ async function holdings(view, [filer]) {
   view.innerHTML = `
     <h1>What I hold</h1>
     <p class="lede">Every company with filings here, and how far each filing has got: raw → facts → sections → metrics.</p>
+    <div class="row" style="margin-bottom:12px"><button id="run" class="ghost" ${lock("run")}>Run the transforms</button><span id="ran" class="muted"></span></div>
     <div class="split">
       <div class="card list">${c.companies.length ? c.companies.map((x) => `<a href="#/holdings/${encodeURIComponent(x.cik)}" class="${x.cik === filer ? "on" : ""}">${h(x.ticker || x.cik)} <span class="muted">${x.filings}</span></a>`).join("") : `<p class="empty">Nothing held yet. <a href="#/filings">Find some filings</a>.</p>`}</div>
       <div id="one">${filer ? "" : `<p class="muted">Pick a company.</p>`}</div>
     </div>`;
+  $("#run").onclick = async () => { await runTransforms($("#run"), $("#ran")); if (filer) route(); };
   if (!filer) return;
   const p = await api(`/api/companies/${encodeURIComponent(filer)}/filings`);
   $("#one").innerHTML = `
@@ -190,7 +207,8 @@ async function metrics(view, [picked]) {
         <div><b>${num(t.value)}</b> <span class="muted">${h(t.metric)} for ${h(t.filer.ticker || t.filer.cik)} as of ${h(t.as_of)}</span></div>
         <div>computed from ${t.computed_from.map((u) => `<code>${h(u.from)}</code>`).join(", ") || "—"}</div>
         <div>${t.filing ? `the filing: ${h(t.filing.form)} filed ${h(t.filing.filed)} <span class="muted mono">${h(t.filing.document)}</span>` : "no filing at or before that date"}</div>
-        ${(t.facts.facts || []).length ? `<table><tr><th>Concept</th><th class="num">Value</th><th>Unit</th><th>Period</th></tr>
+        ${(t.facts.facts || []).length ? `<div class="muted">The filing's tagged facts, first 20 of ${num(t.facts.total ?? t.facts.facts.length, 0)}. The metric reads <code>${h(t.computed_from.map((u) => u.from).join(", "))}</code>; which rows its formula picked is in the formula.</div>
+          <table><tr><th>Concept</th><th class="num">Value</th><th>Unit</th><th>Period</th></tr>
           ${t.facts.facts.slice(0, 20).map((f) => `<tr><td class="mono">${h(f.concept)}</td><td class="num">${num(f.value)}</td><td>${h(f.unit || "")}</td><td class="mono">${h(f.period_end || f.period || "")}</td></tr>`).join("")}</table>` : ""}`;
     } catch (e) { fail(e); }
   };

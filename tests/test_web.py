@@ -246,3 +246,28 @@ def test_the_web_layer_holds_no_sql():
     api = (Path(__file__).parent.parent / "src" / "qanat" / "web" / "api.py").read_text()
     assert not re.search(r"\b(SELECT|INSERT|UPDATE|DELETE FROM|JOIN)\b", api)
     assert not re.search(r"store\.\w+\(", api), "a route reached into the store"
+
+
+def test_rows_as_of_use_the_clock_the_project_declares(tmp_path):
+    """`raw.documents` has `published_at`, which is none of the default names, and
+    the project says so in `time_columns`. `sample_table` with `as_of` refused it
+    as having no clock, because the read never asked the project."""
+    root = build(tmp_path)
+    (root / "qanat.yaml").write_text(QANAT_YAML.replace(
+        "time_columns:\n", "time_columns:\n  raw.documents: published_at\n"))
+    c = client(root)
+    try:
+        r = c.get("/api/tables/raw.documents?as_of=2025-01-01")
+        assert r.status_code == 200, r.text
+        assert [x["id"] for x in r.json()["sample"]["sample"]] == ["A24"]
+
+        from qanat import mcp
+
+        session = c.app.state.qanat_session
+        out = mcp._dispatch(session, {"jsonrpc": "2.0", "id": 1, "method": "tools/call",
+                                      "params": {"name": "sample_table", "arguments": {
+                                          "ref": "raw.documents", "as_of": "2025-01-01"}}},
+                            mcp.tools_for("data"))
+        assert not out["result"].get("isError"), out
+    finally:
+        c.app.state.qanat_session.close()

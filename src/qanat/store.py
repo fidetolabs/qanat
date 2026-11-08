@@ -1400,12 +1400,19 @@ class Store:
             self._now_view(ref)
 
     # ---- reading -------------------------------------------------------------
-    def read(self, ref: str, limit: int | None = None, as_of: str | None = None) -> pd.DataFrame:
-        """Read a table. With `as_of`, only rows that existed at that timestamp."""
+    def read(self, ref: str, limit: int | None = None, as_of: str | None = None,
+             time_column: str | None = None) -> pd.DataFrame:
+        """Read a table. With `as_of`, only rows that existed at that timestamp.
+
+        `time_column` is the project's own word for this table's clock, from
+        `time_columns`. Without it only the default names are tried, so a table
+        whose clock is declared in the project -- `raw.documents: published_at` --
+        was refused as having none.
+        """
         q = f'SELECT * FROM {self._readable(ref)}'
         params: list[Any] = []
         if as_of:
-            col = self.time_column(ref)
+            col = self.time_column(ref, time_column)
             if col is None:
                 raise LookupError(
                     f"{ref} has no time column, so it cannot be read as of a timestamp. "

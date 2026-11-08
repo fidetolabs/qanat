@@ -25,6 +25,7 @@ STATIC = Path(__file__).parent / "static"
 SAME_AS: dict[str, str] = {
     "find": "find_filings",
     "ingest": "ingest_filings",
+    "run": "run_project",
     "executions": "list_executions",
     "metrics": "list_metrics",
     "define_metric": "define_metric",
@@ -69,7 +70,7 @@ def mount(app: FastAPI, session: Any, store_lock: threading.Lock, scope: str) ->
     from qanat.store import acting_as
 
     refusals = (CatalogError, FilingsError, FilterError, MetricError, ReadingError,
-                ScreenError, ValueError, KeyError)
+                ScreenError, ValueError, KeyError, LookupError)
     tool_scope = {t["name"]: t["scope"] for t in TOOLS}
 
     def allowed(what: str) -> bool:
@@ -99,6 +100,8 @@ def mount(app: FastAPI, session: Any, store_lock: threading.Lock, scope: str) ->
             out = await anyio.to_thread.run_sync(run)
         except refusals as exc:
             return _json({"detail": str(exc).strip("'\"")}, 400)
+        except Exception as exc:  # noqa: BLE001 -- a page reads JSON, never a bare 500
+            return _json({"detail": f"{type(exc).__name__}: {exc}"}, 500)
         return _json(out)
 
     async def body(request: Request) -> dict[str, Any]:
@@ -144,6 +147,16 @@ def mount(app: FastAPI, session: Any, store_lock: threading.Lock, scope: str) ->
                          400)
         return await call("ingest", lambda: svc(
             s.store, s.project, s.root, [dict(c) for c in chosen]), writes=True)
+
+    @app.post("/api/run")
+    async def run_(request: Request):  # type: ignore[no-untyped-def]
+        from qanat.runner import run
+
+        b = await body(request)
+        # The page transforms what has landed; it does not re-poll every feed.
+        return await call("run", lambda: run(
+            s.store, s.project, s.root, definition=b.get("definition") or None,
+            ingest=bool(b.get("ingest"))), writes=True)
 
     # ---- what is held -----------------------------------------------------------
     @app.get("/api/companies")
@@ -220,9 +233,9 @@ def mount(app: FastAPI, session: Any, store_lock: threading.Lock, scope: str) ->
     # ---- filters and the screen -------------------------------------------------
     @app.get("/api/filters")
     async def filters_():  # type: ignore[no-untyped-def]
-        from qanat.filters import listing
+        from qanat.filters import index
 
-        return await call("filters", lambda: {"filters": listing(s.project)})
+        return await call("filters", lambda: index(s.project))
 
     @app.put("/api/filters/{fid}")
     async def save_filter(fid: str, request: Request):  # type: ignore[no-untyped-def]

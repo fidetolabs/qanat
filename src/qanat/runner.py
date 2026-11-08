@@ -405,3 +405,37 @@ def run_all(
 
 __all__ = ["RunResult", "order", "phys", "run_all", "run_definition", "run_ingestion",
            "run_transform"]
+
+
+def run(store: Store, project: Project, root: Path, *, definition: str | None = None,
+        as_of: str | None = None, seed: int | None = None,
+        ingest: bool = True) -> dict[str, Any]:
+    """One pass, as both doors report it: the whole graph or one definition.
+
+    With `as_of`, a single point-in-time pass and no ingestion -- re-polling a
+    feed during a pass over the past would overwrite the history being read.
+    `ingest=False` runs the transforms over what has already landed, which is what
+    a person means by *transform the filings I just took*.
+    """
+    if as_of:
+        store.open_pit(as_of, project.time_columns)
+    try:
+        if definition:
+            results = [run_definition(store, project, root, definition,
+                                      as_of=as_of, seed=seed)]
+        else:
+            results = run_all(store, project, root, as_of=as_of, seed=seed,
+                              ingest=ingest and not as_of)
+    finally:
+        if as_of:
+            store.close_pit()
+    return {
+        "as_of": as_of,
+        "ok": all(r.ok for r in results),
+        # `job` and `execution` ride out, because a caller that just landed rows
+        # and wants to know where they came from should not have to search a log
+        # for them.
+        "results": [{"definition": r.definition_id, "status": r.status, "rows": r.rows,
+                     "wrote": list(r.targets), "job": r.job_id,
+                     "execution": r.execution_id, "error": r.error} for r in results],
+    }

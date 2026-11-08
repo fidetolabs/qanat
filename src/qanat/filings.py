@@ -720,6 +720,9 @@ def find(
         "found": len(rows),
         "forms": forms,
         "filings": rows,
+        # Said as a value as well as in the note, so a caller choosing what to
+        # pass to `ingest_filings` reads it rather than parsing a sentence.
+        "ingested_pile": INGESTED_PILE,
         "ingestable_note": (
             f"`ingestable` is read off the form, not off EDGAR's inline-XBRL flag, which "
             f"is true for 29.8% of filings and means financial statements in 1.2%. "

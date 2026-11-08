@@ -68,7 +68,8 @@ def describe(store: Store, project: Project, ref: str) -> dict[str, Any]:
 def sample(store: Store, project: Project, ref: str, limit: int = 20,
            as_of: str | None = None) -> dict[str, Any]:
     ref = known(project, ref)
-    df = store.read(ref, limit=limit, as_of=as_of or None)
+    df = store.read(ref, limit=limit, as_of=as_of or None,
+                    time_column=project.time_columns.get(ref))
     return {"ref": ref, "as_of": as_of, "rows": len(df),
             "sample": json.loads(df.to_json(orient="records", date_format="iso"))}
 

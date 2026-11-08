@@ -45,6 +45,11 @@ def listing(project: Project) -> list[dict[str, Any]]:
     return [_row(f) for f in project.filters]
 
 
+def index(project: Project) -> dict[str, Any]:
+    """Every saved filter and the file they live in, as both doors answer."""
+    return {"filters": listing(project), "file": FILE}
+
+
 def get(project: Project, fid: str) -> Filter:
     found = project.filter(fid)
     if found is None:
@@ -125,4 +130,4 @@ def _row(f: Filter) -> dict[str, Any]:
     }
 
 
-__all__ = ["FILE", "FilterError", "clauses_of", "get", "listing", "remove", "save"]
+__all__ = ["FILE", "FilterError", "clauses_of", "get", "index", "listing", "remove", "save"]

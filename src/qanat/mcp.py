@@ -438,31 +438,10 @@ def _plan(s: Session, args: dict) -> Any:
       writes=True,
       scope="full")
 def _run(s: Session, args: dict) -> Any:
-    from qanat.runner import run_all, run_definition
+    from qanat.runner import run
 
-    as_of, seed = args.get("as_of") or None, args.get("seed")
-    if as_of:
-        s.store.open_pit(as_of, s.project.time_columns)
-    try:
-        if args.get("definition"):
-            results = [run_definition(s.store, s.project, s.root, args["definition"],
-                                      as_of=as_of, seed=seed)]
-        else:
-            results = run_all(s.store, s.project, s.root, as_of=as_of, seed=seed,
-                              ingest=not as_of)
-    finally:
-        if as_of:
-            s.store.close_pit()
-    return {
-        "as_of": as_of,
-        "ok": all(r.ok for r in results),
-        # `job` and `execution` ride out, because a caller that just landed rows
-        # and wants to know where they came from should not have to search a log
-        # for them.
-        "results": [{"definition": r.definition_id, "status": r.status, "rows": r.rows,
-                     "wrote": list(r.targets), "job": r.job_id,
-                     "execution": r.execution_id, "error": r.error} for r in results],
-    }
+    return run(s.store, s.project, s.root, definition=args.get("definition") or None,
+               as_of=args.get("as_of") or None, seed=args.get("seed"))
 
 
 @tool("screen_companies",
@@ -553,9 +532,9 @@ def _screen(s: Session, args: dict) -> Any:
       {"properties": {}, "required": []},
       "research")
 def _list_filters(s: Session, args: dict) -> Any:
-    from qanat.filters import listing
+    from qanat.filters import index
 
-    return {"filters": listing(s.project), "file": "filters.yaml"}
+    return index(s.project)
 
 
 @tool("save_filter",

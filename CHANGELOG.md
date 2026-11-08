@@ -27,6 +27,21 @@ the saved filters, and any table's rows as of a date.
   said nothing here could check, which stopped being true with `filters.yaml`.
   Still refused without `force`, because a caller's own filter cannot be seen.
 - **`metrics.formula`** reads a metric's formula back out of its generated script.
+- **The page runs the transforms.** Ingesting lands raw documents only; facts,
+  sections and metrics come from the transforms, and a person running Qanat by
+  hand had no way to start them. `runner.run` is what `run_project` called
+  inline, and the page calls it with `ingest` off so it does not re-poll a feed.
+- **`find_filings` says `ingested_pile`** as a value, beside the sentence that
+  already said it, so a caller choosing what to ingest reads it rather than
+  parsing prose -- and the page stopped guessing.
+
+### Fixed
+
+- **`sample_table` with `as_of` refused any table whose clock the project
+  declares.** `store.read` asked only the default column names and never
+  `time_columns`, so `raw.documents: published_at` -- in every scaffolded project
+  -- was "a table with no time column". Found by running the web door's table
+  reader against a live project; both doors share the fix.
 
 ### The operator's filters, saved in `filters.yaml` and run by name
 
