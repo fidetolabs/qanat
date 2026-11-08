@@ -135,6 +135,7 @@ def create_app(
     allow_hosts: list[str] | None = None,
     state: Any = None,
     doors: Sequence[str] = ("mcp",),
+    serving: str | None = None,
 ):
     """A FastAPI app carrying the doors it is asked for.
 
@@ -175,7 +176,8 @@ def create_app(
         # here rather than on the first write a door takes. Opening alone does not
         # take it: `meta.duckdb` is attached lazily, by design, so that a reader
         # never has to.
-        session.store.take_writer_lock()
+        session.store.take_writer_lock(serving=serving, doors=list(doors),
+                                       project=session.project.name)
 
     sessions = Sessions()
     allowed = allowed_hosts(allow_hosts)
@@ -376,7 +378,8 @@ def serve_http(
 
     try:
         named = [] if host in ("0.0.0.0", "::", "") else [host]
-        app = create_app(project_path, scope, token=token, allow_hosts=named, doors=doors)
+        app = create_app(project_path, scope, token=token, allow_hosts=named, doors=doors,
+                         serving=f"http://{host}:{port}")
     except ScopeError as exc:
         print(f"qanat serve: {exc}", file=sys.stderr)
         return 2
@@ -396,7 +399,15 @@ def serve_http(
         + ("" if token else " · no token (loopback only)"),
         file=sys.stderr,
     )
-    uvicorn.run(app, host=host, port=port, log_level="warning")
+    try:
+        uvicorn.run(app, host=host, port=port, log_level="warning")
+    finally:
+        # **This path never closed the store.** `serve_stdio` closes its session
+        # in a `finally` and the clock path closes in one too; here the return
+        # followed `uvicorn.run` and nothing let go. It showed up as a
+        # `.qanat-lock` surviving a Ctrl-C, which would then be naming a pid that
+        # is gone -- harmless, because the note is advisory, and still wrong.
+        app.state.qanat_session.close()
     return 0
 
 

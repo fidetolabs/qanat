@@ -29,11 +29,13 @@ from __future__ import annotations
 
 import contextlib
 import contextvars
+import os
 import re
 import threading
 import time
 from collections.abc import Sequence
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -640,7 +642,99 @@ class Store:
         self._build_now_views()
         self.con.execute(f"SET search_path='{self._search_path()}'")
 
-    def take_writer_lock(self) -> None:
+    #: What a program that holds this store writes about itself, so that a
+    #: program refused the lock can name the holder.
+    #:
+    #: **`StoreBusy` only knows that a file was locked.** The operating system's
+    #: lock carries no pid, no port and no idea which doors the holder serves, so
+    #: the refusal could offer general advice and nothing specific. This file is
+    #: how it gets specific.
+    #:
+    #: **It is advisory and the DuckDB lock stays the authority.** A `kill -9`
+    #: leaves it behind, and a stale one is harmless precisely because nothing
+    #: trusts it: if the lock can be taken, the holder is gone, and the file is
+    #: overwritten without a prompt and without a warning. Failing to write it is
+    #: never a refusal either -- a read-only store directory still serves.
+    LOCK_FILE = ".qanat-lock"
+
+    @property
+    def _lock_note(self) -> Path:
+        """Beside the store, not inside it.
+
+        A parquet store is a directory, so the note goes in it, next to
+        `meta.duckdb` and `tables/`. A DuckDB store is one file, so the note is
+        named after it -- `corpus.duckdb.qanat-lock` -- because two projects may
+        sit in one directory and one shared note could not say which was held.
+        """
+        if self.kind == "parquet":
+            return self.dir / self.LOCK_FILE
+        return self.path.parent / f"{self.path.name}{self.LOCK_FILE}"
+
+    def _read_lock_note(self) -> dict[str, Any]:
+        """What the holder said about itself, or an empty dict."""
+        import json as _json
+
+        try:
+            got = _json.loads(self._lock_note.read_text())
+        except Exception:  # noqa: BLE001 -- absent, truncated, or not ours
+            return {}
+        return got if isinstance(got, dict) else {}
+
+    def _write_lock_note(self, held: dict[str, Any]) -> None:
+        """Say who holds this store. Never raises: the note is not the lock."""
+        import json as _json
+
+        note = {"pid": os.getpid(),
+                "started_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+                **{k: v for k, v in held.items() if v is not None}}
+        try:
+            self._lock_note.parent.mkdir(parents=True, exist_ok=True)
+            self._lock_note.write_text(_json.dumps(note, indent=2) + "\n")
+            self._wrote_lock_note = True
+        except OSError:
+            # A store directory we may not write to still serves. The note is a
+            # better error message, not a requirement.
+            pass
+
+    def _clear_lock_note(self) -> None:
+        if getattr(self, "_wrote_lock_note", False):
+            with contextlib.suppress(OSError):
+                self._lock_note.unlink(missing_ok=True)
+            self._wrote_lock_note = False
+
+    @staticmethod
+    def _alive(pid: Any) -> bool:
+        try:
+            os.kill(int(pid), 0)
+        except (OSError, TypeError, ValueError):
+            return False
+        return True
+
+    def describe_holder(self) -> str:
+        """One line naming whoever holds this store, or "" if nothing says.
+
+        Read by the refusal, so it is the only place the note is trusted -- and
+        even here it is only trusted to produce a sentence.
+        """
+        note = self._read_lock_note()
+        if not note:
+            return ""
+        pid = note.get("pid")
+        who = f"pid {pid}" if pid else "another process"
+        if pid and not self._alive(pid):
+            # It says a process that is gone. Worth saying so rather than
+            # naming a pid somebody will look for and not find.
+            return f"a note left by {who}, which is no longer running"
+        where = note.get("serving")
+        doors = note.get("doors") or []
+        parts = [who]
+        if where:
+            parts.append(f"on {where}")
+        if doors:
+            parts.append(f"({', '.join(str(d) for d in doors)})")
+        return " ".join(parts)
+
+    def take_writer_lock(self, **held: Any) -> None:
         """Open the metadata file now, rather than on the first write.
 
         **The metadata file is the writer lock, and it was taken too late.** A
@@ -662,10 +756,27 @@ class Store:
         reader skip.
 
         On a DuckDB-file store the lock was taken in `__init__` and there is
-        nothing left to do.
+        nothing left to do but say so in the note.
+
+        **`held` is whatever the caller can say about itself** -- the address it
+        serves on, the doors it carries, the project's name. It goes in
+        `.qanat-lock` beside the store, so the next program to be refused can
+        name the holder rather than name a locked file. Calling this again
+        updates the note, which is how a server fills in its address after the
+        port is known.
         """
         if self.kind == "parquet":
-            self._meta()
+            try:
+                self._meta()
+            except StoreBusy as exc:
+                who = self.describe_holder()
+                if not who:
+                    raise
+                raise StoreBusy(f"{exc}\n  Held by {who}.\n"
+                                "  One program holds the store at a time. Either stop it, or "
+                                "give it\n  the door you wanted: a second door costs nothing, "
+                                "a second program is refused.") from exc
+        self._write_lock_note(held)
 
     # ---- reading while something else is writing ------------------------------
     @property
@@ -2068,6 +2179,9 @@ class Store:
         return _records(df)
 
     def close(self) -> None:
+        # The note goes first: a clean exit must not leave a file saying this
+        # process holds a store it is about to let go of.
+        self._clear_lock_note()
         with self._lock:
             self.con.close()
             if self.kind == "parquet":

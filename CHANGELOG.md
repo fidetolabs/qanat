@@ -2,6 +2,45 @@
 
 ## Unreleased
 
+### `.qanat-lock` names the holder, so a refusal says where to go
+
+**`StoreBusy` only knew that a file was locked.** The operating system's lock
+carries no pid, no port and no idea which doors the holder serves, so the
+refusal could offer general advice and nothing specific -- *"stop whatever is
+serving this project"*, with no way to say what that was.
+
+A serving program now writes a note beside the store naming itself: pid,
+`started_at`, the address it serves on (or `stdio`, or `no port` for the clock),
+its doors, and the project. A program that is refused reads it:
+
+```
+qanat serve: .../data/meta.duckdb is held by another process.
+  ...
+  Held by pid 43164 on http://127.0.0.1:8481 (mcp).
+  One program holds the store at a time. Either stop it, or give it
+  the door you wanted: a second door costs nothing, a second program is refused.
+```
+
+**That last line is the one worth having.** Somebody starting a second program
+almost always wanted one program with two doors, and nothing said so.
+
+**The note is advisory and the DuckDB lock stays the authority.** A `kill -9`
+leaves it behind, and a stale one is harmless precisely because nothing trusts
+it: if the lock can be taken, the holder is gone, so the note is overwritten with
+no prompt, no warning and no flag. A note naming a dead pid says *"no longer
+running"* rather than sending somebody after a process that is not there.
+Failing to write it is never a refusal either -- a read-only store directory
+still serves.
+
+A parquet store keeps it at `data/.qanat-lock`. A DuckDB store names it after
+the file, `corpus.duckdb.qanat-lock`, because two projects may sit in one
+directory and one shared note could not say which was held.
+
+**And `serve_http` never closed its store.** `serve_stdio` closes its session in
+a `finally` and the clock path closes in one too; here the return followed
+`uvicorn.run` and nothing let go. It surfaced as a note outliving a Ctrl-C, and
+the fix is the `finally` the other two paths already had.
+
 ### A serving program takes the writer lock while it starts
 
 **`meta.duckdb` is the writer lock, and it was taken too late.** A parquet store

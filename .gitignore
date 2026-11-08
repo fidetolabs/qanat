@@ -26,3 +26,8 @@ CLAUDE.local.md
 videos/
 node_modules/
 package-lock.json
+
+# A serving program names itself here so a second one can be refused by name.
+# Advisory, removed on a clean exit, and never committed.
+.qanat-lock
+*.duckdb.qanat-lock

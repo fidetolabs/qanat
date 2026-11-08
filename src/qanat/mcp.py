@@ -1284,7 +1284,8 @@ def serve_stdio(project_path: str | None = None, scope: str = DEFAULT_SCOPE) -> 
         # before a client connects rather than on the first ingest. Opening alone
         # does not take it on a parquet store -- `meta.duckdb` is opened lazily --
         # which is why this is two calls and not one.
-        session.store.take_writer_lock()
+        session.store.take_writer_lock(serving="stdio", doors=["mcp"],
+                                       project=session.project.name)
     except Exception as exc:  # noqa: BLE001
         print(f"qanat mcp: {exc}", file=sys.stderr)
         return 1

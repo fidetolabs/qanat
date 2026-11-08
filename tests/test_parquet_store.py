@@ -8,6 +8,7 @@ half-written, and a metadata file that a reader never has to touch.
 
 from __future__ import annotations
 
+import os
 import subprocess
 import sys
 import textwrap
@@ -480,3 +481,134 @@ def test_a_second_program_is_refused_when_it_asks_for_the_lock(tmp_path: Path):
     finally:
         proc.kill()
         proc.wait(timeout=10)
+
+
+# ------------------------------------------- the note beside the lock
+#
+# `StoreBusy` only knows a file was locked. The note is how a refusal names the
+# holder -- a pid, a port and the doors it serves -- and it is advisory
+# throughout: the DuckDB lock stays the authority and a stale note is harmless.
+
+
+def test_the_note_says_who_holds_the_store(tmp_path: Path):
+    import json
+
+    corpus = tmp_path / "corpus"
+    s = Store(str(corpus))
+    try:
+        s.take_writer_lock(serving="http://127.0.0.1:8421", doors=["mcp", "app"],
+                           project="demo")
+        note = json.loads((corpus / Store.LOCK_FILE).read_text())
+        assert note["pid"] == os.getpid()
+        assert note["serving"] == "http://127.0.0.1:8421"
+        assert note["doors"] == ["mcp", "app"]
+        assert note["project"] == "demo"
+        assert note["started_at"].endswith("Z")
+    finally:
+        s.close()
+
+
+def test_a_clean_close_takes_the_note_with_it(tmp_path: Path):
+    corpus = tmp_path / "corpus"
+    s = Store(str(corpus))
+    s.take_writer_lock(serving="stdio", doors=["mcp"])
+    assert (corpus / Store.LOCK_FILE).exists()
+    s.close()
+    assert not (corpus / Store.LOCK_FILE).exists(), "a closed store must not claim the lock"
+
+
+def test_a_stale_note_is_replaced_without_a_word(tmp_path: Path):
+    """`kill -9` leaves it behind. The DuckDB lock is the authority, so if the
+    lock can be taken the holder is gone -- no prompt, no warning, no flag."""
+    import json
+
+    corpus = tmp_path / "corpus"
+    corpus.mkdir()
+    (corpus / Store.LOCK_FILE).write_text(json.dumps(
+        {"pid": 999_999, "serving": "http://127.0.0.1:9999", "doors": ["mcp"]}))
+
+    s = Store(str(corpus))
+    try:
+        s.take_writer_lock(serving="http://127.0.0.1:8421", doors=["app"])
+        note = json.loads((corpus / Store.LOCK_FILE).read_text())
+        assert note["pid"] == os.getpid()
+        assert note["doors"] == ["app"]
+    finally:
+        s.close()
+
+
+def test_a_note_naming_a_dead_process_says_so(tmp_path: Path):
+    """Rather than naming a pid somebody will go looking for and not find."""
+    import json
+
+    corpus = tmp_path / "corpus"
+    corpus.mkdir()
+    (corpus / Store.LOCK_FILE).write_text(json.dumps({"pid": 999_999}))
+    s = Store(str(corpus))
+    try:
+        assert "no longer running" in s.describe_holder()
+    finally:
+        s.close()
+
+
+def test_a_store_that_cannot_be_written_to_still_serves(tmp_path: Path):
+    """The note is a better error message, not a requirement. A read-only store
+    directory must not turn into a refusal to start."""
+    corpus = tmp_path / "corpus"
+    s = Store(str(corpus))
+    try:
+        s.take_writer_lock()               # creates meta.duckdb while writable
+        corpus.chmod(0o500)
+        try:
+            s.take_writer_lock(serving="http://127.0.0.1:8421", doors=["mcp"])
+        finally:
+            corpus.chmod(0o700)
+    finally:
+        s.close()
+
+
+def test_the_refusal_names_the_holder_and_not_only_the_file(tmp_path: Path):
+    corpus = tmp_path / "corpus"
+    Store(str(corpus)).write("raw.p", rows(4))
+
+    holder = textwrap.dedent(f"""
+        import sys, time
+        sys.path.insert(0, {str(Path(__file__).parents[1] / "src")!r})
+        from qanat.store import Store
+        s = Store({str(corpus)!r})
+        s.take_writer_lock(serving="http://127.0.0.1:8421", doors=["mcp"],
+                           project="demo")
+        print("held", flush=True)
+        time.sleep(5)
+        s.close()
+    """)
+    proc = subprocess.Popen([sys.executable, "-c", holder], stdout=subprocess.PIPE, text=True)
+    try:
+        assert proc.stdout.readline().strip() == "held"
+        second = Store(str(corpus))
+        try:
+            with pytest.raises(StoreBusy) as caught:
+                second.take_writer_lock(serving="http://127.0.0.1:8422", doors=["app"])
+            said = str(caught.value)
+            assert f"pid {proc.pid}" in said
+            assert "http://127.0.0.1:8421" in said
+            assert "mcp" in said
+            # And the line that matters: what to do instead.
+            assert "a second door costs nothing" in said
+        finally:
+            second.close()
+    finally:
+        proc.kill()
+        proc.wait(timeout=10)
+
+
+def test_a_duckdb_store_names_its_note_after_the_file(tmp_path: Path):
+    """Two projects may sit in one directory, and one shared note could not say
+    which of them was held."""
+    s = Store(str(tmp_path / "corpus.duckdb"))
+    try:
+        s.take_writer_lock(doors=["mcp"])
+        assert (tmp_path / "corpus.duckdb.qanat-lock").exists()
+        assert not (tmp_path / Store.LOCK_FILE).exists()
+    finally:
+        s.close()

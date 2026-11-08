@@ -287,6 +287,7 @@ def cmd_schedule(args) -> int:
         return 1
     project, root, store = opened
 
+    store.take_writer_lock(serving="no port", doors=["schedule"], project=project.name)
     sched = Scheduler(store, project, root, workers=args.workers)
     print(f"\n  {c('qanat', B)} {D}v{__version__}{X}  {project.name}")
     print(f"  schedule {c(f'{len(sched._schedules)} schedule(s) on a clock', B)} "
@@ -426,6 +427,11 @@ def _serve_with_clock(args, doors: tuple[str, ...]) -> int:
 
     sched = Scheduler(store, project, root, workers=args.workers)
     state = AppState(store=store, project=project, root=root, sched=sched)
+    # The lock is already held -- `_opened` took it -- so this fills in the
+    # address and the doors now that they are known. The note is what lets the
+    # next program to be refused name this one.
+    store.take_writer_lock(serving=f"http://{args.host}:{args.port}",
+                           doors=list(doors), project=project.name)
     app = create_app(None, args.scope, token=token, allow_hosts=named, state=state,
                      doors=doors)
     sched.start()
