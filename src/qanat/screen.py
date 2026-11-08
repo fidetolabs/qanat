@@ -188,10 +188,10 @@ def parse_clauses(raw: Any) -> list[Clause]:
     version were echoed into `applied` and read nowhere, so a meaningless
     `version` rode through and was recorded as if it meant something.
 
-    A filter is the caller's named rule and **nothing here stores one**. What
-    crosses is its clauses. The nested shape is refused rather than flattened,
-    because flattening it quietly would keep the belief that this end knows
-    about filters.
+    The nested shape is still refused rather than flattened. **A saved filter is
+    named at the top of the call, not inside the clause list** -- `run` takes
+    `filter` or `clauses` -- so a wrapper in here is somebody reaching for the
+    old shape, and the refusal says where the name goes now.
     """
     if raw is None:
         return []
@@ -206,9 +206,9 @@ def parse_clauses(raw: Any) -> list[Clause]:
         if "clauses" in c or "filter" in c:
             raise ScreenError(
                 "a clause is {metric, op, value}, not a named filter wrapping "
-                "clauses. Pass the clauses themselves: nothing here stores a "
-                "filter, so a name has nothing to point at -- and the grouping "
-                "was never honoured either, because every clause has to pass"
+                "clauses. Pass the clauses themselves, or name a saved filter "
+                "with `filter` instead of `clauses` -- the grouping was never "
+                "honoured, because every clause has to pass"
             )
         out.append(_clause(c))
     return out
@@ -888,6 +888,47 @@ def screen(
     return out
 
 
+def run(
+    store: Store,
+    project: Project,
+    *,
+    filter: str | None = None,
+    clauses: Any = None,
+    **kw: Any,
+) -> dict[str, Any]:
+    """A screen by saved filter or by clauses. **One or the other, never both.**
+
+    Both doors call this, so the rule is held once. Two at once is refused rather
+    than merged, so an answer never has to say which threshold won -- somebody
+    tweaking a saved filter loads its clauses, changes them, and sends clauses.
+
+    The answer names what it ran: `filter` is the saved id, or None for clauses
+    passed inline, beside the `applied` clauses `screen` already reports.
+    """
+    from qanat.filters import FilterError, clauses_of
+
+    given = clauses not in (None, [], ())
+    if filter and given:
+        raise ScreenError(
+            "give either `filter` or `clauses`, not both. To change a saved filter's "
+            "thresholds for one screen, send its clauses changed; to change it for "
+            "good, save it again")
+    if not filter and not given:
+        raise ScreenError(
+            "a screen needs `clauses` -- [{metric, op, value}] -- or the `filter` id "
+            "of a saved one. Calling it with neither would answer a question nobody "
+            "asked")
+    if filter:
+        try:
+            raw = clauses_of(project, filter)
+        except FilterError as exc:
+            raise ScreenError(str(exc)) from exc
+    else:
+        raw = clauses
+    out = screen(store, project, parse_clauses(raw), **kw)
+    return {"filter": filter or None, **out}
+
+
 def _inputs(store: Store, project: Project, resolved: dict[str, int],
             stops: list[str], as_of: str | None, frm: str | None,
             to: str | None, every: str,
@@ -950,12 +991,13 @@ __all__ = [
     "COLUMNS",
     "OPERATORS",
     "Clause",
-    "ScreenError",
     "Membership",
+    "ScreenError",
     "coverage",
     "forward_returns",
     "metric_values",
     "parse_clauses",
     "read_membership",
+    "run",
     "screen",
 ]

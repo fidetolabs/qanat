@@ -569,6 +569,22 @@ def validate(p: Project, root: Path) -> Report:
         if not read_by and ref not in read_by_metric:
             r.warnings.append(f"'{ref}' (from {', '.join(who)}) is never read by anything")
 
+    # ---- filters ---------------------------------------------------------------
+    # A filter naming a metric that is gone is a warning, not an error: removing a
+    # metric should not be blocked by a saved screen, and the screen itself says
+    # which metric it could not find when somebody runs it.
+    fids = [f.id for f in p.filters]
+    dupes = sorted({x for x in fids if fids.count(x) > 1})
+    if dupes:
+        r.errors.append(f"filter ids must be unique: {', '.join(dupes)}")
+    have = set(p.metric_ids())
+    for f in p.filters:
+        gone = sorted({c.metric for c in f.clauses} - have)
+        if gone:
+            r.warnings.append(
+                f"filter '{f.id}' names {', '.join(gone)}, which this project does not "
+                f"define. It will be refused when it runs")
+
     return r
 
 

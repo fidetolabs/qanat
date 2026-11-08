@@ -309,6 +309,36 @@ class JobSchedule(Base):
 Definition = IngestionJobDefinition | TransformJobDefinition
 
 
+class FilterClause(Base):
+    """One metric against one threshold, as a saved filter keeps it.
+
+    The same shape `screen_companies` takes inline. The comparison word is
+    checked by the screen, which owns the list of them.
+    """
+
+    metric: str = Field(pattern=_NAME)
+    op: str
+    value: float
+    #: A definition digest this clause insists on, or absent for whatever is current.
+    metric_version: str | None = None
+
+
+class Filter(Base):
+    """The operator's saved clauses for the one screen query.
+
+    **Not a definition.** It runs on no clock and writes no table: a screen
+    compares clauses against metric tables that are already materialised, so a
+    stored result would buy nothing and go stale when a filing lands. It lives
+    in `filters.yaml` because whoever runs this Qanat owns it, the same way they
+    own the metric set -- and nothing here belongs to one user, because a scope
+    is not an identity.
+    """
+
+    id: str = Field(pattern=_NAME)
+    description: str = ""
+    clauses: list[FilterClause] = Field(min_length=1)
+
+
 class Corpus(Base):
     """Which tables hold documents, their text and their tagged numbers.
 
@@ -370,6 +400,12 @@ class Project(Base):
     job_timeout: str | None = None
     returns: Returns | None = None
     corpus: Corpus | None = None
+    #: The operator's saved screens. In `filters.yaml`, never in `jobs.yaml`:
+    #: that file means what runs, and a filter does not.
+    filters: list[Filter] = Field(default_factory=list)
+
+    def filter(self, fid: str) -> Filter | None:
+        return next((f for f in self.filters if f.id == fid), None)
 
     # ---- lookups -------------------------------------------------------------
     def store_url(self, root: Path) -> str:

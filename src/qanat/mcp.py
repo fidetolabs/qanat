@@ -572,13 +572,15 @@ def _run(s: Session, args: dict) -> Any:
       "so two hundred names are not pasted into every call. Pass one or the other, never "
       "both. Your own list stays inline; a list this project owns may be named. "
       "`clauses` is a flat list -- `[{metric, op, value, metric_version?}]`, and every "
-      "one of them has to pass. **A filter is your named rule and nothing here stores "
-      "one**, so there is no name to send: what crosses is its clauses, and `applied` "
-      "comes back with the definition version each one actually read, which is the part "
-      "you could not have known. It used to accept `[{filter, version, clauses}]` too, "
-      "and that wrapper did nothing at all -- the grouping was discarded before anything "
-      "was judged and the name came back unread -- so the nested shape is refused rather "
-      "than flattened quietly. A clause may pin `metric_version`, and then bumping a "
+      "one of them has to pass. **`filter` is the other way in**: the id of a filter the "
+      "operator saved in this project (see list_filters), and the same distinction as "
+      "`companies` and `from_universe` -- your own clauses stay inline; a filter this "
+      "project owns may be named. Pass one or the other, never both: to change a saved "
+      "filter's thresholds for one screen, send its clauses changed. The answer's "
+      "`filter` says which saved filter ran, or null for inline clauses, and `applied` "
+      "comes back with the definition version each clause actually read, which is the "
+      "part you could not have known. A clause is never a `{filter, clauses}` wrapper; "
+      "that shape is refused. A clause may pin `metric_version`, and then bumping a "
       "metric cannot change what your rule computes.",
       {"type": "object",
        "properties": {
@@ -586,6 +588,9 @@ def _run(s: Session, args: dict) -> Any:
                        "description": "each {metric, op, value, metric_version?}. All of "
                                       "them have to pass",
                        "items": {"type": "object"}},
+           "filter": {"type": "string",
+                      "description": "instead of `clauses`: the id of a filter saved in "
+                                     "this project, from list_filters"},
            "as_of": {"type": "string", "description": "one date, YYYY-MM-DD"},
            "from": {"type": "string", "description": "start of a window"},
            "to": {"type": "string", "description": "end of a window"},
@@ -603,19 +608,18 @@ def _run(s: Session, args: dict) -> Any:
                                        "today's winners being applied to the past",
                         "items": {}},
        },
-       "required": ["clauses"]},
+       "required": []},
       "research")
 def _screen(s: Session, args: dict) -> Any:
-    from qanat.screen import ScreenError, parse_clauses, screen
+    from qanat.screen import ScreenError, run
 
-    # The schema said `required` and the handler did not check, so a call with
-    # the argument missing came back `subjects: 0, passed: 0, applied: []` --
-    # which reads as "nobody passed" rather than "you called it wrong". Those
-    # are not the same answer and the second one is actionable.
-    _need(args, "clauses")
+    # Neither `filter` nor `clauses` is refused inside `run` rather than answered:
+    # an empty call used to come back `subjects: 0, passed: 0` -- which reads as
+    # "nobody passed" rather than "you called it wrong".
     try:
-        return screen(
-            s.store, s.project, parse_clauses(args.get("clauses")),
+        return run(
+            s.store, s.project,
+            filter=args.get("filter") or None, clauses=args.get("clauses"),
             as_of=args.get("as_of"), frm=args.get("from"), to=args.get("to"),
             every=args.get("every") or "1y",
             companies=args.get("companies"),
@@ -624,6 +628,68 @@ def _screen(s: Session, args: dict) -> Any:
         )
     except ScreenError as exc:
         raise ToolError(str(exc)) from exc
+
+
+@tool("list_filters",
+      "The filters the operator saved in this project, each with its clauses. Run one "
+      "with screen_companies(filter=<id>). **They belong to whoever runs this Qanat**, "
+      "like the metric set, and every caller reads the same ones: a scope is not an "
+      "identity, so nothing here is one user's. Your own rule stays with you and crosses "
+      "as `clauses`.",
+      {"properties": {}, "required": []},
+      "research")
+def _list_filters(s: Session, args: dict) -> Any:
+    from qanat.filters import listing
+
+    return {"filters": listing(s.project), "file": "filters.yaml"}
+
+
+@tool("save_filter",
+      "Save a filter in this project's filters.yaml, or replace the one with that id. "
+      "Every clause is checked as a screen would check it -- the comparison, a number for "
+      "the value, a digest for a pin, and a metric this project defines -- so a filter "
+      "that cannot run is refused here rather than found out about on somebody's screen. "
+      "**A filter is not a transform**: it writes no table and runs on no clock; "
+      "screen_companies runs it on demand against the stored metric values. It carries "
+      "no version number -- the screen answer reports the clauses it applied.",
+      {"properties": {
+          "id": {"type": "string", "description": "lower case, e.g. quality_compounders"},
+          "clauses": {"type": "array",
+                      "description": "each {metric, op, value, metric_version?}. All of "
+                                     "them have to pass",
+                      "items": {"type": "object"}},
+          "description": {"type": "string",
+                          "description": "what the filter is for, in a reader's words"},
+      }, "required": ["id", "clauses"]},
+      writes=True,
+      scope="authoring")
+def _save_filter(s: Session, args: dict) -> Any:
+    from qanat.filters import FilterError, save
+
+    try:
+        out = save(s.project, s.root, str(_need(args, "id")), args.get("clauses"),
+                   description=str(args.get("description") or ""))
+    except FilterError as exc:
+        raise ToolError(str(exc)) from exc
+    s.reload()
+    return out
+
+
+@tool("remove_filter",
+      "Drop a saved filter from filters.yaml. Nothing else moves: no table held its "
+      "results, so there is nothing to clean up behind it.",
+      {"properties": {"id": {"type": "string"}}, "required": ["id"]},
+      writes=True,
+      scope="authoring")
+def _remove_filter(s: Session, args: dict) -> Any:
+    from qanat.filters import FilterError, remove
+
+    try:
+        out = remove(s.project, s.root, str(_need(args, "id")))
+    except FilterError as exc:
+        raise ToolError(str(exc)) from exc
+    s.reload()
+    return out
 
 
 @tool("check_coverage",

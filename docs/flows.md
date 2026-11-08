@@ -59,7 +59,10 @@ no way to do the thing at all, where door ② would still have a screen around i
 | define an indicator | `define_metric` | authoring | a `transform_job_definition` filling `metrics.<id>`, run straight away so it answers |
 | see which indicators exist | `list_metrics` | data | **reads the metrics stage** -- the stage is the registry, so this cannot disagree with the pipeline |
 | drop one | `remove_metric` | authoring | removes the definition and the transform behind it |
-| ask who passed, on a date or over a window | `screen_companies` | research | takes the clauses of your filter, never the filter; reads stored metric values and **only** stored ones -- a value computed on the call leaves no row, so nothing could trace it |
+| ask who passed, on a date or over a window | `screen_companies` | research | takes your clauses inline, or the id of a saved filter -- never both; reads stored metric values and **only** stored ones -- a value computed on the call leaves no row, so nothing could trace it |
+| see the filters this Qanat's operator saved | `list_filters` | research | reads `filters.yaml` |
+| keep a filter so it can be run again by name | `save_filter` | authoring | one entry in `filters.yaml`. **No table and no clock**: a filter is saved clauses, run on demand |
+| drop one | `remove_filter` | authoring | removes the entry, and nothing else, because nothing held its results |
 
 ## Trusting the answer
 

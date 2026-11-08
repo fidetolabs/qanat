@@ -28,6 +28,7 @@ from typing import Any
 import yaml
 
 from qanat.models import (
+    Filter,
     IngestionJobDefinition,
     JobSchedule,
     Project,
@@ -41,6 +42,9 @@ from qanat.models import (
 PARTS: dict[str, tuple[str, ...]] = {
     "jobs.yaml": ("ingestion_job_definitions", "transform_job_definitions",
                   "job_schedules"),
+    # Not in `jobs.yaml`, because that file means what runs and a filter does not:
+    # it is saved clauses for the one screen query, owned by whoever runs this Qanat.
+    "filters.yaml": ("filters",),
 }
 
 #: Files a tool used to write and no longer does. Read on load so an old project
@@ -99,6 +103,8 @@ def dump_project(project: Project) -> dict[str, Any]:
         data["returns"] = project.returns.model_dump()
     if project.corpus is not None:
         data["corpus"] = project.corpus.model_dump()
+    if project.filters:
+        data["filters"] = [_dump_filter(f) for f in project.filters]
     # Anything the model holds has to be written back, or saving one definition
     # quietly deletes the rest of the file. That comment was here and three fields
     # were missing from the dict under it: `metrics`, `returns` and `corpus`. The
@@ -141,6 +147,14 @@ def _dump_transform(d: TransformJobDefinition) -> dict[str, Any]:
         row["timeout"] = d.timeout
     if d.options:
         row["options"] = d.options
+    return row
+
+
+def _dump_filter(f: Filter) -> dict[str, Any]:
+    row: dict[str, Any] = {"id": f.id}
+    if f.description:
+        row["description"] = f.description
+    row["clauses"] = [c.model_dump(exclude_none=True) for c in f.clauses]
     return row
 
 
@@ -451,3 +465,16 @@ def upsert_schedule(project: Project, schedule: JobSchedule) -> None:
 
 def remove_schedule(project: Project, schedule_id: str) -> None:
     project.job_schedules = [s for s in project.job_schedules if s.id != schedule_id]
+
+
+def upsert_filter(project: Project, f: Filter) -> None:
+    """Replace a filter by id, or add it. Its place in the file is kept."""
+    for i, old in enumerate(project.filters):
+        if old.id == f.id:
+            project.filters[i] = f
+            return
+    project.filters.append(f)
+
+
+def remove_filter(project: Project, filter_id: str) -> None:
+    project.filters = [f for f in project.filters if f.id != filter_id]

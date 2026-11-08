@@ -238,22 +238,23 @@ def test_a_universe_is_a_csv_and_nothing_in_the_project_names_one():
     assert callable(universe_path)
 
 
-def test_a_screen_takes_clauses_and_never_a_filter():
-    """**Nothing on this surface stores a filter**, so there is no name to send.
+def test_a_screen_takes_clauses_or_a_filter_and_never_both():
+    """A saved filter is named at the top of the call; a clause is never a wrapper.
 
-    `screen` accepted `[{filter, version, clauses}]` as well, and the wrapper did
-    nothing: every clause was AND-ed into one verdict before anything was judged,
-    so grouping could not change an answer, and the name was echoed back unread.
-    A meaningless `version` therefore rode through and was recorded as if it
-    meant something.
+    `screen` once accepted `[{filter, version, clauses}]` inside the clause list,
+    and the wrapper did nothing: every clause was AND-ed into one verdict and the
+    name came back unread. A filter the operator saves is named with `filter`
+    instead, and the nested shape stays refused.
     """
     import pytest as _pytest
 
     from qanat import screen as screen_mod
 
     entry = next(t for t in mcp.TOOLS if t["name"] == "screen_companies")
-    assert entry["inputSchema"]["required"] == ["clauses"]
-    assert "filters" not in entry["inputSchema"]["properties"]
+    props = entry["inputSchema"]["properties"]
+    assert {"clauses", "filter"} <= set(props)
+    assert entry["inputSchema"]["required"] == [], "one of the two, checked in run()"
+    assert "filters" not in props
     assert not hasattr(screen_mod, "Filter"), "the wrapper is gone, not deprecated"
 
     with _pytest.raises(screen_mod.ScreenError, match="not a named filter"):

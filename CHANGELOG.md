@@ -2,6 +2,26 @@
 
 ## Unreleased
 
+### The operator's filters, saved in `filters.yaml` and run by name
+
+**This reverses "nothing here stores a filter".** That rule was right while it
+held: the named-filter wrapper inside `clauses` was echoed back unread, so it was
+removed. What changed is who a Qanat is for -- one engineer running their own,
+with no login and no roles -- so a filter they save is the operator's, the same
+way the metric set is, and a scope still is not an identity.
+
+- **`filters.yaml`**, a tool-written file beside `jobs.yaml`. Not in `jobs.yaml`,
+  because that file means what runs and **a filter does not: it writes no table and
+  runs on no clock.** A screen compares clauses against metric tables that are
+  already stored, so a stored result would buy nothing and go stale.
+- **`list_filters`** (`research`), **`save_filter`** and **`remove_filter`**
+  (`authoring`). Saving checks each clause the way a screen would, including that
+  the metric exists, so a filter that cannot run is refused when it is written.
+- **`screen_companies` takes `filter` or `clauses`, never both**, and the answer's
+  `filter` names the saved id it ran, or null. `clauses` is no longer `required` in
+  the schema; calling with neither is still refused, by the handler.
+- A filter carries **no version number**. The answer's `applied` is the record.
+
 ### Two connectors, because the product is one pipeline and not a way to build any
 
 `rest`, `sql` and `csv` are gone. **No shipped project declared one** — the examples use `sec` and
