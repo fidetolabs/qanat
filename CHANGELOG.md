@@ -41,6 +41,41 @@ a `finally` and the clock path closes in one too; here the return followed
 `uvicorn.run` and nothing let go. It surfaced as a note outliving a Ctrl-C, and
 the fix is the `finally` the other two paths already had.
 
+### The key registry leaves `meta.duckdb`, so a reader can pick the current row
+
+**A program that never opened the metadata file returned every version of a
+corrected row, and nothing said so.**
+
+A correction is a new row beside the old one, on purpose. Picking the newest per
+key needs to know which columns identify a row, and that registry lived in
+`meta.duckdb`. `_load_keys` returns an empty map when the metadata file is shut
+-- rightly, because opening it is taking the writer lock, which is the one thing
+a parquet store exists to let a reader skip. `_current` then found no key and
+**skipped the `row_number()` pick entirely**. The `now` view was still built,
+because the engine columns were there, so the absence reported itself nowhere.
+
+Measured on a store with one key and two versions of one row under it:
+
+| reader | keys | rows back |
+| --- | --- | --- |
+| before, metadata file shut | `[]` | **2** |
+| after | `["sym"]` | 1, the newer |
+
+The registry is a tiny map of table name to key columns, so it is a plain file
+beside the store now -- `.qanat-keys.json`, named after the file at a DuckDB
+store -- written through a temp-and-rename like every other file here, and read
+with no lock at `__init__`. `_qanat_table_key` is out of `META` and is no longer
+created.
+
+**A store written before the move migrates itself.** Its keys are lifted out of
+the old table the first time something opens the metadata file for its own
+reasons. A parquet store whose file is absent *and* whose metadata is shut keeps
+the old behaviour and says so -- the alternative is a reader taking the writer
+lock, which is the thing being fixed.
+
+What stays in `meta.duckdb`: the job, execution, event and definition-version
+tables. Those are row-at-a-time, appended, and have exactly one owner.
+
 ### A serving program takes the writer lock while it starts
 
 **`meta.duckdb` is the writer lock, and it was taken too late.** A parquet store

@@ -107,8 +107,27 @@ VERSIONS = "_qanat_job_definition_version"
 #: Which columns identify one row in a table. Told to the store by whoever
 #: writes it, and remembered, because the reader that has to pick the current
 #: row among two versions of one key is not the writer and has no way to ask.
+#:
+#: **It used to live here and that was a correctness hole.** `_load_keys`
+#: returns an empty map when the metadata file is not open -- deliberately,
+#: because opening it would make every reader take the writer lock -- and
+#: `_current` then found no key and skipped the pick entirely. So a program that
+#: never opened `meta.duckdb` got **every version of a corrected row** instead of
+#: the newest one, and the `now` view was still built, so nothing reported the
+#: absence.
+#:
+#: The registry is a tiny map of table name to key columns. It is in a plain file
+#: beside the store now, read with no lock by anybody. Kept as a name only so a
+#: store written before the move can be migrated out of it.
 KEYS = "_qanat_table_key"
-META = (JOBS, EXECUTIONS, EVENTS, VERSIONS, KEYS)
+
+#: The tables that stay in the metadata file: row-at-a-time, appended, one owner.
+META = (JOBS, EXECUTIONS, EVENTS, VERSIONS)
+
+#: Where the key registry lives: beside the store, lock-free. A parquet store is
+#: a directory so it goes in it; a DuckDB store is one file so the sidecar is
+#: named after it, because two projects may share a directory.
+KEYS_FILE = ".qanat-keys.json"
 
 #: What these tables were called before the vocabulary changed. Renamed in place
 #: on open, so a store written by an older version keeps its history instead of
@@ -897,11 +916,6 @@ class Store:
                     spec          VARCHAR,
                     applied_at    TIMESTAMP
                 )""")
-            self.con.execute(f"""
-                CREATE TABLE IF NOT EXISTS {where}{KEYS} (
-                    name        VARCHAR PRIMARY KEY,
-                    key_columns VARCHAR
-                )""")
 
     #: Written while a screen holds the store, cleared when it lets go. A screen
     #: rewrites the derived tables at each as-of date and puts them back in a
@@ -1422,42 +1436,92 @@ class Store:
         the two is current -- and the answer is "the newest write for this key",
         which is unanswerable without knowing the key. The writer knows it; this
         is where it leaves it.
+
+        **It goes in a plain file rather than in the metadata database**, because
+        the reader that needs it is exactly the one that must not take the writer
+        lock. Kept in `meta.duckdb`, this was unreadable by a program that never
+        opened it -- and such a program then returned every version of a
+        corrected row with nothing saying so.
         """
         if not key:
             return
-        import json as _json
-
         name = phys(ref)
-        held = _json.dumps(list(key))
-        self._meta()
         with self._lock:
-            row = self._one(f"SELECT key_columns FROM {self._meta_home}{KEYS} "
-                            f"WHERE name = ?", [name], con=self.rcon)
-            if row is not None and row[0] == held:
+            if self._keys.get(name) == list(key):
                 return
-            self.con.execute(f"DELETE FROM {self._meta_home}{KEYS} WHERE name = ?", [name])
-            self.con.execute(f"INSERT INTO {self._meta_home}{KEYS} VALUES (?, ?)",
-                             [name, held])
-        self._keys[name] = list(key)
+            self._keys[name] = list(key)
+            self._write_keys()
         self._now_view(ref)
 
     def key_of(self, ref: str) -> list[str]:
         """What identifies one row in this table, or an empty list if nobody said."""
         return list(self._keys.get(phys(ref), []))
 
+    @property
+    def _keys_file(self) -> Path:
+        """Beside the store, on the same rule as the lock note."""
+        if self.kind == "parquet":
+            return self.dir / KEYS_FILE
+        return self.path.parent / f"{self.path.name}{KEYS_FILE}"
+
+    def _write_keys(self) -> None:
+        """Put the registry on disk. Called with `self._lock` held."""
+        import json as _json
+
+        try:
+            self._keys_file.parent.mkdir(parents=True, exist_ok=True)
+            tmp = self._keys_file.with_suffix(self._keys_file.suffix + ".tmp")
+            tmp.write_text(_json.dumps(
+                {k: v for k, v in sorted(self._keys.items())}, indent=2) + "\n")
+            # Renamed rather than written in place, so a reader globbing for it
+            # mid-write finds the old file or the new one, never half of either.
+            tmp.replace(self._keys_file)
+        except OSError:
+            # A read-only store still reads. Losing the registry would be worse
+            # than not writing it, and the in-memory copy is already correct.
+            pass
+
     def _load_keys(self) -> None:
+        """Read the registry. **No lock, at any store kind, at open.**
+
+        This is the whole point of the move. It used to live in `meta.duckdb`,
+        which takes the writer lock -- so a reader could not have it, and
+        `_current` silently stopped picking the newest row per key. A plain file
+        is readable by anybody, so the keys are loaded here, in `__init__`,
+        before anything has been asked.
+        """
         import json as _json
 
         self._keys: dict[str, list[str]] = {}
-        if self.kind == "parquet" and not self._meta_open:
-            # Opening the metadata file here would make every reader take the
-            # one writer lock on it, which is the thing a parquet store exists
-            # to avoid. The keys load the first time something opens it anyway.
+        try:
+            got = _json.loads(self._keys_file.read_text())
+        except Exception:  # noqa: BLE001 -- absent on a new store, or pre-move
+            self._migrate_keys()
             return
+        if isinstance(got, dict):
+            self._keys = {str(k): list(v) for k, v in got.items() if v}
+
+    def _migrate_keys(self) -> None:
+        """Lift the registry out of a store written before it had a file.
+
+        Reachable only when the old table is: at a DuckDB store always, at a
+        parquet store once something has opened the metadata file for its own
+        reasons. **A parquet store whose file is absent and whose metadata is
+        shut keeps today's behaviour and says so**, because the alternative is a
+        reader taking the writer lock, which is the thing being fixed.
+        """
+        import json as _json
+
+        if self.kind == "parquet" and not self._meta_open:
+            return
+        found: dict[str, list[str]] = {}
         with contextlib.suppress(Exception):
             for name, held in self.con.execute(
                     f"SELECT name, key_columns FROM {self._meta_home}{KEYS}").fetchall():
-                self._keys[name] = list(_json.loads(held))
+                found[name] = list(_json.loads(held))
+        if found:
+            self._keys = found
+            self._write_keys()
 
     # ---- the `now` views -----------------------------------------------------
     def _engine_cols(self, name: str) -> list[str]:

@@ -17,7 +17,7 @@ from pathlib import Path
 import pandas as pd
 import pytest
 
-from qanat.store import Store, StoreBusy, is_parquet_dir
+from qanat.store import KEYS, KEYS_FILE, Store, StoreBusy, is_parquet_dir
 
 
 @pytest.fixture
@@ -610,5 +610,109 @@ def test_a_duckdb_store_names_its_note_after_the_file(tmp_path: Path):
         s.take_writer_lock(doors=["mcp"])
         assert (tmp_path / "corpus.duckdb.qanat-lock").exists()
         assert not (tmp_path / Store.LOCK_FILE).exists()
+    finally:
+        s.close()
+
+
+# ----------------------------------------- the key registry, out of the locked file
+#
+# A correction is a new row beside the old one, and something has to say which is
+# current. That something is the key, and it used to live in `meta.duckdb` --
+# which takes the writer lock, so the reader that needs it could not have it.
+
+
+def _corrected(d: Path) -> Store:
+    """A table with one key and two versions of the one row under it."""
+    w = Store(str(d))
+    w.remember_key("raw.px", ["sym"])
+    w.write("raw.px", pd.DataFrame({"sym": ["A"], "px": [1.0],
+                                    "as_of": pd.to_datetime(["2024-01-01"])}), mode="replace")
+    w.write("raw.px", pd.DataFrame({"sym": ["A"], "px": [2.0],
+                                    "as_of": pd.to_datetime(["2024-01-02"])}),
+            mode="append", key=["sym"])
+    return w
+
+
+def test_a_program_that_never_opens_the_metadata_file_still_picks_the_newest_row(tmp_path: Path):
+    """**The hole this closes.** `_load_keys` returned an empty map with the
+    metadata file shut -- rightly, since opening it is taking the writer lock --
+    and `_current` then found no key and skipped the `row_number()` pick. Two
+    rows came back for one key, the `now` view was built anyway because the
+    engine columns were there, and nothing reported the absence."""
+    d = tmp_path / "corpus"
+    _corrected(d).close()
+
+    r = Store(str(d))
+    try:
+        assert not r._meta_open, "reading must not take the writer lock"
+        assert r.key_of("raw.px") == ["sym"], "the key has to be readable without the lock"
+        got = r.read("raw.px")
+        assert len(got) == 1, "one row per key, or the correction is two answers"
+        assert got["px"][0] == 2.0, "and it must be the newer write"
+        assert not r._meta_open, "still no lock taken, after a read that needed the key"
+    finally:
+        r.close()
+
+
+def test_the_registry_is_a_file_beside_the_store(tmp_path: Path):
+    import json
+
+    d = tmp_path / "corpus"
+    w = _corrected(d)
+    try:
+        assert not w._meta_open, "remembering a key must not take the writer lock either"
+        held = json.loads((d / KEYS_FILE).read_text())
+        assert held == {"raw__px": ["sym"]}
+    finally:
+        w.close()
+
+
+def test_a_store_written_before_the_move_migrates_its_keys(tmp_path: Path):
+    """The registry used to be a table in the metadata file. A store carrying it
+    there has to keep working, and has to stop needing the lock."""
+    d = tmp_path / "corpus"
+    _corrected(d).close()
+
+    # Put it back the old way: in the table, with no file.
+    old = Store(str(d))
+    old.take_writer_lock()
+    old.con.execute(f"CREATE TABLE IF NOT EXISTS meta.main.{KEYS} "
+                    "(name VARCHAR PRIMARY KEY, key_columns VARCHAR)")
+    old.con.execute(
+        f"INSERT OR REPLACE INTO meta.main.{KEYS} VALUES ('raw__px', '[\"sym\"]')")
+    old.close()
+    (d / KEYS_FILE).unlink()
+
+    # A program that opens the metadata file for its own reasons lifts it out.
+    mover = Store(str(d))
+    try:
+        mover.take_writer_lock()
+        assert mover.key_of("raw.px") == ["sym"]
+        assert (d / KEYS_FILE).exists(), "the migration has to leave the file behind"
+    finally:
+        mover.close()
+
+    # After which a reader is right again, with no lock.
+    r = Store(str(d))
+    try:
+        assert r.key_of("raw.px") == ["sym"]
+        assert len(r.read("raw.px")) == 1
+        assert not r._meta_open
+    finally:
+        r.close()
+
+
+def test_the_registry_is_no_longer_one_of_the_metadata_tables(tmp_path: Path):
+    from qanat.store import META
+
+    assert KEYS not in META, "the registry is a file now, not a table in the locked database"
+
+
+def test_a_duckdb_store_names_its_registry_after_the_file(tmp_path: Path):
+    s = Store(str(tmp_path / "corpus.duckdb"))
+    try:
+        s.remember_key("raw.px", ["sym"])
+        assert (tmp_path / f"corpus.duckdb{KEYS_FILE}").exists()
+        assert not (tmp_path / KEYS_FILE).exists()
     finally:
         s.close()
