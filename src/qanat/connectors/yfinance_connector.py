@@ -3,7 +3,7 @@
     - id: prices
       to: [raw.prices]
       connector: yfinance
-      mode: replace
+      mode: append
       key: [subject, date]
       options:
         companies: [AAPL, MSFT]      # tickers, as Yahoo spells them

@@ -3,7 +3,7 @@
     - id: filings
       to: [raw.documents]
       connector: sec
-      mode: replace
+      mode: append
       key: [id]
       options:
         companies: [AAPL, MSFT, WMT]   # ticker or CIK; CIK is the stable one

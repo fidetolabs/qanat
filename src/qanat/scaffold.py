@@ -89,7 +89,7 @@ JOBS_YAML = """\
 ingestion_job_definitions:
   - id: filings
     to: [raw.documents]
-    connector: sec          # swap for rest, sql or csv when you have a feed
+    connector: sec          # or yfinance for prices. Those two are the whole roster
     key: [id]
     options:
       companies: [AAPL, MSFT]

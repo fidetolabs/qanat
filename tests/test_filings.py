@@ -618,6 +618,21 @@ def test_no_clock_is_attached_on_a_stdio_server(written, edgar):
     assert "dies with the conversation" in out["clock"]["why"]
     assert "qanat schedule" in out["clock"]["why"]
 
+    # **The remedy has to be one that works from where the caller is standing.**
+    # The message used to offer `qanat schedule` and `qanat serve --mcp --schedule`
+    # as if either would do. The first cannot: this process holds the store's only
+    # writer, so a standalone recorder exits naming this pid. The caller follows
+    # the advice, it fails, and the message was the reason.
+    why = out["clock"]["why"]
+    assert "qanat serve --mcp --schedule" in why, "the one-process answer is named"
+    assert "one writer" in why, "and why a second program cannot start"
+    assert why.index("cannot start while this server is alive") < \
+        why.index("qanat schedule` on its own"), \
+        "the exclusion is stated before the command it rules out"
+    # `next_due` stays a fact about the cron line; `clock.attached` is the one
+    # place that says whether anything will act on it.
+    assert all(r["next_due"] for r in out["subscriptions"])
+
 
 def test_the_scheduler_is_reported_when_one_is_running(written, edgar):
     """A served process outlives the request, and `--schedule` gives it a clock."""

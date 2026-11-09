@@ -1,5 +1,64 @@
 # Changelog
 
+## 0.12.1 — 2026-11-09
+
+**Six issues, closed the day 0.12.0 shipped.** Four were found on 2026-11-03 and survived the
+release; two of those were about 0.12.0's own change, which is how they were found — checking the
+open issues against the version actually being published.
+
+### The docs stop teaching what 0.12.0 deleted
+
+`qanat init` wrote `connector: sec  # swap for rest, sql or csv when you have a feed`, and 0.12.0 is
+the release that deleted all three. **`Connector` is `str`, not a `Literal` of the roster**, so a
+dead name passes load, passes `check`, and fails when the job runs — the user follows the comment in
+the file they were handed and finds out late.
+
+Both connector docstrings showed `mode: replace` in the example block, which `_no_replace` refuses at
+load. An example nobody can run, printed where people learn the shape.
+
+**The guards are the part that lasts.** `test_the_config_qanat_init_writes_names_only_a_live_connector`
+parses `JOBS_YAML` and checks every declared connector *and every comment* against `ADAPTERS`.
+`test_a_connectors_own_example_is_a_config_that_loads` parses each docstring's block and runs it
+through `IngestionJobDefinition`.
+
+**There is no src-wide grep for the retired names, on purpose.** `csv` is also the English word for a
+file format and `sql` is a file extension, so `a csv a connector can point at` and `net_margin.sql`
+both match any pattern loose enough to catch the real defect — eight false positives on the first
+run. The tests check the artifacts a user copies instead.
+
+### A save loses nothing the file already said
+
+Three things, and the guard was the interesting one:
+
+```python
+if yaml.safe_load(text) != data:      # `data` is what the checklist just built
+```
+
+**A field missing from a dump checklist is missing from both sides, so they agree.** The guard could
+never catch the one thing it was for, and `mode` was absent from `_dump_ingestion` for exactly that
+reason. It now compares against the file on disk and refuses a write that drops a key, naming it:
+`refusing to write jobs.yaml: it would drop ingestion_job_definitions[filings].timeout`.
+
+Scoped to **fields lost from an entry that still exists** — removing a metric removes its whole
+definition, and the last one removes `transform_job_definitions:` with it. Those are real edits, and
+16 tests said so when the first version refused them.
+
+- **An unchanged part is no longer written.** Saving a filter rewrote `jobs.yaml` every time; churn
+  that hid the one rewrite that meant something.
+- **The round-trip test is walked off the models**, so a field added later is covered without
+  anybody remembering to come back.
+
+### A blocked clock says what is exclusive, not what is adjacent
+
+With no scheduler attached, `list_subscriptions` offered `qanat schedule` and
+`qanat serve --mcp --schedule` as if either would do. **The first cannot work from where the caller is
+standing**: that caller is the stdio server, it holds the store's only writer, and a standalone
+recorder exits naming its pid. The message now states the exclusion before the command it rules out,
+and the test asserts that ordering.
+
+`next_due` is unchanged, which is the second of the two options the issue offered. A due time is a
+fact about the cron line; whether a process reads it is answered once, by `clock.attached`.
+
 ## 0.12.0 — 2026-11-09
 
 **Coming from 0.10.2, this lands two releases at once.** 0.11.0 was written up and

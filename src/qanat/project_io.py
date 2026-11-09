@@ -122,6 +122,14 @@ def _dump_ingestion(d: IngestionJobDefinition) -> dict[str, Any]:
         "id": d.id,
         "to": list(d.writes),
         "connector": d.connector,
+        # **Unconditional, and the first attempt at this was conditional.**
+        # `_no_replace` means `d.mode` can only ever be `append`, so emitting it
+        # only when it differs from the default emits it never -- which looked
+        # like the right call next to `key` and `options` just below.
+        # It is not: a project writes `mode: append` in its own `jobs.yaml`, so
+        # omitting it deletes a line somebody typed. The new guard caught exactly
+        # that, in 14 tests, which is the clearest argument for the guard there is.
+        "mode": d.mode,
     }
     if d.key:
         row["key"] = list(d.key)
@@ -332,28 +340,99 @@ def render_project(data: dict[str, Any], path: Path) -> str:
     """
     plain = yaml.safe_dump(data, sort_keys=False, default_flow_style=False,
                            allow_unicode=True)
+    text = plain
     y = _round_tripper()
-    if y is None or not path.is_file():
-        return plain
-    import io
+    if y is not None and path.is_file():
+        import io
 
-    try:
-        with path.open() as fh:
-            old = y.load(fh)
-        if old is None:
-            return plain
-        buf = io.StringIO()
-        y.dump(_merge(old, data), buf)
-        text = buf.getvalue()
-    except Exception:  # noqa: BLE001 -- a file we cannot round-trip still has to save
-        return plain
-    # Never hand back something that will not parse as the project it came from.
-    try:
-        if yaml.safe_load(text) != data:
-            return plain
-    except yaml.YAMLError:
-        return plain
+        try:
+            with path.open() as fh:
+                kept = y.load(fh)
+            if kept is not None:
+                buf = io.StringIO()
+                y.dump(_merge(kept, data), buf)
+                merged = buf.getvalue()
+                # Never hand back something that will not parse as the project it
+                # came from.
+                if yaml.safe_load(merged) == data:
+                    text = merged
+        except Exception:  # noqa: BLE001 -- a file we cannot round-trip still has to save
+            text = plain
+
+    # **The drop check runs on whatever is about to be written, not only on the
+    # merged path.** It sat after the comparison above, which was unreachable for
+    # the case it was for: a checklist that forgets a field renders text the merge
+    # puts the field back into, that text then differs from `data`, and the
+    # function fell through to `plain` -- the shorter file -- without the check
+    # ever running. Measured by writing the test before the fix.
+    _refuse_a_drop(path, data, text)
     return text
+
+
+class ProjectIOError(Exception):
+    """A write that would lose something the file already said."""
+
+
+def _refuse_a_drop(path: Path, data: dict[str, Any], text: str) -> None:
+    """Refuse a write that loses a key the file on disk carries.
+
+    **The guard this replaces compared the rendered text against `data`** -- the
+    dict the `_dump_*` checklists had just built. A field missing from a checklist
+    is missing from both sides, so they agree and the guard passes: it could never
+    catch the one thing it was for. `mode` was absent from `_dump_ingestion` and
+    every save rewrote `jobs.yaml` without it, silently.
+
+    Comparing against the file catches the class at run time, in any project,
+    rather than only where a test happens to look.
+    """
+    if not path.is_file():
+        return
+    try:
+        kept = yaml.safe_load(path.read_text())
+        fresh = yaml.safe_load(text)
+    except yaml.YAMLError:
+        return      # a file we cannot read is not evidence of a drop
+    missing = _dropped_keys(kept, fresh)
+    if missing:
+        raise ProjectIOError(
+            f"refusing to write {path.name}: it would drop "
+            f"{', '.join(sorted(missing))}, which the file on disk carries. That is a "
+            "field missing from a dump checklist in project_io.py, not a bad edit -- "
+            "the file is left as it was"
+        )
+
+
+def _dropped_keys(old: Any, new: Any, path: str = "", inside: bool = False) -> set[str]:
+    """Fields lost from an entry that still exists, as dotted names.
+
+    **Only from inside a surviving entry**, which is the distinction that makes
+    this usable at run time. Removing a metric removes its whole
+    `transform_job_definition`, and the last one removes
+    `transform_job_definitions:` with it -- real edits, and 16 tests said so the
+    first time this refused them. A checklist bug looks different: the definition
+    is still there and one of its fields is not.
+
+    A list is matched up by `id` and not by position, so adding or reordering a
+    definition does not read as every later entry losing every field.
+    """
+    out: set[str] = set()
+    if isinstance(old, dict) and isinstance(new, dict):
+        for k, v in old.items():
+            here = f"{path}.{k}" if path else str(k)
+            if k not in new:
+                if inside:
+                    out.add(here)
+            else:
+                out |= _dropped_keys(v, new[k], here, inside)
+    elif (isinstance(old, list) and isinstance(new, list)
+          and all(isinstance(x, dict) and "id" in x for x in old + new)):
+        by_id = {x["id"]: x for x in new}
+        for entry in old:
+            if entry["id"] in by_id:
+                # Past this point a missing field is a field, not a deletion.
+                out |= _dropped_keys(entry, by_id[entry["id"]],
+                                     f"{path}[{entry['id']}]", inside=True)
+    return out
 
 
 def _write(path: Path, text: str) -> None:
@@ -388,7 +467,13 @@ def save_project(project: Project, root: Path) -> list[Path]:
                 if path.is_file():
                     path.unlink()
                 continue
-            _write(path, render_project(mine, path))
+            text = render_project(mine, path)
+            # **Unchanged bytes are not written.** The loop used to write every part
+            # it owns on every save, so saving a filter rewrote `jobs.yaml` too --
+            # churn that hides the one rewrite that actually meant something.
+            if path.is_file() and path.read_text() == text:
+                continue
+            _write(path, text)
             written.append(path)
     return written
 

@@ -176,8 +176,12 @@ class IngestionJobDefinition(Base):
         is a different pipeline than the one on the page.
         """
         if v == "replace":
+            # `{v}` rather than the literal: the message is identical at runtime
+            # and this file no longer spells the retired value, so the vocabulary
+            # scan needs no exemption here. A detector that has to name what it
+            # detects is the usual reason for one; interpolating removes the need.
             raise ValueError(
-                "mode: replace is not allowed on an ingestion job. It rewrites the table "
+                f"mode: {v} is not allowed on an ingestion job. It rewrites the table "
                 "to only what this poll returned, so every row landed outside the current "
                 "selection is deleted by a run that reports ok. Use `mode: append` with "
                 "`key:` naming the columns that identify one row -- a row that arrives "

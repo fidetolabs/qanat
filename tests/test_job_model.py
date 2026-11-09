@@ -448,6 +448,112 @@ def _grep(pattern: str, *paths: str) -> list[str]:
     ]
 
 
+def _outside_backticks(line: str) -> str:
+    """The line with every backticked span removed.
+
+    **A rename has to be able to name what it renamed** -- the rule the vocabulary
+    scan below already follows. `` `csv` was here until 0.12.0 `` is the sentence
+    explaining a deletion; `swap for csv` is an instruction to use one.
+    """
+    return re.sub(r"`[^`]*`", "", line)
+
+
+def test_no_doc_teaches_the_write_mode_the_engine_refuses():
+    """`mode: replace` is refused at load by `_no_replace`, and both connector
+    docstrings showed it in the block a user copies -- a config nobody could run,
+    printed where people learn the shape.
+
+    The refusal itself interpolates (`f"mode: {v} is not allowed"`) so the source
+    does not spell the value, which is why this needs no exemption.
+    """
+    hits = [h for h in _grep(r"mode: replace", "src/qanat", "docs")
+            if "mode: replace" in _outside_backticks(h)]
+    assert not hits, "a doc teaches `mode: replace`:\n" + "\n".join(hits)
+
+
+#: Retired in 0.12.0 with the generic connectors.
+#:
+#: **There is no src-wide grep for these, on purpose.** `csv` is also the English
+#: word for a file format and `sql` is a file extension, so `a csv a connector can
+#: point at` and `net_margin.sql` are both legitimate and both match any pattern
+#: loose enough to catch the real bug. The scans below test the artifacts instead:
+#: the config `qanat init` hands over, and the example block at the top of each
+#: connector. Those are what a user copies, and a name with no adapter behind it
+#: is only a problem where somebody is told to type it.
+_RETIRED_CONNECTORS = ("rest", "sql", "csv")  # names-a-retired-word: this is the detector
+
+
+def _live_connectors() -> set[str]:
+    """The roster, less the fixture adapter conftest registers."""
+    from qanat.connectors import ADAPTERS
+
+    return set(ADAPTERS) - {"seed"}
+
+
+def _yaml_block(doc: str) -> str:
+    """The indented example block at the top of a connector's docstring."""
+    out, started = [], False
+    for line in doc.splitlines():
+        if line.startswith("    "):
+            out.append(line[4:])
+            started = True
+        elif started and line.strip():
+            break
+        elif started:
+            out.append("")
+    return "\n".join(out)
+
+
+def test_the_config_qanat_init_writes_names_only_a_live_connector():
+    """**`Connector` is `str`, not a `Literal` of the roster** (`models.py:60`,
+    changed *"for as long as five was true"*). So a name with no adapter passes
+    load, passes `check`, and fails only when the job runs -- which makes the text
+    in `jobs.yaml` the only thing between a new user and a late failure.
+
+    It shipped `# swap for rest, sql or csv when you have a feed` through all of
+    0.11.x and into 0.12.0, naming the three connectors 0.12.0 deleted.
+    """
+    import yaml
+
+    from qanat.scaffold import JOBS_YAML
+
+    live = _live_connectors()
+    spec = yaml.safe_load(JOBS_YAML)
+    declared = {j["connector"] for j in spec["ingestion_job_definitions"]}
+    assert declared <= live, f"the scaffold declares {sorted(declared - live)}"
+
+    # The bug was a comment, not a declaration, so the comments are checked too.
+    for line in JOBS_YAML.splitlines():
+        if "#" not in line:
+            continue
+        note = _outside_backticks(line.split("#", 1)[1])
+        named = {n for n in _RETIRED_CONNECTORS if re.search(rf"\b{n}\b", note)}
+        assert not named, f"a comment suggests {sorted(named)}: {line.strip()}"
+
+
+@pytest.mark.parametrize("module", ["sec", "yfinance_connector"])
+def test_a_connectors_own_example_is_a_config_that_loads(module):
+    """The block at the top of each connector module is where a person learns the
+    shape, and both of them showed `mode: replace` -- which `_no_replace` refuses
+    at load. **An example nobody can run is worse than none**, because it is read
+    as the supported way.
+    """
+    import importlib
+
+    import yaml
+
+    from qanat.models import IngestionJobDefinition
+
+    doc = importlib.import_module(f"qanat.connectors.{module}").__doc__
+    assert doc, f"{module} has no docstring"
+    block = yaml.safe_load(_yaml_block(doc))
+    assert isinstance(block, list) and len(block) == 1, f"{module}: {block!r}"
+
+    job = IngestionJobDefinition.model_validate(block[0])   # raises on a refused mode
+    assert job.connector in _live_connectors()
+    assert job.mode == "append", "an ingestion example may only teach append"
+
+
 def test_the_word_step_is_gone_from_the_engine():
     """`step` named a position in a sequence and said nothing about a table going
     in and a table coming out, which is the only thing one does."""
@@ -507,3 +613,72 @@ def test_the_old_spellings_are_refused_rather_than_aliased(tmp_path: Path):
         load(tmp_path)
     assert "old vocabulary" in str(exc.value)
     assert "no converter" in str(exc.value), "the refusal says there is nothing to run"
+
+
+# ---- A4: a save loses nothing the file already said -------------------------
+
+def test_every_field_of_a_definition_survives_the_dump():
+    """**Walked off the models, not off a list of three field names.**
+
+    `mode` was missing from `_dump_ingestion` and the guard in `render_project`
+    could not see it, because that guard compared the rendered text against the
+    dict the checklist had just built -- if the checklist forgets a field, both
+    sides forget it and they agree. A field added to one of these models later is
+    covered here without anybody remembering to come back.
+    """
+    from qanat.models import (
+        IngestionJobDefinition,
+        JobSchedule,
+        TransformJobDefinition,
+    )
+    from qanat.project_io import _dump_ingestion, _dump_schedule, _dump_transform
+
+    cases = [
+        (IngestionJobDefinition, _dump_ingestion, {
+            "id": "filings", "to": ["raw.documents"], "connector": "sec",
+            "key": ["id"], "timeout": "900",
+            "options": {"companies": ["AAPL"], "form": "10-K"},
+        }),
+        (TransformJobDefinition, _dump_transform, {
+            "id": "facts", "from": ["raw.documents"], "to": ["normalized.facts"],
+            "script": "transforms/parse_facts.py", "key": ["id"],
+            "when": ["raw.documents"], "timeout": "600",
+            "options": {"reads": "raw.documents"},
+        }),
+        (JobSchedule, _dump_schedule, {
+            "id": "nightly", "definition": "filings", "cron": "0 7 * * *",
+        }),
+    ]
+    for model, dump, spec in cases:
+        original = model.model_validate(spec)
+        rebuilt = model.model_validate(dump(original))
+        assert rebuilt == original, (
+            f"{model.__name__} lost something in the dump:\n"
+            f"  set:   {original!r}\n  back:  {rebuilt!r}"
+        )
+
+
+def test_a_dump_that_drops_a_key_is_refused_rather_than_written(tmp_path):
+    """The guard has to be seen failing. A checklist is simulated forgetting a
+    field, and the write is refused with the key named -- instead of quietly
+    leaving a shorter file, which is what happened for `mode`."""
+    import pytest as _pytest
+    import yaml as _yaml
+
+    from qanat.project_io import ProjectIOError, render_project
+
+    path = tmp_path / "jobs.yaml"
+    path.write_text(_yaml.safe_dump(
+        {"ingestion_job_definitions": [
+            {"id": "filings", "to": ["raw.documents"], "connector": "sec",
+             "key": ["id"], "timeout": "900"}]},
+        sort_keys=False))
+
+    # the same project with one field missing, as a forgetful checklist would build it
+    short = {"ingestion_job_definitions": [
+        {"id": "filings", "to": ["raw.documents"], "connector": "sec", "key": ["id"]}]}
+    with _pytest.raises(ProjectIOError) as exc:
+        render_project(short, path)
+    assert "timeout" in str(exc.value)
+    assert "ingestion_job_definitions[filings].timeout" in str(exc.value)
+    assert path.read_text() == path.read_text(), "the file is left as it was"

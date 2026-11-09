@@ -509,6 +509,7 @@ def subscriptions(
 
     last = store.last_execution_by_definition()
     running = sched.status() if sched is not None else {}
+    attached = sched is not None
     now = datetime.now(timezone.utc)
 
     rows = []
@@ -554,11 +555,24 @@ def subscriptions(
                         else int(was["rows_out"]),
                 "error": was.get("error"),
             },
+            # **The time the cron line names, whether or not anything will act on
+            # it** -- the second of the two options the issue offered, and not the
+            # first.
+            #
+            # Nulling it when no clock is attached was tried and reverted:
+            # `test_a_subscription_that_has_never_run_says_so` and
+            # `test_a_subscription_survives_a_reload_and_reads_back` both assert the
+            # field is there, and they are right to -- *a subscription with no next
+            # time is not a subscription*. The cron line is a fact the project
+            # holds; whether a process is reading it is a different fact.
+            #
+            # And that one is answered once, by `clock.attached` below. A per-row
+            # copy of it would be a second place the same truth is written, free to
+            # disagree with the first.
             "next_due": due,
             "running_now": bool(running.get(schedule.id, {}).get("running")),
         })
 
-    attached = sched is not None
     return {
         "subscriptions": rows,
         "clock": {
@@ -569,8 +583,13 @@ def subscriptions(
                 if attached else
                 "nothing in this process is reading these cron lines. Over stdio the "
                 "server is the client's child, so a thread started here dies with the "
-                "conversation -- a clock cannot live in it. These will run when a "
-                "recorder runs: `qanat schedule`, or `qanat serve --mcp --schedule`"
+                "conversation -- a clock cannot live in it. **And a separate recorder "
+                "cannot start while this server is alive**, because the store takes one "
+                "writer and this process is holding it: `qanat schedule` on its own will "
+                "exit naming this pid. So the fix is one process instead of two -- move "
+                "this client onto `qanat serve --mcp --schedule`, which serves the tools "
+                "and runs the clock in the same program. `qanat schedule` alone is for a "
+                "project no server is attached to"
             ),
         },
         "note": (

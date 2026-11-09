@@ -111,11 +111,36 @@ def test_a_filter_writes_no_table_and_no_definition(project):
     run(s, p, filter="cheap", as_of="2023-06-01")
 
     assert [d.id for d in p.definitions] == defs_before
-    assert yaml.safe_load((root / "jobs.yaml").read_text()) == jobs_before
+
+    # **The definitions' meaning, not the file's bytes.** `_dump_ingestion` emits
+    # `mode` now, so a project whose `jobs.yaml` never spelled the default gains
+    # the line on its first save -- once. What must not change is what the file
+    # means, so it is reloaded and compared through the models.
+    from qanat.project import load as _load
+
+    after, _ = _load(root)
+    def shape(defs):
+        # `definitions` mixes both kinds and a transform has neither attribute.
+        return [(d.id, getattr(d, "connector", None), getattr(d, "mode", None),
+                 tuple(d.writes)) for d in defs]
+
+    assert shape(after.definitions) == shape(p.definitions)
+    assert set(yaml.safe_load((root / "jobs.yaml").read_text())) == set(jobs_before)
+
+
     if tables_before is not None:
         assert set(s.tables()) == tables_before
     saved = yaml.safe_load((root / "filters.yaml").read_text())
     assert saved == {"filters": [{"id": "cheap", "clauses": CHEAP_AND_PROFITABLE}]}
+
+    # **The churn fix, last because it adds a filter.** `save_project` used to
+    # write every part it owns on every save, so storing a filter rewrote
+    # `jobs.yaml` too. Now an unchanged part is not written, and the second save
+    # must leave the jobs file untouched to the byte.
+    settled = (root / "jobs.yaml").read_bytes()
+    filters.save(p, root, "cheap2", CHEAP_AND_PROFITABLE)
+    assert (root / "jobs.yaml").read_bytes() == settled, \
+        "saving a filter rewrote jobs.yaml"
 
 
 def test_a_filter_naming_a_metric_nobody_defined_is_refused_at_save(project):
