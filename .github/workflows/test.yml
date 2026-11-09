@@ -100,7 +100,9 @@ jobs:
       - uses: astral-sh/setup-uv@v7
         with: { enable-cache: true }
       - run: uv python install 3.12
-      - run: uv sync --frozen --extra dev
+      # `prices` as well as `dev`: yfinance is an extra, and without it the two
+      # price batteries would importorskip rather than run.
+      - run: uv sync --frozen --extra dev --extra prices
 
       # **There is no offline battery any more.** `test_arithmetic.py` and
       # `test_leak.py` ran the graph over generated prices, and a number the
@@ -109,6 +111,13 @@ jobs:
       #
       # The live shapes. A third party being down is not qanat being broken,
       # so this reports without failing the run.
+      #
+      # **The EDGAR half needs a contact or it skips.** The SEC refuses a request
+      # without one and a shared default would put every Qanat behind one
+      # identity, so this is a repository secret rather than a literal here. With
+      # it unset the three EDGAR batteries skip, and say that is why.
       - name: the shapes the public web answers in
         continue-on-error: true
-        run: uv run pytest audit/batteries -m "audit and network" -q
+        env:
+          SEC_USER_AGENT: ${{ secrets.SEC_USER_AGENT }}
+        run: uv run pytest audit/batteries -m "audit and network" -q -rs

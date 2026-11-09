@@ -39,11 +39,32 @@ not a filing. The arithmetic battery was asking whether DuckDB can divide, and t
 leak battery proved its boundary against a calendar nobody files on, so neither one
 could fail for a reason that would also happen to a real user.
 
-`test_websources.py` is the shape a battery should have, and its own docstring says
-why: *"synthetic fixtures never produce the things that broke the connector -- a
-body that is one object rather than a list, a timestamp in epoch milliseconds, a
-ticker with a leading zero."* The things that break this product come from outside
-it, so that is where a battery has to get its data.
+**`test_websources.py` was rewritten the same day, and it had to be.** Six of its
+seven tests reached the web through the `rest` connector and the seventh through
+`csv`, both deleted in 0.12.0 -- so the whole file was dead, and the way it died
+is the part worth keeping:
+
+```python
+if any(w in str(exc).lower() for w in ("timeout", "connect", "temporarily", ...)):
+    pytest.skip(f"the host is not answering right now: {exc}")
+```
+
+`unknown connector 'rest'` contains `connect`. Six tests reported themselves as a
+host outage, and CI printed a green tick over a job that ran nothing. **The guard
+is typed now** -- a transport error or a 5xx skips, a 4xx raises -- because a 403
+from EDGAR is this product being wrong and has to go red.
+
+It runs against the two connectors that exist, on quirks each one's own docstring
+names: a CIK keeps the zeros that are part of it, a frequent filer's older 10-Ks
+are only on the paginated pages, a filing is dated after the period it covers, a
+split is recorded beside the price it restated, and a currency is read from the
+feed rather than guessed from the symbol.
+
+**What a battery needs to run, and what it does when it cannot.** EDGAR refuses a
+request with no contact, so those three skip unless `SEC_USER_AGENT` is set -- in
+CI, from a repository secret. `yfinance` is the `prices` extra, so the two price
+batteries `importorskip`. Both skips say which one is missing. **Neither is ever
+spelled as a host being down.**
 
 The frozen probes under `runs/2026-09-09/` import the deleted `lab/` and no longer
 run. They stay as the record of what that audit did, which is what `runs/` is for.

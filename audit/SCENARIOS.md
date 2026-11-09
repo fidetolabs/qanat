@@ -31,6 +31,22 @@ per cent and being blind is worth nothing, then let the net be the verdict.
 **Not automated:** a step that writes its own timestamp; a `when:` chain that fires
 mid-replay; a step reading another step's PnL table.
 
+## Does the real upstream still answer in the shape we parse
+
+Nothing generated. Every row comes off EDGAR or Yahoo, because the things that
+break this product are decisions somebody else made about their own feed.
+
+| try | caught | automated |
+| --- | --- | --- |
+| a CIK as a ticker, a bare number, and already padded | the zeros are part of the key — a short CIK stops joining | `batteries/test_websources.py` |
+| a filer with more than 1000 filings (Walmart) | `recent` caps at 1000; the older 10-Ks are only on `filings.files` | same |
+| `filingDate` against `reportDate`, every 10-K | the as-of promise, on the real calendar | same |
+| a company that split twice (NVDA 4:1, 10:1) | `close` is restated, so a `pe` against a filed EPS is wrong by the split factor | same |
+| a KRX ticker (`005930.KS`) | zeros in the symbol, and a price in won that no symbol tells you | same |
+
+**Not automated:** a form other than 10-K/10-Q reaching the parser; a filer that
+changes CIK; an endpoint that answers 200 with an error body.
+
 ## Is the arithmetic the arithmetic
 
 Data with a known answer. `(1 + rate) ** n - 1` is not a matter of opinion --
