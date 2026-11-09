@@ -1,6 +1,10 @@
 name: test
 on:
-  push: { branches: [main] }
+  # **Every branch, not just main.** The trigger was `[main]` and pull_request,
+  # so 41 commits on a branch with no PR open were never checked at all -- the
+  # lint and the batteries had been broken for days and the merge to main was the
+  # first thing that ran them.
+  push: { branches: ["**"] }
   pull_request:
 jobs:
   test:
@@ -86,10 +90,9 @@ jobs:
           uv run --no-sync python -c "import duckdb; print('duckdb', duckdb.__version__)"
           uv run --no-sync pytest -q -n auto --dist loadgroup
 
-  # The standing chaos batteries. Slower than the suite above and one of them calls
-  # live public APIs, so they run once rather than across the matrix -- their job is
-  # to notice a regression in ground a past audit already covered, not to gate a
-  # push. See audit/README.md.
+  # The standing chaos battery. It calls live public APIs, so it runs once rather
+  # than across the matrix -- its job is to notice a regression in ground a past
+  # audit already covered, not to gate a push. See audit/README.md.
   batteries:
     runs-on: ubuntu-latest
     steps:
@@ -99,11 +102,12 @@ jobs:
       - run: uv python install 3.12
       - run: uv sync --frozen --extra dev
 
-      # Offline first: if this fails, something in the engine moved.
-      - name: the batteries that need nothing but the code
-        run: uv run pytest audit/batteries -m "audit and not network" -q
-
-      # And the live shapes. A third party being down is not qanat being broken,
+      # **There is no offline battery any more.** `test_arithmetic.py` and
+      # `test_leak.py` ran the graph over generated prices, and a number the
+      # harness invented proves nothing about a filing -- so they went on
+      # 2026-11-09 with the `lab/` that built them.
+      #
+      # The live shapes. A third party being down is not qanat being broken,
       # so this reports without failing the run.
       - name: the shapes the public web answers in
         continue-on-error: true

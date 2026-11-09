@@ -41,6 +41,8 @@ that genuinely wants everything.
 
 from __future__ import annotations
 
+from collections.abc import Mapping
+from types import MappingProxyType
 from typing import Any, NamedTuple
 
 import pandas as pd
@@ -460,8 +462,10 @@ class CompanyIndex(NamedTuple):
     known: bool
     #: filer -> (ticker, company name). The reverse of `names`, because a screen
     #: hands back a CIK and a person reads a ticker. Empty when the corpus has
-    #: no `source_keys` to read either out of.
-    labels: dict[str, tuple[str | None, str | None]] = {}
+    #: no `source_keys` to read either out of. **A `NamedTuple` default is shared
+    #: by every instance that omits it**, so the empty one is a read-only mapping
+    #: rather than a dict any caller could fill for all the others.
+    labels: Mapping[str, tuple[str | None, str | None]] = MappingProxyType({})
 
     def place(self, symbol: str) -> str | None:
         """The filer this name means, or None if this index does not hold it."""

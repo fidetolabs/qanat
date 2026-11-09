@@ -15,6 +15,11 @@ The one question that cannot be answered by reading code, because a leaking step
 looks like a brilliant one. Build data where seeing ahead is worth thousands of
 per cent and being blind is worth nothing, then let the net be the verdict.
 
+> **`batteries/test_leak.py` and `batteries/test_arithmetic.py` were removed on
+> 2026-11-09**, with the `lab/` that generated their prices. The rows below are kept
+> as the record of what each try caught; the ones whose *automated* column names
+> either file are **no longer run by anything**. A `tests/` entry still is.
+
 | try | caught | automated |
 | --- | --- | --- |
 | `ctx.read`, `ctx.sql`, `ctx.store.read`, schema-qualified names | W-01: two doors open, 1292% against an honest 3.40% | `batteries/test_leak.py` |
@@ -28,7 +33,10 @@ mid-replay; a step reading another step's PnL table.
 
 ## Is the arithmetic the arithmetic
 
-Data with a known answer. `(1 + rate) ** n - 1` is not a matter of opinion.
+Data with a known answer. `(1 + rate) ** n - 1` is not a matter of opinion --
+**and that turned out to be the problem.** Every row here was generated, so a
+green battery only ever said the generator and the engine agreed on compound
+interest. None of it could fail for a reason a filing would also cause.
 
 | try | caught | automated |
 | --- | --- | --- |

@@ -868,7 +868,7 @@ def test_a_named_universe_that_does_not_exist_says_how_to_write_one(tmp_path):
 
     try:
         symbols_from_universe("nope", tmp_path)
-    except Exception as exc:
+    except ValueError as exc:            # what `universe_path` raises for a name it has not got
         said = str(exc)
         assert "define_universe" in said, "the live name, not the retired one"
         assert "save_universe" not in said

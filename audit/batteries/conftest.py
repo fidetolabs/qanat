@@ -1,7 +1,7 @@
 """Shared setup for the standing batteries.
 
-These are slower than the suite in `tests/` -- they run real backtests and, in one
-case, call live public APIs -- so they are marked and run on demand:
+These are slower than the suite in `tests/` -- they call live public APIs -- so they
+are marked and run on demand:
 
     uv run pytest audit/batteries -m audit
     uv run pytest audit/batteries -m "audit and not network"

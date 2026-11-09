@@ -22,9 +22,13 @@ it fails loudly if it comes back.
 
 **A step can always read a source file off disk.** `pd.read_csv(ctx.root / …)`
 reaches the whole history, and nothing in this process can prevent it — a step is
-arbitrary Python. The three doors that *were* qanat's to close are closed, and
-`batteries/test_leak.py` asserts this one still leaks, so the day it stops somebody
-will notice.
+arbitrary Python. The three doors that *were* qanat's to close are closed.
+
+**Nothing watches this boundary any more.** `batteries/test_leak.py` used to assert
+that this one still leaks, so that the day it stopped somebody would notice -- and
+it went on 2026-11-09 with the generated prices it ran on. **That guarantee is given
+up, not replaced.** Closing the boundary quietly is now a thing that could happen
+without a test going red.
 
 **A running Python thread cannot be ended.** The job timeout frees the worker and
 closes the run row; the work itself finishes on its own and its result is discarded.

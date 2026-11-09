@@ -10,7 +10,7 @@ run promotes what it learns —
 | what a run produces | where it goes | who runs it after that |
 | --- | --- | --- |
 | a finding | a case in `tests/test_audit_fixes.py` | CI, on every push |
-| a discriminator | a suite in `batteries/` | on demand, and before a release |
+| a discriminator | a suite in `batteries/`, **over real data** | on demand, and before a release |
 | a lesson | a line in `SCENARIOS.md` | the next person, by reading |
 
 — and the next run starts on new ground.
@@ -18,14 +18,35 @@ run promotes what it learns —
 ## The folders
 
 ```
-lab/          machinery every run reuses. Has to keep working; a run that
-              repairs its own harness first is a run that finds nothing.
 batteries/    standing suites, re-run every audit. Their job is to notice a
-              regression in ground that was already covered.
+              regression in ground that was already covered. **Over real data,
+              never generated** -- see below.
 runs/         one folder per audit: what was tried, what was found, the report.
 FINDINGS.md   the ledger. Everything ever found, and where it stands.
 SCENARIOS.md  what to try, and what each thing has caught.
 ```
+
+## A battery runs on real data, or it does not run
+
+**There was a `lab/` here that built a whole project out of generated prices** --
+a fixed daily drift, a few invented symbols -- and two suites over it:
+`test_arithmetic.py` checked that a forward return came back as the rate the
+generator used, and `test_leak.py` checked that a step could not read past the
+as-of date.
+
+**They went on 2026-11-09, with the `lab/` underneath them.** A constant drift is
+not a filing. The arithmetic battery was asking whether DuckDB can divide, and the
+leak battery proved its boundary against a calendar nobody files on, so neither one
+could fail for a reason that would also happen to a real user.
+
+`test_websources.py` is the shape a battery should have, and its own docstring says
+why: *"synthetic fixtures never produce the things that broke the connector -- a
+body that is one object rather than a list, a timestamp in epoch milliseconds, a
+ticker with a leading zero."* The things that break this product come from outside
+it, so that is where a battery has to get its data.
+
+The frozen probes under `runs/2026-09-09/` import the deleted `lab/` and no longer
+run. They stay as the record of what that audit did, which is what `runs/` is for.
 
 ## Running one
 
