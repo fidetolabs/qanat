@@ -1,6 +1,14 @@
 # Changelog
 
-## Unreleased
+## 0.12.0 — 2026-11-09
+
+**Coming from 0.10.2, this lands two releases at once.** 0.11.0 was written up and
+dated below and **never published** -- there is no `v0.11.0` tag and PyPI went
+straight from 0.10.2 to this. **So read the 0.11.0 section as part of this
+upgrade**, and in particular: a job is four objects, `sources:` and `steps:` are
+gone, a metric is a transform writing its own table, and **a 0.10.x project is
+refused at load rather than converted.**
+
 
 ### `qanat serve` starts without a project, and holds a home folder of them
 
@@ -432,7 +440,13 @@ splitting into 11 sections every one found by the `ordered` rule, and `search_do
 14 hits for "tariffs" in that 10-Q's MD&A. **The splitter and the readers needed no change** — only
 the join between them was absent.
 
-## 0.11.0 — 2026-11-01
+## 0.11.0 — 2026-11-01 (never published)
+
+**Written, dated, and never tagged.** The work is real and shipped inside 0.12.0;
+the version number is the thing that was skipped, which is why PyPI has no 0.11.0.
+Kept as its own section because it is a different set of changes and squashing it
+into 0.12.0 would hide a breaking one.
+
 
 ### A job is four objects, and the architecture file stops being machine-written
 
