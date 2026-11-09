@@ -2,6 +2,44 @@
 
 ## Unreleased
 
+### `qanat serve` starts without a project, and holds a home folder of them
+
+**The app could only start inside a project.** `qanat serve --app` anywhere else
+stopped with *"no qanat.yaml found here or in any parent directory"*, so a person
+had to `qanat init` in a shell and `cd` before the pages existed at all.
+
+Projects now live in one **home folder** -- `--home`, then `QANAT_HOME`, then
+`~/qanat`; started inside a project with neither set, the folder holding it. The
+folders with a `qanat.yaml` are the list; nothing else records it.
+
+- **The app opens on the project used last.** Each project keeps `last_used` in
+  `.qanat/state.yaml`, stamped when it is selected and when a job in it ends.
+  With no project at all, every page goes to **Settings** with *"There is no
+  project to open."* and the cursor in the new project's name.
+- **Settings** lists the projects with their status -- `running` and which job,
+  `idle`, `in use` by another program (from its `.qanat-lock`), or `closed` --
+  creates one by name, opens one, and deletes one after the name is typed back.
+- **The SEC contact is set per project**, in `.qanat/settings.yaml`. It feeds the
+  `${SEC_USER_AGENT}` the scaffold already writes, so two projects can send two
+  contacts, and it wins over the shell's. `.qanat/` ignores itself in git.
+- **Two themes**, FidetoLabs white (as before) and FidetoLabs dark, kept in
+  `.qanat-home.yaml` beside the projects.
+
+**Over MCP a session works in one project.** Four tools work on the home folder:
+`list_projects` and `select_project` at `data`, `create_project` at `full`,
+`delete_project` at `authoring`. Until a session selects a project every other
+tool refuses and says to ask the user which one; after that no tool takes a
+project name, and every answer starts with the project it came from. Two
+sessions can work in two projects at once, each with its own store and lock.
+Over stdio the folder is the project and none of the four is offered.
+
+**`delete_project` deletes nothing without `confirm`**, and says what would go.
+It is refused for the session's own project, one another session or the app is
+working in, one with a job running, and one another program holds.
+
+**One process now holds several projects.** `create_app` still serves a single
+project when handed one, which is what every test and `state` caller does.
+
 ### `.qanat-lock` names the holder, so a refusal says where to go
 
 **`StoreBusy` only knew that a file was locked.** The operating system's lock

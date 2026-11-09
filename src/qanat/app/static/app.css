@@ -7,8 +7,32 @@
   --accent: #1f5f4a;
   --bad: #a3361f;
   --ok: #1f7a4a;
+  --on-accent: #ffffff;   /* text on an accent button */
+  --soft: #eef3f0;        /* a selected row, the current page */
+  --hover: #f5f7f5;
+  --yes-bg: #e3f1e8;
+  --no-bg: #f1efe9;
+  --pre: #f5f5f2;
   --mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
   --sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+}
+/* FidetoLabs dark: the website's colors, from fidetolabs/tailwind.config.ts. */
+:root[data-theme="fidetolabs-dark"] {
+  --bg: #0a0a0a;
+  --fg: #f4f2ed;
+  --muted: #9c968b;
+  --line: #2a2926;
+  --card: #121211;
+  --accent: #a2e65d;
+  --bad: #e5826a;
+  --ok: #a2e65d;
+  --on-accent: #0a0a0a;
+  --soft: #1d2617;
+  --hover: #181a16;
+  --yes-bg: #1d2617;
+  --no-bg: #1c1b19;
+  --pre: #171715;
+  color-scheme: dark;
 }
 * { box-sizing: border-box; }
 body { margin: 0; background: var(--bg); color: var(--fg); font: 14px/1.5 var(--sans); }
@@ -22,7 +46,7 @@ a:hover { text-decoration: underline; }
 .brand { font: 600 16px var(--mono); color: var(--fg); }
 nav { display: flex; gap: 4px; flex: 1; }
 nav a { padding: 6px 10px; border-radius: 6px; color: var(--fg); }
-nav a.on { background: #eef3f0; color: var(--accent); }
+nav a.on { background: var(--soft); color: var(--accent); }
 .pill { font: 12px var(--mono); padding: 2px 8px; border: 1px solid var(--line); border-radius: 99px; color: var(--muted); }
 
 main { max-width: 1120px; margin: 0 auto; padding: 24px; }
@@ -37,44 +61,60 @@ p.lede { color: var(--muted); margin: 0 0 16px; }
 
 form.row, .row { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
 input, select, textarea { font: 13px var(--sans); padding: 6px 8px; border: 1px solid var(--line);
-                          border-radius: 6px; background: #fff; }
+                          border-radius: 6px; background: var(--card); color: var(--fg); }
 textarea { font-family: var(--mono); width: 100%; min-height: 120px; }
 button { font: 13px var(--sans); padding: 6px 12px; border-radius: 6px; border: 1px solid var(--accent);
-         background: var(--accent); color: #fff; cursor: pointer; }
-button.ghost { background: #fff; color: var(--accent); }
-button.danger { background: #fff; color: var(--bad); border-color: var(--bad); }
+         background: var(--accent); color: var(--on-accent); cursor: pointer; }
+button.ghost { background: var(--card); color: var(--accent); }
+button.danger { background: var(--card); color: var(--bad); border-color: var(--bad); }
 button:disabled { opacity: .45; cursor: not-allowed; }
 
 table { width: 100%; border-collapse: collapse; }
 th, td { text-align: left; padding: 6px 8px; border-bottom: 1px solid var(--line); vertical-align: top; }
 th { font-weight: 600; color: var(--muted); font-size: 12px; }
 td.num { text-align: right; }
-tr.pick:hover { background: #f5f7f5; cursor: pointer; }
-tr.sel { background: #eef3f0; }
+tr.pick:hover { background: var(--hover); cursor: pointer; }
+tr.sel { background: var(--soft); }
 
 .mark { display: inline-block; min-width: 64px; padding: 1px 6px; border-radius: 4px; font: 12px var(--mono); text-align: center; }
-.mark.yes { background: #e3f1e8; color: var(--ok); }
-.mark.no { background: #f1efe9; color: var(--muted); }
+.mark.yes { background: var(--yes-bg); color: var(--ok); }
+.mark.no { background: var(--no-bg); color: var(--muted); }
 .yes { color: var(--ok); }
 .no { color: var(--bad); }
 
 .list a { display: block; padding: 4px 6px; border-radius: 4px; font: 13px var(--mono); }
-.list a.on { background: #eef3f0; }
+.list a.on { background: var(--soft); }
 .clause { display: flex; gap: 6px; margin-bottom: 6px; }
 .chain > div { padding: 8px 0; border-bottom: 1px dashed var(--line); }
 .empty { color: var(--muted); padding: 16px 0; }
 .err { color: var(--bad); }
-pre { background: #f5f5f2; padding: 8px; border-radius: 6px; overflow: auto; font: 12px var(--mono); }
-.toast { position: fixed; bottom: 16px; right: 16px; background: var(--fg); color: #fff;
+pre { background: var(--pre); padding: 8px; border-radius: 6px; overflow: auto; font: 12px var(--mono); }
+.toast { position: fixed; bottom: 16px; right: 16px; background: var(--fg); color: var(--bg);
          padding: 10px 14px; border-radius: 8px; max-width: 420px; }
 .toast.bad { background: var(--bad); }
 
 /* A wide table scrolls inside its card rather than dragging the page sideways.
    The pipeline's definitions carry full table refs and its executions carry a
    DuckDB traceback, and either one is wider than any window. */
-.card > table { display: block; overflow-x: auto; max-width: 100%; }
+.card > table { display: block; overflow-x: auto; overflow-y: hidden; max-width: 100%; }
+/* ...and the rows still fill the card. As a block the table shrank to its
+   content, so every short table sat in the left third of its card. */
+.card > table > tbody { display: table; width: 100%; }
 .trace {
   white-space: pre-wrap; word-break: break-word; max-height: 14em; overflow: auto;
   font-size: 12px; margin: 6px 0 0; opacity: .75;
 }
 details > summary { cursor: pointer; }
+
+/* Settings */
+.top .where { font: 12px var(--mono); color: var(--muted); }
+.status { display: inline-block; padding: 1px 8px; border-radius: 99px; font: 12px var(--mono); border: 1px solid var(--line); }
+.status.running { color: var(--accent); border-color: var(--accent); }
+.status.in-use { color: var(--bad); border-color: var(--bad); }
+.status.idle { color: var(--ok); }
+.status.closed { color: var(--muted); }
+.notice { border-left: 3px solid var(--accent); padding: 8px 12px; background: var(--soft); border-radius: 4px; margin-bottom: 16px; }
+.themes { display: flex; gap: 12px; }
+.themes label { display: flex; gap: 8px; align-items: center; padding: 10px 14px; border: 1px solid var(--line); border-radius: 8px; cursor: pointer; }
+.themes label.on { border-color: var(--accent); }
+.swatch { width: 18px; height: 18px; border-radius: 50%; border: 1px solid var(--line); }

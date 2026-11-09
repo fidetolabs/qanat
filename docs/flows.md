@@ -105,6 +105,25 @@ screening filings needs to change it.
 server cannot tell two callers apart. What it writes is a **definition**, which
 is what the field is called.
 
+## Choosing the project
+
+`qanat serve` holds a **home folder** of projects, and an MCP session works in
+**one** of them at a time. Until it selects one, every other tool refuses and says
+to ask the user which project, or whether to create one. After that no tool takes a
+project name, so a slip cannot write into the wrong project, and every answer
+starts with the project it came from. Over stdio the folder is the project and
+none of these are offered.
+
+| The caller wants to | Tool | Scope | Writes |
+| --- | --- | --- | --- |
+| see which projects there are, which is running a job, and which was used last | `list_projects` | data | — |
+| work in one, or switch to another mid-session | `select_project` | data | stamps when the project was last used |
+| start a new, empty one | `create_project` | full | a folder in the home folder, scaffolded as `qanat init` does |
+| delete one the user no longer wants | `delete_project` | authoring | without `confirm`, nothing: it says what would go. With it, the folder |
+
+**Delete is refused** for the project this session has selected, one another
+session or program is working in, and one with a job running.
+
 ---
 
 ## The candidates that did not ship

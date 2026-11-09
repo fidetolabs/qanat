@@ -94,19 +94,26 @@ class Throttle:
         self._last = time.monotonic()
 
 
-def user_agent(job: IngestionJobDefinition) -> str:
+def user_agent(job: IngestionJobDefinition, root: Path | None = None) -> str:
+    """The contact this definition sends: its own literal, then the project's
+    setting (`.qanat/settings.yaml`), then the shell's `SEC_USER_AGENT`."""
+    from qanat.projects import project_env
+
     missing: set[str] = set()
-    ua = expand(job.options.get("user_agent"), missing) or os.environ.get("SEC_USER_AGENT")
+    mine = project_env(root)
+    ua = (expand(job.options.get("user_agent"), missing, mine)
+          or mine.get("SEC_USER_AGENT") or os.environ.get("SEC_USER_AGENT"))
     if missing:
         raise ValueError(
             f"ingestion job '{job.id}': user_agent names {', '.join(sorted(missing))}, "
-            "which is not set. Export it, or write the contact into qanat.yaml."
+            "which is not set. Set it on the settings page for this project, or export it."
         )
     if not ua:
         raise ValueError(
             f"ingestion job '{job.id}': the SEC refuses requests with no contact in the "
             "User-Agent. Set options.user_agent to something like "
-            "'acme research ops@acme.com', or export SEC_USER_AGENT."
+            "'acme research ops@acme.com', set it on the settings page for this project, "
+            "or export SEC_USER_AGENT."
         )
     if "@" not in ua:
         raise ValueError(
@@ -274,7 +281,7 @@ def fetch(job: IngestionJobDefinition, root: Path, on_warn=None) -> pd.DataFrame
     frm, to = opts.get("from") or None, opts.get("to") or None
     cache = root / str(opts.get("cache", "./data/documents"))
 
-    headers = {"User-Agent": user_agent(job), "Accept-Encoding": "gzip, deflate"}
+    headers = {"User-Agent": user_agent(job, root), "Accept-Encoding": "gzip, deflate"}
     throttle = Throttle(float(opts.get("rate_per_second", RATE_PER_SECOND)))
     rows: list[dict] = []
 

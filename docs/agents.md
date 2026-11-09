@@ -247,6 +247,14 @@ qanat serve --app --scope research                                    # the page
 qanat schedule --run-now                                              # the clock, serving nothing
 ```
 
+**It starts without a project.** `qanat serve` holds a home folder of projects
+(`--home`, `QANAT_HOME`, or `~/qanat`; started inside a project, the folder
+holding it), and each MCP session works in the one it selects with
+`select_project`. Until then every other tool refuses and says to ask the user
+which project. `list_projects`, `create_project` and `delete_project` are the rest
+of that flow; over stdio none of them is offered, because the folder is the
+project.
+
 This is MCP's Streamable HTTP transport on `/mcp`. `POST` carries JSON-RPC and gets JSON back.
 `initialize` hands out an `Mcp-Session-Id` that every later request must send. `DELETE` ends a
 session, and a session idle for an hour is dropped, which answers `404` and means the client should

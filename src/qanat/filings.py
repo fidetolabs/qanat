@@ -656,6 +656,7 @@ def find(
     frm: str | None = None,
     to: str | None = None,
     limit: int = 50,
+    root: Path | None = None,
 ) -> dict[str, Any]:
     """What EDGAR holds for these companies, and whether each one can be parsed.
 
@@ -675,7 +676,7 @@ def find(
     except FilingsError:
         ref = ""
 
-    headers = {"User-Agent": sec.user_agent(src), "Accept-Encoding": "gzip, deflate"}
+    headers = {"User-Agent": sec.user_agent(src, root), "Accept-Encoding": "gzip, deflate"}
     throttle = sec.Throttle()
     rows: list[dict[str, Any]] = []
     resolved: dict[str, str] = {}
@@ -779,7 +780,7 @@ def ingest(
     src = _sec_definition(project)
     where = root / str(cache or src.options.get("cache") or "./data/documents")
 
-    headers = {"User-Agent": sec.user_agent(src), "Accept-Encoding": "gzip, deflate"}
+    headers = {"User-Agent": sec.user_agent(src, root), "Accept-Encoding": "gzip, deflate"}
     throttle = sec.Throttle()
     out: list[dict[str, Any]] = []
     landing: list[dict[str, Any]] = []

@@ -296,7 +296,7 @@ and `screen`. The reading surface reads, and your agent is the screen.
 | industry grouping | a ranking is against whatever list of companies you hand it |
 | prices | Yahoo through `yfinance` — not an API with a contract behind it, and its terms do not grant redistribution |
 | section detection | a heuristic, and one vocabulary per form. It gets all 904 spans in the example right and it will meet documents it has not seen. Only the 10-K and the 10-Q have a vocabulary; every other form gets none, which is the honest answer rather than a confident wrong offset |
-| concurrency | one process serves one project behind a single lock, so callers queue. That is in the Python, not the storage |
+| concurrency | one process may hold several projects, each behind its own lock, so callers on one project queue. That is in the Python, not the storage |
 | the judgement | you write the formulas and pick the thresholds, and no agent this serves can place an order |
 
 ## Reproducing the numbers

@@ -81,8 +81,9 @@ declared by nothing.
 `price / diluted EPS` is arithmetic with no judgement in it. The threshold you
 compare it against is yours and never lives in the project.
 
-**The MCP server.** How you talk to it. There is no website. Your agent is the
-screen.
+**The MCP server.** How you talk to it. Your agent is the screen. For the
+person running Qanat there are also pages -- `qanat serve --app` -- to create
+projects, ingest, and see what is held, running and computed.
 
 ## How to use it
 

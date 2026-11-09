@@ -172,7 +172,8 @@ def cmd_init(args) -> int:
             print(f"  cd {args.directory}")
         print("  qanat check                # hold it against the contract")
         print("  qanat schedule --run-now   # fetch and parse, then keep a clock")
-        print("  qanat mcp                  # hand it to an agent\n")
+        print("  qanat mcp                  # hand it to an agent")
+        print("  qanat serve --app          # or open it in a browser\n")
         return 0
 
     print(f"\n{c('fetching and parsing', D)}")
@@ -388,75 +389,85 @@ def cmd_serve(args) -> int:
               "nothing is not a default.", file=sys.stderr)
         return 2
 
-    if not args.schedule:
-        from qanat.mcp_http import serve_http
+    from qanat.mcp_http import serve_http
+    from qanat.projects import Workspace
 
-        return serve_http(getattr(args, "project", None), scope=args.scope,
-                          host=args.host, port=args.port, token=args.token,
-                          doors=doors)
+    home, start_in = _home_and_start(args)
+    ws = Workspace(home, schedule=args.schedule, workers=args.workers,
+                   serving=f"http://{args.host}:{args.port}", doors=doors)
+    if start_in:
+        # Opened now rather than on the first call, so a project held by another
+        # program is refused while somebody is still watching the terminal.
+        try:
+            opened = ws.open(start_in)
+        except Exception as exc:  # noqa: BLE001
+            print(f"qanat serve: {exc}", file=sys.stderr)
+            return 1
+        if not _ready(args, opened):
+            ws.close_all()
+            return 1
+    elif not ws.names():
+        print(f"  {D}no project in {home} yet -- the app opens on Settings to create one{X}",
+              flush=True)
+    try:
+        return serve_http(None, scope=args.scope, host=args.host, port=args.port,
+                          token=args.token, doors=doors, workspace=ws, start_in=start_in)
+    finally:
+        ws.close_all()
 
-    return _serve_with_clock(args, doors)
 
+def _home_and_start(args) -> tuple[Path, str | None]:
+    """The home folder, and the project this was started inside, if any.
 
-def _serve_with_clock(args, doors: tuple[str, ...]) -> int:
-    """The same server with a scheduler in the same process.
-
-    One machine doing both jobs. The store is opened once and handed to both, so
-    there is one writer rather than two processes contending for it.
+    `--home`, then `QANAT_HOME`, then `~/qanat`. Started inside a project with
+    neither flag nor variable set, the folder holding it is the home, so the
+    projects beside it are the list -- and the one started in opens.
     """
-    import uvicorn
+    from qanat.project import ProjectError, find_project
+    from qanat.projects import _NAME, default_home
 
-    from qanat.mcp_http import create_app
-    from qanat.runtime import AppState
-    from qanat.scheduler import Scheduler
+    named = getattr(args, "home", None) or os.environ.get("QANAT_HOME")
+    try:
+        root = find_project(getattr(args, "project", None) or None).parent.resolve()
+    except ProjectError:
+        root = None
+    if named:
+        home = Path(named).expanduser().resolve()
+        if root is not None and root.parent == home and _NAME.match(root.name):
+            return home, root.name
+        return home, None
+    if root is not None and _NAME.match(root.name):
+        return root.parent, root.name
+    return default_home(), None
 
-    opened = _opened(args)
-    if opened is None:
-        return 1
-    project, root, store = opened
 
-    # Binding to an address on purpose means meaning to be reached at it, so
-    # that name is allowed. A wildcard bind names nothing, and never arrives in
-    # `Host` anyway -- serving under a real hostname stays a deliberate setting.
-    named = [] if args.host in ("0.0.0.0", "::", "") else [args.host]
-    token = args.token or os.environ.get("QANAT_MCP_TOKEN") or None
-    if args.host not in ("127.0.0.1", "::1", "localhost") and not token:
-        print(c(f"refusing to serve {args.host} with no token. Pass --token or set "
-                f"QANAT_MCP_TOKEN.", R_))
-        return 2
+def _ready(args, opened) -> bool:
+    """Hold the project started in against the contract, repair a half-finished
+    screen, report drift -- what a long-running program has to do before it is
+    any use. With a clock attached, a broken contract is refused."""
+    from qanat.plan import plan as plan_project
+    from qanat.project import validate
 
-    sched = Scheduler(store, project, root, workers=args.workers)
-    state = AppState(store=store, project=project, root=root, sched=sched)
-    # The lock is already held -- `_opened` took it -- so this fills in the
-    # address and the doors now that they are known. The note is what lets the
-    # next program to be refused name this one.
-    store.take_writer_lock(serving=f"http://{args.host}:{args.port}",
-                           doors=list(doors), project=project.name)
-    app = create_app(None, args.scope, token=token, allow_hosts=named, state=state,
-                     doors=doors)
-    sched.start()
-    if args.run_now:
+    s = opened.session
+    rep = validate(s.project, s.root)
+    for e in rep.errors:
+        print(f"  {c('error', R_)} {e}")
+    if not rep.ok and args.schedule and not args.force:
+        print(c("refusing to run a pipeline that breaks the contract. --force to override.",
+                R_))
+        return False
+    _repair_after_crash(s.store, s.project, s.root)
+    for ch in plan_project(s.project, s.root, s.store).changes:
+        print(f"  {c('drift', Y)} {ch.target} · "
+              f"{ch.note or (ch.details[0] if ch.details else '')}")
+    if args.schedule and args.run_now:
         import threading
 
         from qanat.runner import run_all
 
-        threading.Thread(target=run_all, args=(store, project, root), daemon=True).start()
-
-    print(f"\n  {c('qanat', B)} {D}v{__version__}{X}  {project.name}")
-    if "mcp" in doors:
-        print(f"  mcp      {c(f'http://{args.host}:{args.port}/mcp', B)} "
-              f"{D}scope {args.scope}{X}")
-    if "app" in doors:
-        print(f"  app      {c(f'http://{args.host}:{args.port}/', B)}")
-    print(f"  schedule {D}{len(sched._schedules)} schedule(s) on a clock, in this process{X}")
-    print(f"  store    {D}{project.store_url(root)}{X}\n")
-    sys.stdout.flush()  # uvicorn blocks next, and a piped stdout would never flush
-    try:
-        uvicorn.run(app, host=args.host, port=args.port, log_level=args.log_level)
-    finally:
-        sched.stop()
-        store.close()
-    return 0
+        threading.Thread(target=run_all, args=(s.store, s.project, s.root),
+                         daemon=True).start()
+    return True
 
 
 # ------------------------------------------------------------------------ main
@@ -508,13 +519,17 @@ def build_parser() -> argparse.ArgumentParser:
                          "reads a cron line")
     sv.add_argument("--scope", choices=list(SCOPES), default=DEFAULT_SCOPE,
                     help=_SCOPE_HELP)
+    sv.add_argument("--home",
+                    help="the folder holding the projects (default: QANAT_HOME, else the "
+                         "folder holding the project you are in, else ~/qanat)")
     sv.add_argument("--host", default="127.0.0.1", help="(default: 127.0.0.1)")
     sv.add_argument("--port", type=int, default=8421, help="(default: 8421)")
     sv.add_argument("--token", help="the bearer token a caller must send. Required to "
                                     "bind anything but loopback. Also QANAT_MCP_TOKEN")
     sv.add_argument("--workers", type=int, default=4, help="with --schedule")
     sv.add_argument("--run-now", action="store_true",
-                    help="with --schedule: fire every definition once at startup")
+                    help="with --schedule: fire every definition of the project started "
+                         "in once at startup")
     sv.add_argument("--log-level", default="warning")
     sv.add_argument("--force", action="store_true",
                     help="with --schedule: run even if the contract fails")

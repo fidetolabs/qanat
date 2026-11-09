@@ -19,8 +19,12 @@ class MissingEnv(ValueError):
     """A `${VAR}` in the options that the environment does not set."""
 
 
-def expand(value: Any, missing: set[str] | None = None) -> Any:
-    """Replace `${NAME}` from the environment.
+def expand(value: Any, missing: set[str] | None = None,
+           extra: dict[str, str] | None = None) -> Any:
+    """Replace `${NAME}` from `extra` first, then the environment.
+
+    `extra` is the project's own values -- its SEC contact, set on the settings
+    page -- which win over the shell's, so two projects can send two.
 
     An unset name used to become an empty string, which produced `Illegal header
     value b'Bearer '`, or a request sent with a blank API key, or the actively wrong
@@ -30,6 +34,8 @@ def expand(value: Any, missing: set[str] | None = None) -> Any:
     if isinstance(value, str):
         def sub(m: re.Match) -> str:
             name = m.group(1)
+            if extra and name in extra:
+                return extra[name]
             if name not in os.environ:
                 if missing is not None:
                     missing.add(name)
@@ -37,9 +43,9 @@ def expand(value: Any, missing: set[str] | None = None) -> Any:
             return os.environ[name]
         return _ENV.sub(sub, value)
     if isinstance(value, dict):
-        return {k: expand(v, missing) for k, v in value.items()}
+        return {k: expand(v, missing, extra) for k, v in value.items()}
     if isinstance(value, list):
-        return [expand(v, missing) for v in value]
+        return [expand(v, missing, extra) for v in value]
     return value
 
 

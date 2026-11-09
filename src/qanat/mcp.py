@@ -220,7 +220,7 @@ def tools_for(scope: str) -> list[dict[str, Any]]:
 
 
 def tool(name: str, description: str, schema: dict[str, Any], scope: str,
-         writes: bool = False):
+         writes: bool = False, home: bool = False):
     """Register one tool. `scope` has no default on purpose.
 
     A new tool has to answer two questions before it exists: rule 3 -- does it
@@ -239,6 +239,9 @@ def tool(name: str, description: str, schema: dict[str, Any], scope: str,
             "handler": fn,
             "writes": writes,
             "scope": scope,
+            # Works on the home folder rather than inside one project, so it is
+            # called with a `Home` and needs no project selected.
+            "home": home,
         })
         return fn
 
@@ -911,7 +914,7 @@ def _find_filings(s: Session, args: dict) -> Any:
         return find(
             s.store, s.project, [str(c) for c in companies],
             form=args.get("form"), frm=args.get("from"), to=args.get("to"),
-            limit=int(args.get("limit") or 50),
+            limit=int(args.get("limit") or 50), root=s.root,
         )
     except (FilingsError, ValueError) as exc:
         raise ToolError(str(exc)) from exc
@@ -1204,8 +1207,96 @@ def _save_source(s: Session, args: dict) -> Any:
     return out
 
 
+
+# ---- projects ------------------------------------------------------------------
+class Home:
+    """What a home-level tool is handed: the program's projects, and who is asking.
+
+    `holder` is the MCP session. Its selected project is where every other tool
+    lands, so no tool takes a project name a slip could get wrong.
+    """
+
+    def __init__(self, workspace: Any, holder: str) -> None:
+        self.workspace = workspace
+        self.holder = holder
+
+
+def _projects(fn, *a, **kw):
+    from qanat.projects import ProjectsError
+    from qanat.store import StoreBusy
+
+    try:
+        return fn(*a, **kw)
+    except (ProjectsError, StoreBusy) as exc:
+        raise ToolError(str(exc)) from exc
+
+
+def _no_project(home: Home | None) -> str:
+    """The refusal before a project is selected: ask the person which one."""
+    if home is None:
+        return "no project is open in this server."
+    rows = home.workspace.list(home.holder)["projects"]
+    names = ", ".join(r["name"] for r in rows)
+    return ("no project is selected for this session. Ask the user which project to work "
+            "in" + (f" -- {names} --" if names else "") + " or whether to create a new one, "
+            "then call select_project (or create_project first).")
+
+
+@tool("list_projects",
+      "Every project in this server's home folder, the one used last first: its status "
+      "(running and which job, idle, in use by another program, closed), when it was last "
+      "used, and which one this session has selected.",
+      {"properties": {}},
+      scope="data", home=True)
+def _list_projects(h: Home, args: dict) -> Any:
+    return _projects(h.workspace.list, h.holder)
+
+
+@tool("select_project",
+      "Work in this project for the rest of the session: every other tool lands there. "
+      "Call it again at any time to switch. Ask the user which one first.",
+      {"properties": {"name": {"type": "string", "description": "a name from list_projects"}},
+       "required": ["name"]},
+      scope="data", home=True)
+def _select_project(h: Home, args: dict) -> Any:
+    return _projects(h.workspace.select, h.holder, str(_need(args, "name")))
+
+
+@tool("create_project",
+      "Create a new, empty project in the home folder, by name. It is not selected: call "
+      "select_project to work in it.",
+      {"properties": {"name": {"type": "string",
+                               "description": "lowercase letters, digits, '-' and '_'"}},
+       "required": ["name"]},
+      scope="full", writes=True, home=True)
+def _create_project(h: Home, args: dict) -> Any:
+    return _projects(h.workspace.create, str(_need(args, "name")))
+
+
+@tool("delete_project",
+      "Delete a project and everything in it. Without confirm it deletes nothing and says "
+      "what would go: show the user, and call again with confirm only on their yes. Refused "
+      "for the project this session has selected, one somebody else is working in, and one "
+      "with a job running.",
+      {"properties": {"name": {"type": "string"},
+                      "confirm": {"type": "boolean",
+                                  "description": "true to delete. Cannot be undone."}},
+       "required": ["name"]},
+      scope="authoring", writes=True, home=True)
+def _delete_project(h: Home, args: dict) -> Any:
+    return _projects(h.workspace.delete, str(_need(args, "name")), h.holder,
+                     confirm=bool(args.get("confirm")))
+
+
 # ------------------------------------------------------------------- transport
-def _dispatch(session: Session, msg: dict, tools: list[dict]) -> dict | None:
+def _dispatch(session: Session | None, msg: dict, tools: list[dict],
+              home: Home | None = None) -> dict | None:
+    """One message. `session` is the project the caller selected, or None.
+
+    `home` is set when the program holds a home folder: then a home-level tool
+    works without a project, a project tool refuses until one is selected, and
+    every answer names the project it came from.
+    """
     mid, method, params = msg.get("id"), msg.get("method"), msg.get("params") or {}
 
     if method == "initialize":
@@ -1230,6 +1321,13 @@ def _dispatch(session: Session, msg: dict, tools: list[dict]) -> dict | None:
             # "no such tool" would be a lie, and the person operating the client
             # needs to know it is the connection that is narrow, not the server.
             above = next((t for t in TOOLS if t["name"] == name), None)
+            if above is not None and above.get("home") and home is None:
+                # Not offered over stdio, which is not a question of scope:
+                # the folder this was started in is the project.
+                return _ok(mid, _text(
+                    f"'{name}' works on a home folder of projects, and over stdio the folder "
+                    f"this was started in is the project. Start `qanat serve --mcp` to "
+                    f"manage several.", error=True))
             if above is not None:
                 return _ok(mid, _text(
                     f"'{name}' is a tool in the '{above['scope']}' scope, and this server was "
@@ -1243,8 +1341,26 @@ def _dispatch(session: Session, msg: dict, tools: list[dict]) -> dict | None:
             return _ok(mid, _text(
                 f"no tool called '{name}'. Available: {', '.join(t['name'] for t in tools)}",
                 error=True))
+        args = dict(params.get("arguments") or {})
         try:
-            out = entry["handler"](session, dict(params.get("arguments") or {}))
+            if entry.get("home"):
+                if home is None:
+                    raise ToolError(
+                        f"'{name}' works on the home folder, and this server serves one "
+                        f"project with none. Start `qanat serve --mcp` to manage projects.")
+                out = entry["handler"](home, args)
+                return _ok(mid, _text(json.dumps(out, default=str, indent=2)))
+            if session is None:
+                raise ToolError(_no_project(home))
+            out = entry["handler"](session, args)
+            if home is not None and not home.workspace.pinned:
+                # Every answer names where it landed, so a person reading along
+                # sees which project a write went into.
+                where = getattr(session, "home_name", None) or session.project.name
+                out = ({"project": where, **out} if isinstance(out, dict)
+                       else {"project": where, "result": out})
+                if entry["writes"]:
+                    home.workspace.touch(home.holder)
             return _ok(mid, _text(json.dumps(out, default=str, indent=2)))
         except ToolError as exc:
             return _ok(mid, _text(str(exc), error=True))
@@ -1290,7 +1406,9 @@ def serve_stdio(project_path: str | None = None, scope: str = DEFAULT_SCOPE) -> 
         print(f"qanat mcp: {exc}", file=sys.stderr)
         return 1
 
-    tools = offered
+    # Over stdio the folder is the project, and there is no home folder to pick
+    # from -- so the tools that work on one are not offered at all.
+    tools = [t for t in offered if not t.get("home")]
     print(f"qanat mcp: {session.project.name} · scope {scope} · {len(tools)} of "
           f"{len(TOOLS)} tools", file=sys.stderr)
 
@@ -1319,5 +1437,5 @@ def serve_stdio(project_path: str | None = None, scope: str = DEFAULT_SCOPE) -> 
     return 0
 
 
-__all__ = ["DEFAULT_SCOPE", "PROTOCOL", "SCOPES", "TOOLS", "ScopeError", "Session",
+__all__ = ["DEFAULT_SCOPE", "PROTOCOL", "SCOPES", "TOOLS", "Home", "ScopeError", "Session",
            "ToolError", "rank", "serve_stdio", "tools_for"]

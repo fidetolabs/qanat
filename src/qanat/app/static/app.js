@@ -17,6 +17,12 @@ async function api(path, opts = {}) {
     if (t) { sessionStorage.setItem("qanat_token", t); return api(path, opts); }
   }
   const body = await res.json().catch(() => ({}));
+  // No project selected and none to select: every page but Settings is empty,
+  // so go there and say why.
+  if (res.status === 409 && body.no_project) {
+    if (!location.hash.startsWith("#/settings")) location.hash = "#/settings/empty";
+    throw new Error(body.detail);
+  }
   if (!res.ok) throw new Error(body.detail || `${res.status}`);
   return body;
 }
@@ -102,8 +108,121 @@ async function pipeline(view) {
     </div>`;
 }
 
+
+// ---- settings (T-16) --------------------------------------------------------------
+//
+// **Projects live in one home folder, and the app works in one of them.** The
+// list is the folders; the status is read live -- running and which job, idle,
+// in use by another program, or closed. Delete asks for the name typed back.
+const when = (iso) => (iso ? new Date(iso).toLocaleString() : "never");
+const statusMark = (p) => {
+  const cls = p.status.replace(" ", "-");
+  const jobs = (p.running || []).map((r) => r.job).join(", ");
+  const who = p.held_by ? ` · pid ${h(p.held_by.pid)}${p.held_by.serving ? ` · ${h(p.held_by.serving)}` : ""}` : "";
+  return `<span class="status ${cls}">${h(p.status)}</span>${jobs ? ` <span class="mono">${h(jobs)}</span>` : ""}<span class="muted mono">${who}</span>`;
+};
+
+function applyTheme(theme) {
+  document.documentElement.dataset.theme = theme || "fidetolabs-white";
+}
+
+async function settings(view, rest = []) {
+  const [list, conf] = await Promise.all([api("/api/projects"), api("/api/settings")]);
+  const manages = HEALTH.manages_projects !== false;
+  const empty = !list.projects.length;
+  const sel = list.selected;
+  const ua = conf.user_agent || {};
+  view.innerHTML = `
+    <h1>Settings</h1>
+    <p class="lede">${manages ? `Projects in <code>${h(list.home)}</code>, the one used last first.` : "This server serves one project and has no home folder."}</p>
+    ${empty || rest[0] === "empty" && !sel ? `<div class="notice"><b>There is no project to open.</b> Create a new project to start.</div>` : ""}
+    <h2>Projects</h2>
+    <div class="card">
+      <table><tr><th>Project</th><th>Status</th><th>Last used</th><th></th></tr>
+      ${list.projects.map((p) => `<tr class="${p.name === sel ? "sel" : ""}">
+        <td class="mono">${h(p.name)}${p.name === sel ? ` <span class="muted">· working here</span>` : ""}</td>
+        <td>${statusMark(p)}</td>
+        <td class="mono muted">${h(when(p.last_used))}</td>
+        <td style="text-align:right">
+          ${p.name === sel ? "" : `<button class="ghost" data-open="${h(p.name)}" ${p.status === "in use" ? "disabled" : ""}>Open</button>`}
+          ${manages && p.name !== sel ? `<button class="danger" data-del="${h(p.name)}" ${lock("delete_project")}>Delete</button>` : ""}
+        </td></tr>`).join("") || `<tr><td colspan="4"><span class="empty">No projects yet.</span></td></tr>`}
+      </table>
+      ${manages ? `<form class="row" id="new" style="margin-top:12px">
+        <input name="name" placeholder="new-project-name" pattern="[a-z0-9][a-z0-9_\-]*" required size="28">
+        <button ${lock("create_project")}>Create a new project</button>
+        <span class="muted">lowercase letters, digits, - and _</span></form>` : ""}
+      <div id="del"></div>
+    </div>
+    ${sel ? `<h2>SEC contact for ${h(sel)}</h2>
+    <form class="card row" id="ua">
+      <input name="user_agent" size="42" placeholder="Jane Doe jane@example.com" value="${h(ua.user_agent || "")}">
+      <button ${lock("user_agent")}>Save</button>
+      <span class="muted">${ua.user_agent ? "sent with every SEC request from this project" : ua.shell ? `not set here · the shell's <code>${h(ua.shell)}</code> is used` : "not set · the SEC refuses requests without one"}</span>
+    </form>` : ""}
+    <h2>Theme</h2>
+    <div class="card themes">
+      ${conf.themes.map((t) => `<label class="${t === conf.theme ? "on" : ""}"><input type="radio" name="theme" value="${h(t)}" ${t === conf.theme ? "checked" : ""}>
+        <span class="swatch" style="background:${t.endsWith("dark") ? "#0a0a0a" : "#fbfbfa"}"></span>
+        ${t === "fidetolabs-dark" ? "FidetoLabs dark" : "FidetoLabs white"}</label>`).join("")}
+    </div>`;
+
+  const nameIn = $("#new input[name=name]");
+  if (nameIn && (empty || rest[0] === "empty")) nameIn.focus();
+  const again = () => settings(view, []);
+
+  view.querySelectorAll("[data-open]").forEach((b) => (b.onclick = async () => {
+    try { await post(`/api/projects/${encodeURIComponent(b.dataset.open)}/select`, {}); await refreshHeader(); toast(`Working in ${b.dataset.open}`); again(); } catch (e) { fail(e); }
+  }));
+  view.querySelectorAll("[data-del]").forEach((b) => (b.onclick = async () => {
+    const name = b.dataset.del;
+    const out = $("#del");
+    try {
+      const w = (await api(`/api/projects/${encodeURIComponent(name)}/deletion`)).would_delete;
+      out.innerHTML = `<div class="notice" style="margin-top:12px">
+        <p><b>Delete ${h(name)}?</b> This cannot be undone. It takes ${num(w.files, 0)} files (${num(w.bytes / 1e6, 1)} MB)${w.filters ? `, ${num(w.filters, 0)} saved filters` : ""}${w.tables.length ? `, and these tables: ${w.tables.map((t) => `<code>${h(t.table)}</code> ${num(t.rows, 0)} rows`).join(", ")}` : ""}.</p>
+        <form class="row" id="sure"><input name="typed" placeholder="type ${h(name)}" size="24"><button class="danger">Delete for good</button><button type="button" class="ghost" id="nope">Cancel</button></form></div>`;
+      $("#nope").onclick = () => (out.innerHTML = "");
+      $("#sure").onsubmit = async (ev) => {
+        ev.preventDefault();
+        if (ev.target.typed.value !== name) return toast(`Type ${name} to delete it`, true);
+        try { await del(`/api/projects/${encodeURIComponent(name)}?confirm=${encodeURIComponent(name)}`); toast(`Deleted ${name}`); again(); } catch (e) { fail(e); }
+      };
+    } catch (e) { fail(e); }
+  }));
+  const nf = $("#new");
+  if (nf) nf.onsubmit = async (ev) => {
+    ev.preventDefault();
+    const name = ev.target.name.value.trim();
+    try {
+      await post("/api/projects", { name });
+      await post(`/api/projects/${encodeURIComponent(name)}/select`, {});
+      await refreshHeader(); toast(`Created ${name}`); again();
+    } catch (e) { fail(e); }
+  };
+  const uf = $("#ua");
+  if (uf) uf.onsubmit = async (ev) => {
+    ev.preventDefault();
+    try { await put(`/api/projects/${encodeURIComponent(sel)}/settings`, { user_agent: ev.target.user_agent.value }); toast("Saved"); again(); } catch (e) { fail(e); }
+  };
+  view.querySelectorAll("input[name=theme]").forEach((r) => (r.onchange = async () => {
+    try { applyTheme((await put("/api/settings/theme", { theme: r.value })).theme); again(); } catch (e) { fail(e); }
+  }));
+
+  // The status is live: a job started elsewhere shows up without a reload.
+  clearTimeout(settings.timer);
+  settings.timer = setTimeout(() => { if (location.hash.startsWith("#/settings") && !$("#sure")) again(); }, 5000);
+}
+
+async function refreshHeader() {
+  HEALTH = await api("/api/health");
+  $("#project").textContent = HEALTH.project || "no project";
+  $("#scope").textContent = `scope ${HEALTH.scope}`;
+  applyTheme(HEALTH.theme);
+}
+
 // ---- routing -------------------------------------------------------------------
-const VIEWS = { "": home, filings, holdings, metrics, filters, tables, pipeline };
+const VIEWS = { "": home, filings, holdings, metrics, filters, tables, pipeline, settings };
 
 async function route() {
   const [name, ...rest] = location.hash.replace(/^#\/?/, "").split("/");
@@ -408,9 +527,9 @@ async function tables(view, [ref]) {
 // ---- start ------------------------------------------------------------------------
 (async () => {
   try {
-    HEALTH = await api("/api/health");
-    $("#project").textContent = HEALTH.project;
-    $("#scope").textContent = `scope ${HEALTH.scope}`;
+    await refreshHeader();
+    // Nothing to open: Settings, with the reason, rather than an empty page.
+    if (!HEALTH.project && !location.hash.startsWith("#/settings")) location.hash = "#/settings/empty";
   } catch (e) { fail(e); }
   window.addEventListener("hashchange", route);
   route();
