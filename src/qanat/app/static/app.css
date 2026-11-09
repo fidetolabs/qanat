@@ -43,7 +43,11 @@ a:hover { text-decoration: underline; }
 
 .top { display: flex; align-items: center; gap: 24px; padding: 12px 24px;
        border-bottom: 1px solid var(--line); background: var(--card); position: sticky; top: 0; }
-.brand { font: 600 16px var(--mono); color: var(--fg); }
+.brand { font: 600 16px var(--mono); color: var(--fg); display: inline-flex; align-items: center; gap: 8px; }
+.brand:hover { text-decoration: none; }
+/* The mark: a Q drawn as a water drop, its point the tail, with the well
+   inside. Drawn in the accent, so it follows the theme. */
+.brand .logo { width: 22px; height: 22px; color: var(--accent); flex: none; }
 nav { display: flex; gap: 4px; flex: 1; }
 nav a { padding: 6px 10px; border-radius: 6px; color: var(--fg); }
 nav a.on { background: var(--soft); color: var(--accent); }
@@ -118,3 +122,25 @@ details > summary { cursor: pointer; }
 .themes label { display: flex; gap: 8px; align-items: center; padding: 10px 14px; border: 1px solid var(--line); border-radius: 8px; cursor: pointer; }
 .themes label.on { border-color: var(--accent); }
 .swatch { width: 18px; height: 18px; border-radius: 50%; border: 1px solid var(--line); }
+.acts { text-align: right; white-space: nowrap; }
+.acts button { margin-left: 4px; }
+tr.editing { outline: 2px solid var(--accent); outline-offset: -2px; }
+tr.flash td { background: var(--yes-bg); transition: background .3s; }
+.edit-panel { margin-top: 12px; padding: 12px 14px; border: 1px solid var(--accent); border-radius: 8px; background: var(--soft); }
+.app-settings .setting { display: flex; align-items: center; gap: 16px; padding: 8px 0; border-bottom: 1px solid var(--line); }
+.app-settings .setting:last-child { border-bottom: 0; }
+.app-settings .label { width: 120px; color: var(--muted); font-size: 13px; }
+/* The project table does not move when a project opens or closes: the line
+   above it is always there and only its words change, and the columns are
+   fixed, so "working here" on one row cannot widen another. */
+.notice.now { min-height: 40px; line-height: 22px; }
+table.projects { table-layout: fixed; }
+table.projects td { overflow: hidden; text-overflow: ellipsis; }
+table.projects .c-name { width: 17%; }
+table.projects .c-status { width: 9%; }
+table.projects .c-contact { width: 22%; }
+table.projects .c-date { width: 14%; }
+table.projects .c-acts { width: 24%; }
+table.projects td:nth-child(4), table.projects td:nth-child(5) { font-size: 12px; }
+table.projects td.acts { overflow: visible; }
+table.projects td:nth-child(4), table.projects td:nth-child(5) { white-space: nowrap; }

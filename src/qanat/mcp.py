@@ -1243,9 +1243,9 @@ def _no_project(home: Home | None) -> str:
 
 
 @tool("list_projects",
-      "Every project in this server's home folder, the one used last first: its status "
-      "(running and which job, idle, in use by another program, closed), when it was last "
-      "used, and which one this session has selected.",
+      "Every project in this server's home folder, the one changed last first: its status "
+      "(running and which job, idle, in use by another program, closed), when it was created "
+      "and last updated, its SEC contact, and which one this session has selected.",
       {"properties": {}},
       scope="data", home=True)
 def _list_projects(h: Home, args: dict) -> Any:

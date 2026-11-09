@@ -128,20 +128,46 @@ def project_env(root: Path | None) -> dict[str, str]:
 
 
 def stamp(root: Path, when: str | None = None) -> str:
-    """Record that the project was used now. Never raises."""
+    """Record that something in the project changed now. Never raises.
+
+    **Only a change stamps it** -- an ingest, a run, a saved metric, filter or
+    contact, a job ending. Opening, closing and selecting do not: the list is
+    ordered by this, and an order that moved every time somebody looked at a
+    project was one nobody could find anything in.
+    """
     when = when or _now()
     with contextlib.suppress(OSError):
         path = _local(root) / STATE_FILE
         got = _read_yaml(path)
-        if str(got.get("last_used") or "") < when:
-            got["last_used"] = when
-            _write_yaml(path, got)
+        # `last_used` is the word before 2026-11-09. It is carried over as the
+        # starting point, or an older job time would overwrite a newer stamp.
+        have = str(got.get("last_updated") or got.get("last_used") or "")
+        if "last_used" in got:
+            got["last_updated"] = max(have, str(got.get("last_updated") or ""))
+            got.pop("last_used")
+        if have < when:
+            got["last_updated"] = when
+        _write_yaml(path, got)
     return when
 
 
-def last_used(root: Path) -> str | None:
-    got = _read_yaml(root / LOCAL_DIR / STATE_FILE).get("last_used")
-    return str(got) if got else None
+def last_updated(root: Path) -> str | None:
+    got = _read_yaml(root / LOCAL_DIR / STATE_FILE)
+    when = got.get("last_updated") or got.get("last_used")
+    return str(when) if when else None
+
+
+def created_at(root: Path) -> str | None:
+    """When the project was made: stamped at create, else when its file was made."""
+    got = _read_yaml(root / LOCAL_DIR / STATE_FILE).get("created_at")
+    if got:
+        return str(got)
+    try:
+        st = (root / "qanat.yaml").stat()
+    except OSError:
+        return None
+    t = getattr(st, "st_birthtime", None) or st.st_mtime
+    return datetime.fromtimestamp(t, timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
 def _note(root: Path) -> dict[str, Any]:
@@ -315,7 +341,8 @@ class Workspace:
                     if o.sched:
                         o.sched.stop()
                 with contextlib.suppress(Exception):
-                    stamp(o.root, self._last_activity(o))
+                    if (act := self._last_activity(o)) is not None:
+                        stamp(o.root, act)       # a job's end; never "now"
                 with contextlib.suppress(Exception):
                     o.session.close()
             self._opened.clear()
@@ -326,7 +353,6 @@ class Workspace:
         self.open(name)
         with self._lock:
             self._selected[holder] = name
-        stamp(self._root(name))
         return self.describe(name, holder=holder)
 
     def selected(self, holder: str) -> str | None:
@@ -340,19 +366,49 @@ class Workspace:
         with self._lock:
             self._selected.pop(holder, None)
 
+    def close(self, holder: str) -> dict[str, Any]:
+        """Stop `holder` working in its project, and let the project go if nobody
+        else is in it -- its writer lock too, so the CLI can use it again.
+
+        **Refused while a job runs in it**, because closing the store under a
+        running job is the one way to lose its execution row.
+        """
+        with self._lock:
+            name = self._selected.get(holder)
+            if name is None:
+                return {"closed": None, "released": False}
+            o = self._opened.get(name)
+            if o is not None and self._running(o):
+                jobs = ", ".join(str(r["job"]) for r in self._running(o))
+                raise ProjectsError(f"Project '{name}' has a job running ({jobs}). Wait for "
+                                    f"it to finish, then close it.")
+            self._selected.pop(holder, None)
+            released = False
+            if o is not None and not self._holders(name) and not self.pinned:
+                with contextlib.suppress(Exception):
+                    if o.sched:
+                        o.sched.stop()
+                with contextlib.suppress(Exception):
+                    if (act := self._last_activity(o)) is not None:
+                        stamp(o.root, act)       # a job's end; never "now"
+                o.session.close()
+                self._opened.pop(name, None)
+                released = True
+        return {"closed": name, "released": released}
+
     def opened_for(self, holder: str) -> Opened | None:
         name = self.selected(holder)
         return None if name is None else self.open(name)
 
     def touch(self, holder: str) -> None:
-        """Say the holder's project was just worked on."""
+        """Say the holder's project was just changed -- called after a write."""
         name = self.selected(holder)
         if name is not None:
             with contextlib.suppress(Exception):
                 stamp(self._root(name))
 
     def latest(self) -> str | None:
-        """The project worked on last, which the app opens on."""
+        """The project changed last, which the app opens on."""
         rows = self.list()["projects"]
         return rows[0]["name"] if rows else None
 
@@ -392,7 +448,7 @@ class Workspace:
     def describe(self, name: str, holder: str | None = None) -> dict[str, Any]:
         root = self._root(name)
         o = self._opened.get(name)
-        used = last_used(root)
+        used = last_updated(root)
         out: dict[str, Any] = {"name": name, "path": str(root)}
         if o is not None:
             act = self._last_activity(o)
@@ -410,7 +466,13 @@ class Workspace:
             else:
                 out["status"] = "closed"
             out["running"] = []
-        out["last_used"] = used
+        out["created_at"] = created_at(root)
+        # None until something changes in it: creating a project is not work
+        # done in it, and the page says "—" rather than repeat the created date.
+        out["last_updated"] = used
+        # The contact this project sends to the SEC, or None. Listed so a person
+        # -- or an agent -- sees which project would have a find refused.
+        out["sec_contact"] = settings(root).get("user_agent")
         holders = self._holders(name)
         out["selected_here"] = holder is not None and holder in holders
         out["open_in"] = _who(holders) if holders else None
@@ -418,9 +480,14 @@ class Workspace:
 
     def list(self, holder: str | None = None) -> dict[str, Any]:
         rows = [self.describe(n, holder=holder) for n in self.names()]
-        rows.sort(key=lambda r: r.get("last_used") or "", reverse=True)
+        # Changed last first; a project nothing has changed in sorts by when it
+        # was made, so a new one sits where it was created rather than at the end.
+        rows.sort(key=lambda r: (r.get("last_updated") or r.get("created_at") or "",
+                                 r["name"]), reverse=True)
         return {"home": str(self.home) if self.home else None,
                 "selected": self.selected(holder) if holder else None,
+                # What a project with no contact of its own falls back to.
+                "shell_sec_contact": os.environ.get("SEC_USER_AGENT"),
                 "projects": rows}
 
     # ---- create and delete -------------------------------------------------------
@@ -435,7 +502,11 @@ class Workspace:
 
         root.mkdir(parents=True)
         write_project(root, name.replace("-", "_"))
-        stamp(root)
+        # Created, and not yet updated: nothing has been done in it.
+        path = _local(root) / STATE_FILE
+        state = _read_yaml(path)
+        state["created_at"] = _now()
+        _write_yaml(path, state)
         return self.describe(name)
 
     def delete(self, name: str, holder: str, confirm: bool = False) -> dict[str, Any]:
@@ -539,9 +610,10 @@ class Workspace:
     def set_user_agent(self, name: str, user_agent: str) -> dict[str, Any]:
         root = self._need(name)
         out = save_user_agent(root, user_agent)
+        stamp(root)
         return {"project": name, **out}
 
 
 __all__ = ["APP", "DEFAULT_THEME", "THEMES", "Opened", "ProjectsError", "Workspace",
-           "default_home", "last_used", "project_env", "save_user_agent", "settings",
+           "created_at", "default_home", "last_updated", "project_env", "save_user_agent", "settings",
            "stamp"]

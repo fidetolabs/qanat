@@ -35,7 +35,8 @@ def client(home: Path, scope: str = "authoring", start_in: str | None = None) ->
 
 def stamp(root: Path, when: str) -> None:
     """Set when a project was last used, exactly -- `projects.stamp` only moves it on."""
-    (root / ".qanat" / "state.yaml").write_text(f"last_used: '{when}'\n")
+    (root / ".qanat" / "state.yaml").write_text(
+        f"created_at: '2026-01-01T00:00:00Z'\nlast_updated: '{when}'\n")
 
 
 def close(c: TestClient) -> None:
@@ -103,7 +104,8 @@ def test_a_project_made_at_one_door_is_there_at_the_other(tmp_path: Path):
         close(c)
 
 
-def test_the_list_is_newest_first_and_selecting_moves_a_project_up(tmp_path: Path):
+def test_the_order_is_last_updated_and_opening_or_closing_never_moves_it(tmp_path: Path):
+    """It reordered on every open and close, which made the list impossible to scan."""
     home = tmp_path / "home"
     ws = Workspace(home)
     for n in ("a", "b", "c"):
@@ -113,15 +115,34 @@ def test_the_list_is_newest_first_and_selecting_moves_a_project_up(tmp_path: Pat
     stamp(home / "c", "2026-03-01T00:00:00Z")
     c = client(home)
     try:
+        def order() -> list[str]:
+            return [p["name"] for p in c.get("/api/projects").json()["projects"]]
+        assert order() == ["c", "b", "a"]
+        c.post("/api/projects/close")
+        c.post("/api/projects/a/select")
+        c.post("/api/projects/close")
         sid = session(c)
-        _, before = call(c, sid, "list_projects")
-        assert [p["name"] for p in before["projects"]][:1] == ["c"]
         call(c, sid, "select_project", name="a")
-        _, after = call(c, sid, "list_projects")
-        assert after["projects"][0]["name"] == "a" and after["selected"] == "a"
-        assert c.get("/api/projects").json()["projects"][0]["name"] == "a"
+        call(c, sid, "select_project", name="b")
+        assert order() == ["c", "b", "a"]
+        _, listed = call(c, sid, "list_projects")
+        assert [p["name"] for p in listed["projects"]] == ["c", "b", "a"]
+        # a change does move it: a contact saved on `a`
+        c.put("/api/projects/a/settings", json={"user_agent": "A a@example.com"})
+        assert order()[0] == "a"
     finally:
         close(c)
+
+
+def test_every_project_carries_when_it_was_created(tmp_path: Path):
+    home = tmp_path / "home"
+    ws = Workspace(home)
+    made = ws.create("new")
+    assert made["created_at"] and made["last_updated"] is None   # nothing done in it yet
+    # an older project with no stamp still answers, from its file
+    (home / "new" / ".qanat" / "state.yaml").write_text("last_used: '2026-05-01T00:00:00Z'\n")
+    got = ws.describe("new")
+    assert got["created_at"] and got["last_updated"] == "2026-05-01T00:00:00Z"
 
 
 # ---- a session works in one project -------------------------------------------------
@@ -433,3 +454,168 @@ def test_the_app_layer_still_holds_no_sql_after_settings():
     src = (Path(__file__).parent.parent / "src" / "qanat" / "app" / "api.py").read_text()
     for word in ("SELECT ", "INSERT ", "DELETE FROM", "shutil", "rmtree"):
         assert word not in src
+
+
+def test_the_pages_are_never_served_from_a_stale_cache(tmp_path: Path):
+    """A browser kept an old `app.js` and ran the old page against the new API."""
+    c = client(tmp_path / "home")
+    try:
+        for path in ("/", "/static/app.js", "/static/app.css"):
+            assert c.get(path).headers["cache-control"] == "no-cache", path
+    finally:
+        close(c)
+
+
+# ---- one open at a time in the app ----------------------------------------------------
+def test_close_lets_the_project_go_and_its_lock_with_it(tmp_path: Path):
+    from qanat.project import load
+    from qanat.store import Store
+
+    home = tmp_path / "home"
+    Workspace(home).create("mine")
+    c = client(home)
+    try:
+        assert c.get("/api/health").json()["project"] == "mine"    # opened as the one used last
+        r = c.post("/api/projects/close").json()
+        assert r == {"closed": "mine", "released": True}
+        # nobody holds it now: another program takes the writer lock
+        project, root = load(home / "mine")
+        other = Store(project.store_url(root))
+        try:
+            other.take_writer_lock(serving="test")
+        finally:
+            other.close()
+        # and the app does not jump back into it, or into anything else
+        assert c.get("/api/health").json()["project"] is None
+        assert c.get("/api/tables").status_code == 409
+    finally:
+        close(c)
+
+
+def test_a_second_project_cannot_be_opened_until_the_first_is_closed(tmp_path: Path):
+    home = tmp_path / "home"
+    ws = Workspace(home)
+    ws.create("first")
+    ws.create("second")
+    c = client(home)
+    try:
+        c.post("/api/projects/first/select")
+        r = c.post("/api/projects/second/select")
+        assert r.status_code == 400 and "Close 'first' first" in r.json()["detail"]
+        c.post("/api/projects/close")
+        assert c.post("/api/projects/second/select").status_code == 200
+        assert c.get("/api/health").json()["project"] == "second"
+    finally:
+        close(c)
+
+
+def test_close_keeps_the_project_open_for_a_session_still_in_it(tmp_path: Path):
+    home = tmp_path / "home"
+    Workspace(home).create("shared")
+    c = client(home)
+    try:
+        c.post("/api/projects/shared/select")
+        sid = session(c)
+        call(c, sid, "select_project", name="shared")
+        assert c.post("/api/projects/close").json() == {"closed": "shared", "released": False}
+        _, out = call(c, sid, "list_tables")
+        assert out["project"] == "shared"
+    finally:
+        close(c)
+
+
+def test_close_is_refused_while_a_job_runs(tmp_path: Path, monkeypatch):
+    home = tmp_path / "home"
+    Workspace(home).create("busy")
+    c = client(home)
+    try:
+        c.post("/api/projects/busy/select")
+        monkeypatch.setattr(Workspace, "_running",
+                            staticmethod(lambda o: [{"job": "parse_facts"}]))
+        r = c.post("/api/projects/close")
+        assert r.status_code == 400 and "parse_facts" in r.json()["detail"]
+        assert c.get("/api/health").json()["project"] == "busy"
+    finally:
+        close(c)
+
+
+def test_each_project_lists_its_own_sec_contact_on_both_doors(tmp_path: Path, monkeypatch):
+    monkeypatch.setenv("SEC_USER_AGENT", "Shell shell@example.com")
+    home = tmp_path / "home"
+    ws = Workspace(home)
+    ws.create("set")
+    ws.create("unset")
+    save_user_agent(home / "set", "Jane jane@example.com")
+    c = client(home)
+    try:
+        page = c.get("/api/projects").json()
+        got = {p["name"]: p["sec_contact"] for p in page["projects"]}
+        assert got == {"set": "Jane jane@example.com", "unset": None}
+        assert page["shell_sec_contact"] == "Shell shell@example.com"
+        _, listed = call(c, session(c), "list_projects")
+        assert {p["name"]: p["sec_contact"] for p in listed["projects"]} == got
+    finally:
+        close(c)
+
+
+def test_the_page_loads_its_assets_by_a_stamped_address(tmp_path: Path):
+    """A changed file gets a new address, so no browser cache can hold the old one."""
+    import re
+
+    c = client(tmp_path / "home")
+    try:
+        html = c.get("/").text
+        css = re.search(r'/static/app\.css\?v=([0-9a-f]{12})"', html)
+        js = re.search(r'/static/app\.js\?v=([0-9a-f]{12})"', html)
+        assert css and js, html
+        assert c.get(f"/static/app.css?v={css.group(1)}").status_code == 200
+    finally:
+        close(c)
+
+
+def test_a_stamp_older_than_the_old_word_does_not_win(tmp_path: Path):
+    """A state file from before `last_updated` kept `last_used`; the first stamp
+    after the rename must not replace a newer time with an older job's."""
+    from qanat.projects import last_updated
+    from qanat.projects import stamp as real_stamp
+
+    home = tmp_path / "home"
+    Workspace(home).create("old")
+    (home / "old" / ".qanat" / "state.yaml").write_text("last_used: '2026-11-09T07:00:00Z'\n")
+    real_stamp(home / "old", "2026-11-09T02:00:00Z")
+    assert last_updated(home / "old") == "2026-11-09T07:00:00Z"
+
+
+def test_a_running_server_serves_the_page_it_started_with(tmp_path: Path, monkeypatch):
+    """Read per request, an old server handed out a new page against its old API."""
+    from qanat.app import api
+
+    c = client(tmp_path / "home")
+    try:
+        before = c.get("/static/app.js").content
+        monkeypatch.setattr(api, "STATIC", tmp_path / "nowhere")   # the disk changes under it
+        assert c.get("/static/app.js").content == before
+        assert "/static/app.js?v=" in c.get("/").text
+    finally:
+        close(c)
+
+
+def test_a_project_made_by_init_has_a_created_date_and_no_update(tmp_path: Path):
+    """`qanat init` in a shell stamps nothing; the list still knows when it was made."""
+    from qanat.scaffold import write_project
+
+    home = tmp_path / "home"
+    (home / "by-hand").mkdir(parents=True)
+    write_project(home / "by-hand", "by_hand")
+    got = Workspace(home).describe("by-hand")
+    assert got["created_at"] and got["last_updated"] is None
+
+
+def test_a_project_never_updated_sorts_by_when_it_was_made(tmp_path: Path):
+    home = tmp_path / "home"
+    ws = Workspace(home)
+    ws.create("old")
+    stamp(home / "old", "2020-01-01T00:00:00Z")     # updated long ago
+    ws.create("fresh")                               # created now, never updated
+    assert [p["name"] for p in ws.list()["projects"]] == ["fresh", "old"]
+    assert ws.describe("fresh")["last_updated"] is None

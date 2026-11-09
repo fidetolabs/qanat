@@ -114,13 +114,42 @@ async function pipeline(view) {
 // **Projects live in one home folder, and the app works in one of them.** The
 // list is the folders; the status is read live -- running and which job, idle,
 // in use by another program, or closed. Delete asks for the name typed back.
-const when = (iso) => (iso ? new Date(iso).toLocaleString() : "never");
+// A missing date is unknown, not "never": the server did not say.
+const when = (iso) => (iso ? new Date(iso).toLocaleString(undefined, { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" }) : "—");
 const statusMark = (p) => {
   const cls = p.status.replace(" ", "-");
   const jobs = (p.running || []).map((r) => r.job).join(", ");
   const who = p.held_by ? ` · pid ${h(p.held_by.pid)}${p.held_by.serving ? ` · ${h(p.held_by.serving)}` : ""}` : "";
   return `<span class="status ${cls}">${h(p.status)}</span>${jobs ? ` <span class="mono">${h(jobs)}</span>` : ""}<span class="muted mono">${who}</span>`;
 };
+
+// The project table alone, so the live refresh can redraw it without touching a
+// form somebody is typing in. The SEC contact is a column: it belongs to each
+// project, and a missing one is what makes a find fail.
+function contactCell(p, shell) {
+  if (p.sec_contact) return `<span class="yes">✓</span> <span class="mono">${h(p.sec_contact)}</span>`;
+  if (shell) return `<span class="muted">from shell · <span class="mono">${h(shell)}</span></span>`;
+  return `<span class="no">⚠ not set</span>`;
+}
+
+function projectRows(list, sel, manages, editing) {
+  const projects = list.projects;
+  return `<table class="projects"><colgroup><col class="c-name"><col class="c-status"><col class="c-contact"><col class="c-date"><col class="c-date"><col class="c-acts"></colgroup><tr><th>Project</th><th>Status</th><th>SEC contact</th><th>Created</th><th>Last updated</th><th></th></tr>
+      ${projects.map((p) => `<tr class="${p.name === sel ? "sel" : ""}${p.name === editing ? " editing" : ""}" data-row="${h(p.name)}">
+        <td class="mono">${h(p.name)}${p.name === sel ? ` <span class="muted">· working here</span>` : ""}</td>
+        <td>${statusMark(p)}</td>
+        <td>${contactCell(p, list.shell_sec_contact)}</td>
+        <td class="mono muted">${h(when(p.created_at))}</td>
+        <td class="mono muted">${h(when(p.last_updated))}</td>
+        <td class="acts">
+          <button class="ghost" data-edit="${h(p.name)}" ${lock("user_agent")}>Edit</button>
+          ${p.name === sel
+            ? (manages ? `<button class="ghost" data-close>Close</button>` : "")
+            : `<button class="ghost" data-open="${h(p.name)}" ${sel ? `disabled title="close ${h(sel)} first"` : p.status === "in use" ? `disabled title="another program holds it"` : ""}>Open</button>`}
+          ${manages && p.name !== sel ? `<button class="danger" data-del="${h(p.name)}" ${lock("delete_project")}>Delete</button>` : ""}
+        </td></tr>`).join("") || `<tr><td colspan="6"><span class="empty">No projects yet.</span></td></tr>`}
+      </table>`;
+}
 
 function applyTheme(theme) {
   document.documentElement.dataset.theme = theme || "fidetolabs-white";
@@ -131,46 +160,80 @@ async function settings(view, rest = []) {
   const manages = HEALTH.manages_projects !== false;
   const empty = !list.projects.length;
   const sel = list.selected;
-  const ua = conf.user_agent || {};
+  let editing = null;
   view.innerHTML = `
     <h1>Settings</h1>
-    <p class="lede">${manages ? `Projects in <code>${h(list.home)}</code>, the one used last first.` : "This server serves one project and has no home folder."}</p>
-    ${empty || rest[0] === "empty" && !sel ? `<div class="notice"><b>There is no project to open.</b> Create a new project to start.</div>` : ""}
+
     <h2>Projects</h2>
+    <p class="lede">${manages ? `In <code>${h(list.home)}</code>, the one changed last first. Each project keeps its own SEC contact.` : "This server serves one project and has no home folder."}</p>
+    <div class="notice now">${empty ? `<b>There is no project to open.</b> Create a new project to start.`
+      : !sel ? `<b>No project is open.</b> Open one below, or create a new project.`
+      : `Working in <b class="mono">${h(sel)}</b>. Close it to open another.`}</div>
     <div class="card">
-      <table><tr><th>Project</th><th>Status</th><th>Last used</th><th></th></tr>
-      ${list.projects.map((p) => `<tr class="${p.name === sel ? "sel" : ""}">
-        <td class="mono">${h(p.name)}${p.name === sel ? ` <span class="muted">· working here</span>` : ""}</td>
-        <td>${statusMark(p)}</td>
-        <td class="mono muted">${h(when(p.last_used))}</td>
-        <td style="text-align:right">
-          ${p.name === sel ? "" : `<button class="ghost" data-open="${h(p.name)}" ${p.status === "in use" ? "disabled" : ""}>Open</button>`}
-          ${manages && p.name !== sel ? `<button class="danger" data-del="${h(p.name)}" ${lock("delete_project")}>Delete</button>` : ""}
-        </td></tr>`).join("") || `<tr><td colspan="4"><span class="empty">No projects yet.</span></td></tr>`}
-      </table>
+      <div id="plist">${projectRows(list, sel, manages, editing)}</div>
+      <div id="pedit"></div>
       ${manages ? `<form class="row" id="new" style="margin-top:12px">
         <input name="name" placeholder="new-project-name" pattern="[a-z0-9][a-z0-9_\-]*" required size="28">
         <button ${lock("create_project")}>Create a new project</button>
         <span class="muted">lowercase letters, digits, - and _</span></form>` : ""}
       <div id="del"></div>
     </div>
-    ${sel ? `<h2>SEC contact for ${h(sel)}</h2>
-    <form class="card row" id="ua">
-      <input name="user_agent" size="42" placeholder="Jane Doe jane@example.com" value="${h(ua.user_agent || "")}">
-      <button ${lock("user_agent")}>Save</button>
-      <span class="muted">${ua.user_agent ? "sent with every SEC request from this project" : ua.shell ? `not set here · the shell's <code>${h(ua.shell)}</code> is used` : "not set · the SEC refuses requests without one"}</span>
-    </form>` : ""}
-    <h2>Theme</h2>
-    <div class="card themes">
-      ${conf.themes.map((t) => `<label class="${t === conf.theme ? "on" : ""}"><input type="radio" name="theme" value="${h(t)}" ${t === conf.theme ? "checked" : ""}>
-        <span class="swatch" style="background:${t.endsWith("dark") ? "#0a0a0a" : "#fbfbfa"}"></span>
-        ${t === "fidetolabs-dark" ? "FidetoLabs dark" : "FidetoLabs white"}</label>`).join("")}
+
+    <h2>App</h2>
+    <p class="lede">Applies to every project.</p>
+    <div class="card app-settings">
+      <div class="setting"><span class="label">Home folder</span><code>${h(list.home || "none — one project served")}</code></div>
+      <div class="setting"><span class="label">Theme</span>
+        <div class="themes">
+        ${conf.themes.map((t) => `<label class="${t === conf.theme ? "on" : ""}"><input type="radio" name="theme" value="${h(t)}" ${t === conf.theme ? "checked" : ""}>
+          <span class="swatch" style="background:${t.endsWith("dark") ? "#0a0a0a" : "#fbfbfa"}"></span>
+          ${t === "fidetolabs-dark" ? "FidetoLabs dark" : "FidetoLabs white"}</label>`).join("")}
+        </div></div>
     </div>`;
 
   const nameIn = $("#new input[name=name]");
   if (nameIn && (empty || rest[0] === "empty")) nameIn.focus();
   const again = () => settings(view, []);
+  let latest = list;
+  const redraw = () => { $("#plist").innerHTML = projectRows(latest, latest.selected, manages, editing); wire(); };
 
+  // One project's SEC contact, edited in a panel under the table so the live
+  // refresh never redraws a half-typed value.
+  const edit = (name, saved) => {
+    editing = name;
+    const p = latest.projects.find((x) => x.name === name) || {};
+    $("#pedit").innerHTML = `<form class="edit-panel" id="ua">
+      <div class="row"><b class="mono">${h(name)}</b><span class="muted">· SEC contact, sent with every SEC request from this project</span></div>
+      <div class="row" style="margin-top:8px">
+        <input name="user_agent" size="42" placeholder="Jane Doe jane@example.com" value="${h(p.sec_contact || "")}">
+        <button ${lock("user_agent")}>Save</button><button type="button" class="ghost" id="ua-cancel">Done</button>
+      </div>
+      <div class="row" id="ua-said" style="margin-top:8px">${saved !== undefined
+        ? (saved ? `<span class="yes">✓ Saved for <b>${h(name)}</b>: <span class="mono">${h(saved)}</span></span>` : `<span class="muted">Cleared for <b>${h(name)}</b>.</span>`)
+        : p.sec_contact ? `<span class="muted">Saved now: <span class="mono">${h(p.sec_contact)}</span></span>`
+        : latest.shell_sec_contact ? `<span class="muted">Not set · the shell's <span class="mono">${h(latest.shell_sec_contact)}</span> is used</span>`
+        : `<span class="no">Not set · the SEC refuses requests without one</span>`}</div>
+    </form>`;
+    redraw();
+    $("#ua-cancel").onclick = () => { editing = null; $("#pedit").innerHTML = ""; redraw(); };
+    $("#ua").onsubmit = async (ev) => {
+      ev.preventDefault();
+      try {
+        const r = await put(`/api/projects/${encodeURIComponent(name)}/settings`, { user_agent: ev.target.user_agent.value });
+        latest = await api("/api/projects");
+        edit(name, r.user_agent || "");
+        const row = $(`[data-row="${CSS.escape(name)}"]`);
+        if (row) { row.classList.add("flash"); setTimeout(() => row.classList.remove("flash"), 1500); }
+      } catch (e) { $("#ua-said").innerHTML = `<span class="err">${h(e.message)}</span>`; }
+    };
+    const box = $("#ua input[name=user_agent]"); if (box) box.focus();
+  };
+
+  const wire = () => {
+  view.querySelectorAll("[data-edit]").forEach((b) => (b.onclick = () => edit(b.dataset.edit)));
+  view.querySelectorAll("[data-close]").forEach((b) => (b.onclick = async () => {
+    try { const r = await post("/api/projects/close", {}); await refreshHeader(); toast(`Closed ${r.closed}`); again(); } catch (e) { fail(e); }
+  }));
   view.querySelectorAll("[data-open]").forEach((b) => (b.onclick = async () => {
     try { await post(`/api/projects/${encodeURIComponent(b.dataset.open)}/select`, {}); await refreshHeader(); toast(`Working in ${b.dataset.open}`); again(); } catch (e) { fail(e); }
   }));
@@ -190,33 +253,38 @@ async function settings(view, rest = []) {
       };
     } catch (e) { fail(e); }
   }));
+  };
+  wire();
   const nf = $("#new");
   if (nf) nf.onsubmit = async (ev) => {
     ev.preventDefault();
     const name = ev.target.name.value.trim();
     try {
       await post("/api/projects", { name });
-      await post(`/api/projects/${encodeURIComponent(name)}/select`, {});
-      await refreshHeader(); toast(`Created ${name}`); again();
+      // One open at a time: with a project open, the new one waits to be opened.
+      if (sel) { toast(`Created ${name}. Close ${sel} to open it.`); }
+      else { await post(`/api/projects/${encodeURIComponent(name)}/select`, {}); await refreshHeader(); toast(`Created ${name}`); }
+      again();
     } catch (e) { fail(e); }
   };
-  const uf = $("#ua");
-  if (uf) uf.onsubmit = async (ev) => {
-    ev.preventDefault();
-    try { await put(`/api/projects/${encodeURIComponent(sel)}/settings`, { user_agent: ev.target.user_agent.value }); toast("Saved"); again(); } catch (e) { fail(e); }
-  };
   view.querySelectorAll("input[name=theme]").forEach((r) => (r.onchange = async () => {
-    try { applyTheme((await put("/api/settings/theme", { theme: r.value })).theme); again(); } catch (e) { fail(e); }
+    try {
+      applyTheme((await put("/api/settings/theme", { theme: r.value })).theme);
+      view.querySelectorAll(".themes label").forEach((l) => l.classList.toggle("on", l.contains(r)));
+    } catch (e) { fail(e); }
   }));
 
-  // The status is live: a job started elsewhere shows up without a reload.
-  clearTimeout(settings.timer);
-  settings.timer = setTimeout(() => { if (location.hash.startsWith("#/settings") && !$("#sure")) again(); }, 5000);
+  // The status is live: a job started elsewhere shows up without a reload. Only
+  // the table is redrawn -- redrawing the page wiped whatever was being typed.
+  clearInterval(settings.timer);
+  settings.timer = setInterval(async () => {
+    if (!location.hash.startsWith("#/settings") || !$("#plist")) return clearInterval(settings.timer);
+    try { latest = await api("/api/projects"); redraw(); } catch (e) { /* the next tick tries again */ }
+  }, 5000);
 }
 
 async function refreshHeader() {
   HEALTH = await api("/api/health");
-  $("#project").textContent = HEALTH.project || "no project";
   $("#scope").textContent = `scope ${HEALTH.scope}`;
   applyTheme(HEALTH.theme);
 }

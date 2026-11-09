@@ -114,7 +114,7 @@ def app(tmp_path: Path) -> TestClient:
 
 
 def test_the_page_and_its_files_are_served(app):
-    assert "<title>qanat</title>" in app.get("/").text
+    assert "<title>Qanat</title>" in app.get("/").text
     assert app.get("/static/app.js").status_code == 200
     assert app.get("/static/../api.py").status_code == 404
 

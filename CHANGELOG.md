@@ -14,8 +14,10 @@ project opens; inside one elsewhere, it does not, and a line says so -- Qanat
 writes into its home, so the home is never a folder that just happens to hold a
 project. The folders with a `qanat.yaml` are the list; nothing else records it.
 
-- **The app opens on the project used last.** Each project keeps `last_used` in
-  `.qanat/state.yaml`, stamped when it is selected and when a job in it ends.
+- **The app opens on the project changed last.** Each project keeps `created_at`
+  and `last_updated` in `.qanat/state.yaml`. Only a change stamps `last_updated`
+  -- an ingest, a run, a saved metric, filter or contact, a job ending -- so
+  opening and closing never reorder the list.
   With no project at all, every page goes to **Settings** with *"There is no
   project to open."* and the cursor in the new project's name.
 - **Settings** lists the projects with their status -- `running` and which job,
@@ -38,6 +40,28 @@ Over stdio the folder is the project and none of the four is offered.
 **`delete_project` deletes nothing without `confirm`**, and says what would go.
 It is refused for the session's own project, one another session or the app is
 working in, one with a job running, and one another program holds.
+
+**The app opens one project at a time.** The project being worked in has a
+**Close** button, and every other project's **Open** is disabled until it is
+closed; the server refuses a second open too. Closing lets the project go -- its
+writer lock with it, so the CLI can use it -- unless an MCP session is still in
+it, and is refused while a job runs. After a close the app stays closed rather
+than jumping into another project.
+
+**Settings shows each project's SEC contact as a column** (set, from the shell,
+or not set), edited per project in a panel under the table that says which
+project it saved for. Theme and home folder sit apart, under **App**. The table
+does not move when a project opens or closes, and lists **Created** and **Last
+updated** -- the second is "—" until something is done in the project.
+
+**A browser can no longer run an old page against a new server.** The page
+files are read once when the server starts and loaded by addresses stamped with
+their content, so neither a stale cache nor a server started before a change
+can mix two versions. That mix is what showed "never" for dates the old server
+did not send.
+
+**The bar reads Qanat, with a mark:** a Q drawn as a water drop with the well
+inside, in the accent colour, and the same mark as the tab icon.
 
 **One process now holds several projects.** `create_app` still serves a single
 project when handed one, which is what every test and `state` caller does.

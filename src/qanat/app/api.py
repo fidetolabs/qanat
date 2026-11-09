@@ -14,9 +14,14 @@ from typing import Any
 
 import anyio
 from fastapi import FastAPI, Request
-from fastapi.responses import FileResponse, Response
+from fastapi.responses import Response
 
 STATIC = Path(__file__).parent / "static"
+
+#: The pages change with the code, and a browser holding last week's `app.js`
+#: runs last week's page against this week's API. `no-cache` still lets it keep
+#: a copy -- it only has to ask whether the copy is current, which the ETag answers.
+NO_CACHE = {"Cache-Control": "no-cache"}
 
 #: What each route does, as the tool that does the same thing. The route is
 #: allowed when that tool is offered at the server's scope. Routes with no tool
@@ -71,6 +76,32 @@ class _Selected:
         return getattr(o.session, name)
 
 
+def _load_pages() -> tuple[str, dict[str, tuple[bytes, str]]]:
+    """The page shell and its assets, read once, when the server starts.
+
+    **Read per request, a running server served whatever was on disk** -- so a
+    server started before a change handed out the new page against its own old
+    API, and the page showed "never" for fields that API did not send. Read at
+    start, a server always serves the page its own code was written for.
+
+    The shell carries `?v=<hash>` on each asset, so a changed file has a new
+    address and no browser cache can hold the old one under it.
+    """
+    import hashlib
+    import mimetypes
+
+    assets: dict[str, tuple[bytes, str]] = {}
+    for path in STATIC.iterdir():
+        if path.is_file():
+            kind = mimetypes.guess_type(path.name)[0] or "application/octet-stream"
+            assets[path.name] = (path.read_bytes(), kind)
+    html = assets.pop("index.html")[0].decode()
+    for name in ("app.css", "app.js", "favicon.svg"):
+        digest = hashlib.sha256(assets[name][0]).hexdigest()[:12]
+        html = html.replace(f"/static/{name}\"", f"/static/{name}?v={digest}\"")
+    return html, assets
+
+
 def _clean(x: Any) -> Any:
     """JSON a browser can parse: NaN and infinity become null, the rest as MCP
     sends it (anything unknown as its string)."""
@@ -113,14 +144,23 @@ def mount(app: FastAPI, workspace: Any, scope: str) -> None:
                 ReadingError, RemovalError, ScreenError, StoreBusy, ValueError, KeyError,
                 LookupError)
 
+    #: The app opens on the project used last once, when it first loads. After
+    #: the person closes a project it stays closed until they open another --
+    #: jumping to some other project on its own would be a switch nobody asked for.
+    opened_once = {"done": False}
+
     def current() -> Any:
-        """The project the app works in, opening the one used last if none is."""
+        """The project the app works in -- the one used last, the first time."""
         name = workspace.selected(APP)
         if name is None:
+            if opened_once["done"]:
+                return None
+            opened_once["done"] = True
             name = workspace.latest()
             if name is None:
                 return None
             workspace.select(APP, name)
+        opened_once["done"] = True
         return workspace.open(name)
     tool_scope = {t["name"]: t["scope"] for t in TOOLS}
 
@@ -221,7 +261,24 @@ def mount(app: FastAPI, workspace: Any, scope: str) -> None:
 
     @app.post("/api/projects/{name}/select")
     async def select_project(name: str):  # type: ignore[no-untyped-def]
-        return await home_call("select_project", lambda: workspace.select(APP, name))
+        """Open a project in the app. **One at a time: close the current one first.**"""
+        def pick() -> Any:
+            now = workspace.selected(APP)
+            if now is not None and now != name and workspace.pinned is None:
+                raise ProjectsError(f"Close '{now}' first, then open '{name}'.")
+            opened_once["done"] = True
+            return workspace.select(APP, name)
+        return await home_call("select_project", pick)
+
+    @app.post("/api/projects/close")
+    async def close_project():  # type: ignore[no-untyped-def]
+        """Stop working in the current project, and release it if nobody else is in it."""
+        def shut() -> Any:
+            if workspace.pinned is not None:
+                raise ProjectsError("this server serves one project, and it cannot be closed.")
+            opened_once["done"] = True
+            return workspace.close(APP)
+        return await home_call("select_project", shut)
 
     @app.get("/api/projects/{name}/deletion")
     async def deletion_preview(name: str):  # type: ignore[no-untyped-def]
@@ -480,16 +537,24 @@ def mount(app: FastAPI, workspace: Any, scope: str) -> None:
     async def no_route(rest: str):  # type: ignore[no-untyped-def]
         return _json({"detail": f"no route /api/{rest}"}, 404)
 
+    shell, assets = _load_pages()
+
     @app.get("/static/{name}")
     async def static(name: str):  # type: ignore[no-untyped-def]
-        path = (STATIC / name).resolve()
-        if path.parent != STATIC.resolve() or not path.is_file():
+        if name not in assets:
             return _json({"detail": "not found"}, 404)
-        return FileResponse(path)
+        body, kind = assets[name]
+        return Response(content=body, media_type=kind, headers=NO_CACHE)
 
     @app.get("/")
     async def index():  # type: ignore[no-untyped-def]
-        return FileResponse(STATIC / "index.html")
+        """The page shell, with each asset's address stamped by its content.
+
+        A browser that cached `app.css` before `no-cache` was sent kept using it,
+        and drew the new page with the old styles. A changed file now has a new
+        address, so no cache can hold the old one under it.
+        """
+        return Response(content=shell, media_type="text/html", headers=NO_CACHE)
 
 
 __all__ = ["SAME_AS", "mount"]
