@@ -9,8 +9,10 @@ stopped with *"no qanat.yaml found here or in any parent directory"*, so a perso
 had to `qanat init` in a shell and `cd` before the pages existed at all.
 
 Projects now live in one **home folder** -- `--home`, then `QANAT_HOME`, then
-`~/qanat`; started inside a project with neither set, the folder holding it. The
-folders with a `qanat.yaml` are the list; nothing else records it.
+`~/qanat`, wherever it is started. Started inside a project in the home, that
+project opens; inside one elsewhere, it does not, and a line says so -- Qanat
+writes into its home, so the home is never a folder that just happens to hold a
+project. The folders with a `qanat.yaml` are the list; nothing else records it.
 
 - **The app opens on the project used last.** Each project keeps `last_used` in
   `.qanat/state.yaml`, stamped when it is selected and when a job in it ends.

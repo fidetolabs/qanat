@@ -397,20 +397,36 @@ def test_the_theme_is_kept_after_a_restart(tmp_path: Path):
 
 
 # ---- the command line -----------------------------------------------------------------
-def test_serve_finds_its_home_and_the_project_it_was_started_in(tmp_path: Path, monkeypatch):
+def test_the_home_is_always_the_named_one_or_qanat(tmp_path: Path, monkeypatch, capsys):
+    """Never the folder that happens to hold a project: Qanat writes into its home."""
     from types import SimpleNamespace
 
     from qanat.cli import _home_and_start
 
     home = tmp_path / "home"
     Workspace(home).create("inside")
+    elsewhere = tmp_path / "mixed"
+    Workspace(elsewhere).create("stray")
+    (elsewhere / "notes.txt").write_text("not qanat's")
     monkeypatch.delenv("QANAT_HOME", raising=False)
-    monkeypatch.chdir(home / "inside")
-    assert _home_and_start(SimpleNamespace(home=None, project=None)) == (home.resolve(),
-                                                                         "inside")
+    monkeypatch.setenv("HOME", str(tmp_path / "user"))
+    args = SimpleNamespace(home=None, project=None)
+
     monkeypatch.chdir(tmp_path)
-    got, start = _home_and_start(SimpleNamespace(home=str(home), project=None))
-    assert got == home.resolve() and start is None
+    assert _home_and_start(args) == ((tmp_path / "user" / "qanat").resolve(), None)
+
+    # inside a project outside the home: the home does not move, and it says so
+    monkeypatch.chdir(elsewhere / "stray")
+    got, start = _home_and_start(args)
+    assert got == (tmp_path / "user" / "qanat").resolve() and start is None
+    assert "is not in the home folder" in capsys.readouterr().out
+
+    # inside a project in the home: that project opens
+    monkeypatch.setenv("QANAT_HOME", str(home))
+    monkeypatch.chdir(home / "inside")
+    assert _home_and_start(args) == (home.resolve(), "inside")
+    assert _home_and_start(SimpleNamespace(home=str(elsewhere), project=None)) == (
+        elsewhere.resolve(), None)
 
 
 def test_the_app_layer_still_holds_no_sql_after_settings():

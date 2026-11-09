@@ -248,8 +248,8 @@ qanat schedule --run-now                                              # the cloc
 ```
 
 **It starts without a project.** `qanat serve` holds a home folder of projects
-(`--home`, `QANAT_HOME`, or `~/qanat`; started inside a project, the folder
-holding it), and each MCP session works in the one it selects with
+(`--home`, `QANAT_HOME`, or `~/qanat` -- never the folder you happen to be in),
+and each MCP session works in the one it selects with
 `select_project`. Until then every other tool refuses and says to ask the user
 which project. `list_projects`, `create_project` and `delete_project` are the rest
 of that flow; over stdio none of them is offered, because the folder is the

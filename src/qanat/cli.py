@@ -417,28 +417,28 @@ def cmd_serve(args) -> int:
 
 
 def _home_and_start(args) -> tuple[Path, str | None]:
-    """The home folder, and the project this was started inside, if any.
+    """The home folder, and the project this was started inside, if it is in it.
 
-    `--home`, then `QANAT_HOME`, then `~/qanat`. Started inside a project with
-    neither flag nor variable set, the folder holding it is the home, so the
-    projects beside it are the list -- and the one started in opens.
+    `--home`, then `QANAT_HOME`, then `~/qanat` -- always, wherever this runs.
+    Qanat writes into its home (a new project, the theme), so the home is never
+    a folder that happens to hold a project beside unrelated things. Started
+    inside a project in the home, that project opens; started inside one
+    anywhere else, it does not, and a line says why.
     """
     from qanat.project import ProjectError, find_project
     from qanat.projects import _NAME, default_home
 
     named = getattr(args, "home", None) or os.environ.get("QANAT_HOME")
+    home = Path(named).expanduser().resolve() if named else default_home().resolve()
     try:
         root = find_project(getattr(args, "project", None) or None).parent.resolve()
     except ProjectError:
-        root = None
-    if named:
-        home = Path(named).expanduser().resolve()
-        if root is not None and root.parent == home and _NAME.match(root.name):
-            return home, root.name
         return home, None
-    if root is not None and _NAME.match(root.name):
-        return root.parent, root.name
-    return default_home(), None
+    if root.parent == home and _NAME.match(root.name):
+        return home, root.name
+    print(f"  {D}{root} is not in the home folder {home}, so it does not open here. "
+          f"Move it into {home}, or start with `--home {root.parent}`.{X}", flush=True)
+    return home, None
 
 
 def _ready(args, opened) -> bool:
@@ -520,8 +520,8 @@ def build_parser() -> argparse.ArgumentParser:
     sv.add_argument("--scope", choices=list(SCOPES), default=DEFAULT_SCOPE,
                     help=_SCOPE_HELP)
     sv.add_argument("--home",
-                    help="the folder holding the projects (default: QANAT_HOME, else the "
-                         "folder holding the project you are in, else ~/qanat)")
+                    help="the folder holding the projects (default: QANAT_HOME, else "
+                         "~/qanat)")
     sv.add_argument("--host", default="127.0.0.1", help="(default: 127.0.0.1)")
     sv.add_argument("--port", type=int, default=8421, help="(default: 8421)")
     sv.add_argument("--token", help="the bearer token a caller must send. Required to "
