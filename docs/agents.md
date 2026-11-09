@@ -60,6 +60,19 @@ instead of a tool that starts one, `list_subscriptions` reports whether one is a
 stdio the honest sentence is *"this will run when the recorder runs, and nothing is running
 here"*, not *"updating daily"*.
 
+**And lifetime is only half the reason, because it stops applying one line above.** Under
+`qanat serve` the process does outlive the request -- so lifetime alone never ruled out a
+starter on the HTTP door. **The reason that covers both transports is that a clock is a
+deployment, and no orchestrator's API manages its own deployment.** Airflow's scheduler and
+Dagster's daemon are separate always-on processes; both products expose plenty of writes to an
+agent, and neither offers a tool that starts its own clock. `unpause_dag` and `start_schedule`
+write state a running clock reads -- Dagster's own documentation says the daemon does not spawn
+processes on demand.
+
+That is the same shape as `subscribe_filings` here: it writes the cadence into `jobs.yaml`, and
+a clock reads it when there is one. **Starting that clock is part of deploying this, and
+the product says so rather than pretending otherwise.**
+
 ## Nothing here judges a result
 
 `screen_companies` returns who passed and what each name did next. It does not say whether that was good,
