@@ -271,3 +271,84 @@ def test_rows_as_of_use_the_clock_the_project_declares(tmp_path):
         assert not out["result"].get("isError"), out
     finally:
         c.app.state.qanat_session.close()
+
+
+# ---------------------------------------------------- the pipeline, and taking a filing out
+
+
+def test_the_schedules_route_says_whether_a_clock_is_attached_here(app):
+    """A schedule is declared in the project; a clock is a property of the
+    program that is running. Under a server with no `--schedule`, nothing in
+    this process reads a cron line, and saying so is the honest answer."""
+    got = app.get("/api/schedules").json()
+    assert got["clock_attached"] is False
+    assert "nothing in this process reads a cron line" in got["note"]
+    assert isinstance(got["schedules"], list)
+
+
+def test_a_removal_preview_removes_nothing(app):
+    acc = app.get("/api/companies/AAPL/filings").json()["filings"][0]["document"]
+    before = app.get("/api/tables/raw.documents").json()["table"]["rows"]
+
+    p = app.get(f"/api/filings/{acc}/removal").json()
+    assert p["removed"] is False
+    assert p["rows"] >= 1
+    # The cost is returned as a sentence, so a caller has something to show.
+    assert "changes answers already given" in p["cost"]
+    assert app.get("/api/tables/raw.documents").json()["table"]["rows"] == before
+
+
+def test_a_removal_takes_exactly_what_the_preview_named(app):
+    """The number a person was shown is the number that goes."""
+    acc = app.get("/api/companies/AAPL/filings").json()["filings"][0]["document"]
+    p = app.get(f"/api/filings/{acc}/removal").json()
+    promised = {(g["what"], g["table"]): g["rows"] for g in p["goes"]}
+
+    d = app.delete(f"/api/filings/{acc}").json()
+    assert d["removed"] is True
+    assert {(w["what"], w["table"]): w["rows"] for w in d["went"]} == promised
+    assert d["rows"] == p["rows"]
+
+
+def test_a_removal_is_a_job_with_its_own_kind(app):
+    """Not a job definition. `jobs.yaml` does not change, `_qanat_job.kind`
+    takes a third word, and the accession is what the job is about."""
+    acc = app.get("/api/companies/AAPL/filings").json()["filings"][0]["document"]
+    app.delete(f"/api/filings/{acc}")
+
+    e = app.get("/api/executions?limit=1").json()["executions"][0]
+    assert e["kind"] == "removal"
+    assert e["definition_id"] == acc
+    assert e["status"] == "ok"
+    assert e["rows_out"] >= 1
+    # A removal has no definition, so there is no version to resolve.
+    assert e["definition_version"] is None
+
+
+def test_removing_a_filing_leaves_the_others_alone(app):
+    rows = app.get("/api/companies/AAPL/filings").json()["filings"]
+    acc = rows[0]["document"]
+    kept = [r["document"] for r in rows[1:]]
+
+    app.delete(f"/api/filings/{acc}")
+    after = [f["document"] for f in app.get("/api/companies/AAPL/filings").json()["filings"]]
+    assert acc not in after
+    assert set(kept) <= set(after)
+
+
+def test_removing_what_this_project_does_not_hold_is_refused_by_name(app):
+    r = app.delete("/api/filings/9999999999-99-999999")
+    assert r.status_code == 400
+    assert "9999999999-99-999999" in r.json()["detail"]
+
+
+def test_a_removal_does_not_touch_the_project_files(app, tmp_path):
+    """A removal is not an edit to the project. `jobs.yaml` is byte-identical."""
+    root = Path(app.app.state.qanat_session.root)
+    jobs = root / "jobs.yaml"
+    before = jobs.read_bytes() if jobs.is_file() else None
+
+    acc = app.get("/api/companies/AAPL/filings").json()["filings"][0]["document"]
+    app.delete(f"/api/filings/{acc}")
+
+    assert (jobs.read_bytes() if jobs.is_file() else None) == before

@@ -36,6 +36,11 @@ SAME_AS: dict[str, str] = {
     "screen": "screen_companies",
     "coverage": "check_coverage",
     "definitions": "list_definitions",
+    "schedules": "list_subscriptions",
+    # A removal has no tool yet. It is pinned to the scope of the write it most
+    # resembles -- `ingest_filings` put the filing here, and taking it back out
+    # is not a wider act than putting it in.
+    "removal": "ingest_filings",
 }
 
 
@@ -66,11 +71,12 @@ def mount(app: FastAPI, session: Any, store_lock: threading.Lock, scope: str) ->
     from qanat.mcp import TOOLS, rank
     from qanat.metrics import MetricError
     from qanat.reading import ReadingError
+    from qanat.removal import RemovalError
     from qanat.screen import ScreenError
     from qanat.store import acting_as
 
     refusals = (CatalogError, FilingsError, FilterError, MetricError, ReadingError,
-                ScreenError, ValueError, KeyError, LookupError)
+                RemovalError, ScreenError, ValueError, KeyError, LookupError)
     tool_scope = {t["name"]: t["scope"] for t in TOOLS}
 
     def allowed(what: str) -> bool:
@@ -186,6 +192,43 @@ def mount(app: FastAPI, session: Any, store_lock: threading.Lock, scope: str) ->
 
         return await call("definitions", lambda: svc(
             s.store, s.project, str(q(request, "stage", ""))))
+
+    @app.get("/api/schedules")
+    async def schedules(request: Request):  # type: ignore[no-untyped-def]
+        """The cadences, and whether anything in *this* process reads them.
+
+        **A clock is a property of the running program, not of the project.** A
+        schedule under `qanat serve --app` with no `--schedule` is declared and
+        not running, and saying so is the honest answer rather than "updating
+        daily" -- the same sentence `list_subscriptions` gives.
+        """
+        def read() -> dict[str, Any]:
+            attached = getattr(getattr(s, "state", None), "sched", None) is not None
+            rows = [{"id": sc.id, "definition": sc.definition, "cron": sc.cron,
+                     "enabled": getattr(sc, "enabled", True),
+                     "definition_exists": s.project.definition(sc.definition) is not None}
+                    for sc in s.project.job_schedules]
+            return {"schedules": rows, "clock_attached": attached,
+                    "note": ("a clock is attached in this process"
+                             if attached else
+                             "nothing in this process reads a cron line; these run when a "
+                             "recorder runs (`qanat schedule`, or `--schedule` on this server)")}
+        return await call("schedules", read)
+
+    # ---- taking a filing back out --------------------------------------------------
+    @app.get("/api/filings/{accession}/removal")
+    async def removal_preview(accession: str):  # type: ignore[no-untyped-def]
+        """What a removal would take. Removes nothing."""
+        from qanat.removal import preview
+
+        return await call("removal", lambda: preview(s.store, s.project, accession))
+
+    @app.delete("/api/filings/{accession}")
+    async def remove_filing(accession: str):  # type: ignore[no-untyped-def]
+        from qanat.removal import remove
+
+        return await call("removal", lambda: remove(s.store, s.project, s.root, accession),
+                          writes=True)
 
     # ---- metrics ----------------------------------------------------------------
     @app.get("/api/metrics")

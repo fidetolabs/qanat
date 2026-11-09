@@ -114,6 +114,53 @@ non-zero with the reason on stderr, which looks worse and is better.
 `qanat check` is untouched and still answers against a held project: it reads the
 project files and never opens a store.
 
+### The pipeline page, and taking a filing back out
+
+**Every page answered what came out. None answered what is running, or how to
+remove something.** Asked for on 2026-11-09 while reviewing the pages.
+
+**`#/pipeline`** lists every definition with the schedules pointing at it and
+what has actually run. Two of its three routes already existed with no page;
+only `GET /api/schedules` is new, and it exists for the one thing the project
+cannot know -- **whether a clock is attached in this process.** A schedule is
+declared in the project; a clock is a property of the program that is running,
+so a server with no `--schedule` says *"nothing in this process reads a cron
+line"* rather than "updating daily". A definition and a schedule stay two
+objects: the page puts them side by side, which is a display and not a model.
+`behind` is the column worth reading -- a stored table only knows the days its
+last run covered, so a read past that quietly returns an older value.
+
+**A filing can be removed, and the removal says what it takes first.**
+`GET /api/filings/{accession}/removal` names the rows and removes nothing;
+`DELETE` takes exactly those. On a real 10-K: 1 filing, 880 facts, 23 sections
+and 2 metric values, 906 rows, and the removal took 906. **The metrics cascade
+is the one that surprises** -- a metric row is keyed by subject and date, not by
+document, so nothing in it says which filing it came from. The preview resolves
+that join rather than saying "and some metrics".
+
+**A removal is a job, not a job definition.** A definition lives in `jobs.yaml`,
+has a script or a connector, and **a cadence can point at it so it runs again.** A
+removal has no script, writes nothing, and must never run twice -- a standing
+`delete-this-filing` definition that a cron line could fire walks straight into
+*the clock deletes nothing*. So **`jobs.yaml` never changes and no third
+definition type exists.** `_qanat_job.kind`, until now only ever `ingestion` or
+`transform`, takes `removal`; `schedule_id` is null, which is the ad-hoc path the
+store already calls first-class. **`definition_id` carries the accession**,
+because a removal has no definition -- which stretches the column's name, and
+`definition_version` does not resolve for a removal row. The alternative was a
+column on `_qanat_job` used by one kind of three.
+
+**An as-of read changes retroactively, and the confirmation says so.** Qanat
+answers as of any past date; a removal means an answer somebody was already given
+stops being reproducible. That is the real cost of the feature and `preview`
+returns it as a sentence so a caller has something to show.
+
+`Store.delete_where` is the second thing here that removes rows, after retention.
+It is narrow on purpose: no definition reaches it and no cadence can point at
+one. Its predicate carries its own literals and takes no parameters, because the
+parquet path hands the select to `COPY`, which takes none -- one shape for both
+store kinds beats a signature that quietly ignores its arguments on one of them.
+
 ### `qanat serve` is the HTTP server, and the doors are flags on it
 
 **`qanat mcp --http` had stopped describing its own program.** Over stdio the

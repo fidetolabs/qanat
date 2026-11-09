@@ -44,8 +44,67 @@ async function runTransforms(btn, out) {
   } catch (e) { fail(e); } finally { btn.disabled = false; }
 }
 
+// ---- the pipeline ---------------------------------------------------------------
+//
+// **What is running, what is meant to run, and what happened.** Every other page
+// answers what came out. A definition and a schedule are two objects and stay two
+// here -- the page puts them side by side, which is a display and not a model.
+async function pipeline(view) {
+  const [defs, scheds, execs] = await Promise.all([
+    api("/api/definitions"), api("/api/schedules"), api("/api/executions?limit=40"),
+  ]);
+  // Each definition already carries the cadences pointing at it. `/api/schedules`
+  // is read for one thing the project cannot know: whether a clock is attached in
+  // *this* process. A schedule is declared in the project; a clock is a property
+  // of the program that is running.
+  const rows = [
+    ...(defs.ingestion || []).map((d) => ({ ...d, kind: "ingestion" })),
+    ...(defs.transforms || []).map((d) => ({ ...d, kind: "transform" })),
+  ];
+  const cadence = (d) => (d.schedules || []).length
+    ? d.schedules.map((s) => `<span class="mono">${h(s.cron)}</span>${s.enabled === false ? ` <span class="muted">(off)</span>` : ""}`).join("<br>")
+    : `<span class="muted">no schedule</span>`;
+  // **`behind` is the one worth reading.** A stored table only knows the days
+  // its last run covered, and a read past that quietly returns an older value --
+  // so a definition whose inputs have moved past its output says so here.
+  const filled = (d) => {
+    if (!d.filled_to) return `<span class="muted">—</span>`;
+    const to = `<span class="mono">${h(d.filled_to)}</span>`;
+    return d.behind ? `${to} <span class="no">behind ${h(d.inputs_to)}</span>` : to;
+  };
+  view.innerHTML = `
+    <h1>The pipeline</h1>
+    <p class="lede">Every definition, the schedules pointing at it, and what has actually run.</p>
+    <p class="${scheds.clock_attached ? "yes" : "muted"}">${h(scheds.note)}</p>
+    <div class="card">
+      <table><tr><th>Definition</th><th>Kind</th><th>Reads</th><th>Writes</th><th>Schedules</th><th>Filled</th></tr>
+      ${rows.length ? rows.map((d) => `<tr>
+        <td class="mono">${h(d.id)}</td><td>${h(d.kind)}</td>
+        <td class="mono muted">${h((d.from || []).join(", ") || (d.connector ? `${d.connector} feed` : "—"))}</td>
+        <td class="mono">${h((d.to || []).join(", "))}</td>
+        <td>${cadence(d)}</td>
+        <td>${filled(d)}</td></tr>`).join("")
+        : `<tr><td colspan="6"><span class="empty">No definitions.</span></td></tr>`}
+      </table>
+    </div>
+    <h2>What has run</h2>
+    <div class="card">
+      <table><tr><th>Kind</th><th>Definition</th><th>Attempt</th><th>Status</th><th>Rows</th><th>Ended</th></tr>
+      ${(execs.executions || []).length ? execs.executions.map((e) => `<tr>
+        <td>${h(e.kind || "")}</td><td class="mono">${h(e.definition_id || "")}</td>
+        <td class="mono">${h(String(e.attempt ?? ""))}</td>
+        <td class="${e.status === "ok" ? "yes" : "no"}">${h(e.status || "")}</td>
+        <td class="mono">${num(e.rows_out, 0)}</td>
+        <td class="mono muted">${h(e.ended_at || "")}</td></tr>
+        ${e.error ? `<tr><td></td><td colspan="5"><details><summary class="no">${h(String(e.error).split("\n")[0].slice(0, 160))}</summary><pre class="trace">${h(e.error)}</pre></details></td></tr>` : ""}`).join("")
+        : `<tr><td colspan="6"><span class="empty">Nothing has run yet.</span></td></tr>`}
+      </table>
+    </div>`;
+}
+
 // ---- routing -------------------------------------------------------------------
-const VIEWS = { "": home, filings, holdings, metrics, filters, tables };
+const VIEWS = { "": home, filings, holdings, metrics, filters, tables, pipeline };
+
 async function route() {
   const [name, ...rest] = location.hash.replace(/^#\/?/, "").split("/");
   document.querySelectorAll("nav a").forEach((a) => a.classList.toggle("on", a.dataset.view === name));
@@ -151,14 +210,33 @@ async function holdings(view, [filer]) {
   $("#one").innerHTML = `
     <div class="card">
       <h2 style="margin-top:0">${h(p.filer.name || p.filer.ticker || p.filer.cik)} <span class="muted mono">${h(p.filer.cik)}</span></h2>
-      <table><tr><th>Filed</th><th>Form</th><th>Period</th><th>Raw</th><th>Facts</th><th>Sections</th><th>Metrics</th></tr>
+      <table><tr><th>Filed</th><th>Form</th><th>Period</th><th>Raw</th><th>Facts</th><th>Sections</th><th>Metrics</th><th></th></tr>
       ${p.filings.map((f) => `<tr><td class="mono">${h(f.filed)}</td><td>${h(f.form)}</td><td class="mono">${h(f.period_end || "—")}</td>
         <td>${mark(f.raw, "raw")}</td><td>${mark(f.facts > 0, `${num(f.facts, 0)} facts`)}</td>
         <td>${f.sections === null ? `<span class="muted">n/a</span>` : mark(f.sections > 0, `${f.sections} sections`)}</td>
         <td>${mark(f.metrics.length > 0, `${f.metrics.length} of ${p.metrics.length}`)}
-          <div class="muted mono">${h(f.metrics.join(", "))}</div></td></tr>`).join("")}
+          <div class="muted mono">${h(f.metrics.join(", "))}</div></td>
+        <td><button type="button" class="ghost rm" data-acc="${h(f.document || f.accession || "")}" ${lock("removal")}>Remove</button></td></tr>`).join("")}
       </table>
     </div>`;
+  view.querySelectorAll("button.rm").forEach((b) => { b.onclick = () => removeFiling(b.dataset.acc, filer); });
+}
+
+// ---- taking a filing back out ---------------------------------------------------
+//
+// **Ask first, and show what goes.** The preview removes nothing; the confirmation
+// names the four counts and the sentence about past answers, because a removal
+// changes answers already given and a bare "are you sure?" does not say that.
+async function removeFiling(accession, filer) {
+  if (!accession) return;
+  try {
+    const p = await api(`/api/filings/${encodeURIComponent(accession)}/removal`);
+    const lines = p.goes.map((g) => `  ${g.rows} ${g.what} (${g.table})`).join("\n");
+    if (!confirm(`Remove filing ${accession}?\n\nThis removes ${p.rows} rows:\n${lines}\n\n${p.cost}`)) return;
+    const d = await del(`/api/filings/${encodeURIComponent(accession)}`);
+    toast(`Removed ${d.rows} rows for ${accession}`);
+    route();
+  } catch (e) { fail(e); }
 }
 
 // ---- metrics (T-04) ------------------------------------------------------------------

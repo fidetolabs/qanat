@@ -285,6 +285,22 @@ _TABLE_TOKEN = re.compile(r"\b([a-z][a-z0-9_]*)__([a-z][a-z0-9_]*)\b")
 _SQL_NOISE = re.compile(r"--[^\n]*|/\*.*?\*/|'(?:[^']|'')*'", re.DOTALL)
 
 
+def sql_literal(value: Any) -> str:
+    """One value as a SQL literal, for a predicate that cannot take parameters.
+
+    `delete_where` runs through `COPY` on a parquet store and `COPY` takes no
+    parameters, so the predicate carries its literals. A single quote is doubled,
+    which is the only escape SQL string literals have.
+    """
+    if value is None:
+        return "NULL"
+    if isinstance(value, bool):
+        return "TRUE" if value else "FALSE"
+    if isinstance(value, (int, float)):
+        return repr(value)
+    return "'" + str(value).replace("'", "''") + "'"
+
+
 def tables_named(sql: str) -> set[str]:
     """Every `stage.table` a query mentions, ignoring comments and string literals.
 
@@ -1263,6 +1279,65 @@ class Store:
                 after = self._rows(name)
             else:
                 self.con.execute(f'DELETE FROM {self._q(name)} WHERE {where}', [cutoff])
+                after = self._scalar(f'SELECT count(*) FROM {self._q(name)}')
+        return int(before - after)
+
+    def count_where(self, ref: str, where: str) -> int:
+        """How many rows `delete_where` would drop. Reads, and removes nothing.
+
+        The pair exists so a caller can **show before it acts** -- the shape
+        `plan`'s `prune` flag already uses, where the orphans are listed by the
+        same call that drops them.
+        """
+        if not self.exists(ref):
+            return 0
+        with self._lock:
+            return int(self._scalar(
+                f'SELECT count(*) FROM {self._q(phys(ref))} WHERE {where}',
+                con=self.rcon) or 0)
+
+    def rows_where(self, ref: str, where: str, limit: int | None = None) -> pd.DataFrame:
+        """The rows `delete_where` would drop, so a person can look at them."""
+        if not self.exists(ref):
+            return pd.DataFrame()
+        cap = f" LIMIT {int(limit)}" if limit else ""
+        with self._lock:
+            return self.con.execute(
+                f'SELECT * FROM {self._q(phys(ref))} WHERE {where}{cap}').df()
+
+    def delete_where(self, ref: str, where: str) -> int:
+        """Drop the rows this predicate matches. Returns how many went.
+
+        **The deliberate counterpart to everything else here, and it is narrow on
+        purpose.** This store appends: a correction is a new row beside the old
+        one, an ingestion may not `replace`, and the clock deletes nothing. The
+        one thing that removed rows until now is retention, declared in the
+        project and applied through `prune_rows`.
+
+        This is the second, and it exists for an act a person takes by hand --
+        taking a filing back out of the corpus. **It is not reachable from a
+        definition and no cadence can point at one**, which is what keeps the
+        clock out of it.
+
+        A parquet file is not edited, so this is a rewrite of the rows that stay.
+        A DuckDB table is a `DELETE`. The caller does not have to know which --
+        the same split `prune_rows` makes, for the same reason.
+
+        **`where` carries its own literals and there are no parameters**, because
+        the parquet path hands the select to `COPY`, which takes none. One shape
+        for both kinds beats a signature that quietly ignores its arguments on
+        one of them. Build the predicate with `sql_literal`.
+        """
+        name = phys(ref)
+        with self._lock:
+            before = self._scalar(f'SELECT count(*) FROM {self._q(name)}')
+            if not before:
+                return 0
+            if self.kind == "parquet":
+                self._publish(name, f'SELECT * FROM {self._q(name)} WHERE NOT ({where})')
+                after = self._rows(name)
+            else:
+                self.con.execute(f'DELETE FROM {self._q(name)} WHERE {where}')
                 after = self._scalar(f'SELECT count(*) FROM {self._q(name)}')
         return int(before - after)
 
