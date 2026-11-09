@@ -29,8 +29,8 @@ project. The folders with a `qanat.yaml` are the list; nothing else records it.
 - **Two themes**, FidetoLabs white (as before) and FidetoLabs dark, kept in
   `.qanat-home.yaml` beside the projects.
 
-**Over MCP a session works in one project.** Four tools work on the home folder:
-`list_projects` and `select_project` at `data`, `create_project` at `full`,
+**Over MCP a session works in one project.** Five tools work on the home folder:
+`list_projects`, `select_project` and `close_project` at `data`, `create_project` at `full`,
 `delete_project` at `authoring`. Until a session selects a project every other
 tool refuses and says to ask the user which one; after that no tool takes a
 project name, and every answer starts with the project it came from. Two
@@ -43,7 +43,9 @@ working in, one with a job running, and one another program holds.
 
 **The app opens one project at a time.** The project being worked in has a
 **Close** button, and every other project's **Open** is disabled until it is
-closed; the server refuses a second open too. Closing lets the project go -- its
+closed; the server refuses a second open too. **MCP follows the same rule:**
+`close_project` (at `data`) lets the session's project go, and `select_project`
+on another project is refused until then. Closing lets the project go -- its
 writer lock with it, so the CLI can use it -- unless an MCP session is still in
 it, and is refused while a job runs. After a close the app stays closed rather
 than jumping into another project.

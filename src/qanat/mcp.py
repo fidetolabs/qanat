@@ -1253,13 +1253,25 @@ def _list_projects(h: Home, args: dict) -> Any:
 
 
 @tool("select_project",
-      "Work in this project for the rest of the session: every other tool lands there. "
-      "Call it again at any time to switch. Ask the user which one first.",
+      "Work in this project: every other tool lands there. One at a time -- if this session "
+      "is already in another project, call close_project first. Ask the user which one.",
       {"properties": {"name": {"type": "string", "description": "a name from list_projects"}},
        "required": ["name"]},
       scope="data", home=True)
 def _select_project(h: Home, args: dict) -> Any:
     return _projects(h.workspace.select, h.holder, str(_need(args, "name")))
+
+
+@tool("close_project",
+      "Stop working in this session's project, so another can be selected. The project is "
+      "let go -- its writer lock too -- unless somebody else is still in it. Refused while a "
+      "job runs in it.",
+      {"properties": {}},
+      scope="data", home=True)
+def _close_project(h: Home, args: dict) -> Any:
+    if h.workspace.pinned is not None:
+        raise ToolError("this server serves one project, and it cannot be closed.")
+    return _projects(h.workspace.close, h.holder)
 
 
 @tool("create_project",

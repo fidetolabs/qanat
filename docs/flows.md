@@ -117,7 +117,8 @@ none of these are offered.
 | The caller wants to | Tool | Scope | Writes |
 | --- | --- | --- | --- |
 | see which projects there are, which is running a job, and which changed last | `list_projects` | data | — |
-| work in one, or switch to another mid-session | `select_project` | data | — opening a project is not a change, so the order holds |
+| work in one | `select_project` | data | — opening a project is not a change, so the order holds. Refused while the session is in another: close it first |
+| stop working in it, to move to another | `close_project` | data | lets the project go, and its lock, unless somebody else is in it. Refused while a job runs |
 | start a new, empty one | `create_project` | full | a folder in the home folder, scaffolded as `qanat init` does |
 | delete one the user no longer wants | `delete_project` | authoring | without `confirm`, nothing: it says what would go. With it, the folder |
 

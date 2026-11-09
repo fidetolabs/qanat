@@ -47,6 +47,7 @@ SAME_AS: dict[str, str] = {
     "removal": "ingest_filings",
     "projects": "list_projects",
     "select_project": "select_project",
+    "close_project": "close_project",
     "create_project": "create_project",
     "delete_project": "delete_project",
     # The contact is what an ingest sends, so setting it is the ingest's scope.
@@ -263,11 +264,8 @@ def mount(app: FastAPI, workspace: Any, scope: str) -> None:
     async def select_project(name: str):  # type: ignore[no-untyped-def]
         """Open a project in the app. **One at a time: close the current one first.**"""
         def pick() -> Any:
-            now = workspace.selected(APP)
-            if now is not None and now != name and workspace.pinned is None:
-                raise ProjectsError(f"Close '{now}' first, then open '{name}'.")
             opened_once["done"] = True
-            return workspace.select(APP, name)
+            return workspace.select(APP, name)      # refuses while another is open
         return await home_call("select_project", pick)
 
     @app.post("/api/projects/close")
@@ -278,7 +276,7 @@ def mount(app: FastAPI, workspace: Any, scope: str) -> None:
                 raise ProjectsError("this server serves one project, and it cannot be closed.")
             opened_once["done"] = True
             return workspace.close(APP)
-        return await home_call("select_project", shut)
+        return await home_call("close_project", shut)
 
     @app.get("/api/projects/{name}/deletion")
     async def deletion_preview(name: str):  # type: ignore[no-untyped-def]

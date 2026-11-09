@@ -349,7 +349,16 @@ class Workspace:
 
     # ---- who works where -------------------------------------------------------
     def select(self, holder: str, name: str) -> dict[str, Any]:
-        """Point `holder` at a project, opening it if this program has not yet."""
+        """Point `holder` at a project, opening it if this program has not yet.
+
+        **One at a time, at both doors: close the current one first.** A holder
+        already working in another project is refused, so moving between
+        projects is always two acts somebody chose -- close, then select.
+        """
+        with self._lock:
+            now = self._selected.get(holder)
+        if now is not None and now != name:
+            raise ProjectsError(f"Close '{now}' first, then select '{name}'.")
         self.open(name)
         with self._lock:
             self._selected[holder] = name

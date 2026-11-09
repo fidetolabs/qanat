@@ -123,7 +123,9 @@ def test_the_order_is_last_updated_and_opening_or_closing_never_moves_it(tmp_pat
         c.post("/api/projects/close")
         sid = session(c)
         call(c, sid, "select_project", name="a")
+        call(c, sid, "close_project")
         call(c, sid, "select_project", name="b")
+        call(c, sid, "close_project")
         assert order() == ["c", "b", "a"]
         _, listed = call(c, sid, "list_projects")
         assert [p["name"] for p in listed["projects"]] == ["c", "b", "a"]
@@ -171,7 +173,13 @@ def test_two_sessions_work_in_two_projects(tmp_path: Path):
         _, ta = call(c, a, "list_tables")
         _, tb = call(c, b, "list_tables")
         assert ta["project"] == "one" and tb["project"] == "two"
-        # and switching mid-session is one call
+        # switching mid-session: close first, as in the app
+        err, said = call(c, a, "select_project", name="two")
+        assert err and "Close 'one' first" in said
+        _, still = call(c, a, "list_tables")
+        assert still["project"] == "one"
+        err, out = call(c, a, "close_project")
+        assert not err and out["closed"] == "one"
         call(c, a, "select_project", name="two")
         _, again = call(c, a, "list_tables")
         assert again["project"] == "two"
@@ -330,7 +338,7 @@ def test_each_project_tool_sits_at_its_scope(tmp_path: Path):
     from qanat import mcp
 
     at = {t["name"]: t["scope"] for t in mcp.TOOLS if t.get("home")}
-    assert at == {"list_projects": "data", "select_project": "data",
+    assert at == {"list_projects": "data", "select_project": "data", "close_project": "data",
                   "create_project": "full", "delete_project": "authoring"}
     c = client(tmp_path / "home", scope="research")
     try:
