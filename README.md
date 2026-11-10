@@ -43,11 +43,10 @@ of any past date.**
 
 A company publishes its results weeks or months after the period they cover, so
 every number here carries two dates: that period, and the day it became
-public. Ask about March 2022 and you get what was public in March 2022,
-not what we know now. Every other stock screener screens today.
+public. Ask about March 2022 and you get what was public in March 2022, not
+what we know now.
 
-Your agent is the interface. There is no dashboard to learn and no query
-language to pick up.
+Your agent is the interface.
 
 **Not investment advice.** What you do with the number is your decision and
 your risk.
