@@ -22,14 +22,11 @@ posts explaining why it is going up, a video from someone who sounds like they
 know, charts, and a summary of last quarter that reads like a professional
 wrote it.
 
-Any of that now takes a minute to make and costs nothing.
+Any of that now takes a minute to make and costs nothing. Some of it is wrong,
+and you cannot tell which.
 
 The filing is still on EDGAR. It still says what the company told its
 regulator, and reading it takes as long as it always did.
-
-**This hurts the careful person most.** Somebody who buys on a tip and loses
-money was always going to, and one post is enough to fool them. The careful one
-reads twenty before deciding, and the cheap side wrote most of the twenty.
 
 **FidetoLabs cannot make lying expensive again. It can make checking cheap.**
 Qanat is the first tool for that: whatever number it gives you, it can show
