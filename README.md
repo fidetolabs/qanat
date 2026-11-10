@@ -28,9 +28,8 @@ The filing is still on EDGAR. It still says what the company told its
 regulator, and reading it takes as long as it always did.
 
 **This hurts the careful person most.** Somebody who buys on a tip and loses
-money was always going to. The new victim is the one who does the homework.
-One post is enough to fool the careless. The careful one reads twenty, and the
-cheap side wrote most of them.
+money was always going to, and one post is enough to fool them. The careful one
+reads twenty before deciding, and the cheap side wrote most of the twenty.
 
 **FidetoLabs cannot make lying expensive again. It can make checking cheap.**
 Qanat is the first tool for that: whatever number it gives you, it can show
