@@ -191,18 +191,22 @@ Four scopes, nested. Each one contains the one before it, and **`full` is the de
 widest one.**
 
 ```bash
-qanat mcp --scope data         # 14 tools
-qanat mcp --scope research     # 20 tools
-qanat mcp                      # 28 tools
-qanat mcp --scope authoring    # 33 tools
+qanat mcp --scope data         # 17 tools
+qanat mcp --scope research     # 24 tools
+qanat mcp                      # 33 tools
+qanat mcp --scope authoring    # 41 tools
 ```
 
 | scope | adds | tools |
 | --- | --- | --- |
-| `data` | read the tables, list and read companies, read the documents | `list_tables` `describe_table` `sample_table` `profile_table` `trace_table` `stale_tables` `list_metrics` `list_companies` `read_company` `list_sections` `read_section` `search_documents` `read_facts` `check_number` |
-| `research` | read the graph, find filings, screen a universe | `list_definitions` `read_script` `screen_companies` `check_coverage` `find_filings` `list_subscriptions` |
-| `full` | run it, and ingest | `check_project` `preview_changes` `run_project` `list_executions` `ingest_filings` `subscribe_filings` `unsubscribe_filings` `define_universe` |
-| `authoring` | define metrics, and rewire the pipeline | `define_metric` `remove_metric` `define_transform` `remove_transform` `define_ingestion` |
+| `data` | read the tables, list and read companies, read the documents, choose the project | `list_tables` `describe_table` `sample_table` `profile_table` `trace_table` `stale_tables` `list_metrics` `list_companies` `read_company` `list_sections` `read_section` `search_documents` `read_facts` `check_number` `list_projects` `select_project` `close_project` |
+| `research` | read the graph, find filings, screen, read the saved filters | `list_definitions` `read_script` `screen_companies` `check_coverage` `find_filings` `list_subscriptions` `list_filters` |
+| `full` | run it, ingest, and make a project | `check_project` `preview_changes` `run_project` `list_executions` `ingest_filings` `subscribe_filings` `unsubscribe_filings` `define_universe` `create_project` |
+| `authoring` | define metrics, save filters, and rewire the pipeline | `define_metric` `remove_metric` `define_transform` `remove_transform` `define_ingestion` `save_filter` `remove_filter` `delete_project` |
+
+**The counts here are held by a test.** `test_the_published_scope_counts_are_the_real_ones` reads
+them out of this file, `dataflow.md` and the README and compares each against `tools_for`, so a
+tool added at any rung fails the suite rather than leaving three documents disagreeing.
 
 **Why `authoring` is above the default.** The pipeline from a filing to a metric is the same in
 every project, so nobody screening filings needs the tools that change it — and carrying them means

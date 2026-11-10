@@ -74,8 +74,9 @@ table below if you want to know why the pieces are arranged this way rather than
 | Layer | Path | Role |
 | --- | --- | --- |
 | Project file | `qanat.yaml` | Stages, the clock, the corpus, retention, store URL. **Nothing writes it** |
-| Job files | `jobs.yaml` · `metrics.yaml` | What a tool writes: definitions, cadences, formulas |
+| Job file | `jobs.yaml` | What a tool writes: definitions, cadences, formulas. A metric is a transform definition, so **there is no `metrics.yaml`** -- one written before 0.12.0 is read on load and refused on write |
 | Filters file | `filters.yaml` | The operator's saved filters. Tool-written; **not a definition**, it runs nothing |
+| Universes | `universes/<id>.csv` | A named list of symbols from `define_universe`. A file, because nothing in the project refers to one by name |
 | Contract | `src/qanat/project.py` | Validates the stage rules |
 | Runner | `src/qanat/runner.py` | Opens a job, records each execution, runs the definition |
 | Scheduler | `src/qanat/scheduler.py` | Cron + retention cleanup |
@@ -89,7 +90,7 @@ table below if you want to know why the pieces are arranged this way rather than
 | MCP (stdio) | `src/qanat/mcp.py` | The tool surface, and the four scopes |
 | MCP (HTTP) | `src/qanat/mcp_http.py` | The same tools on `/mcp`, with Host and token checks |
 | App | `src/qanat/app/` | With `--app`: pages and a JSON API at `/`, for the person running this Qanat. Calls the service layer, never `/mcp`, and holds no logic |
-| CLI | `src/qanat/cli.py` | `init`, `check`, `migrate`, `mcp`, `schedule`. Nothing else |
+| CLI | `src/qanat/cli.py` | `init`, `check`, `mcp`, `serve`, `schedule`. Nothing else, and **there is no `migrate`** -- a 0.10.x project is refused at load with the keys it got wrong named |
 | Filings | `src/qanat/filings.py` | Which filings exist, which parse, and landing the chosen ones |
 | Metrics | `src/qanat/metrics.py` | Defining a metric, and refusing a formula that will not run |
 | Editor logic | `src/qanat/editor.py` | Mutations, each validated, writing the part files |

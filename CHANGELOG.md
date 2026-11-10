@@ -1,5 +1,53 @@
 # Changelog
 
+## 0.12.2 — 2026-11-10
+
+**The documents had drifted off the code, and three of them agreed with each other.** Found by
+reading the README against 0.12.1 rather than against the other docs.
+
+### The README says what 0.12.1 does
+
+It still described the pipeline the way it worked before the job model, and contradicted itself
+inside one file: line 155 called a metric "one metric, one table, in the metrics stage" and line 246
+said "there is no metrics layer ... a metric is a query over the facts". The second is the old
+position. It also claimed SEC EDGAR was "one connector among five" eight lines above the paragraph
+saying there are two, offered `screen` and `universe` for a tool and argument now called
+`screen_companies` and `companies`, and said a filter "is not stored here" when `save_filter`,
+`list_filters` and `filters.yaml` had shipped.
+
+**The missing line was the one with legal weight.** A public repo and a PyPI package said nothing
+about the output not being advice. There is one near the top now.
+
+The file is three sections -- what Qanat is, how to use it, why Qanat -- and 275 lines against 403.
+The project-file samples, the stage contract and the transform snippet moved to `docs/words.md` and
+`docs/contract.md`, which already held them.
+
+### A count a document publishes is now held by a test
+
+**The README, `docs/agents.md` and `docs/dataflow.md` all published 14/20/28/33 tools for a surface
+that had grown to 17/24/33/41.** `docs/dataflow.md` also listed `list_pipeline`, `screen`, `plan`,
+`run`, `list_history` and `lineage`, none of which are tools.
+
+The ceiling that used to catch this, `test_the_count_at_each_scope_has_not_grown`, was deleted on
+purpose in favour of `test_the_scopes_nest_and_none_of_them_is_empty` -- a fixed number was a
+measurement read as a rule, and once every scope sat on its number it only blocked the next honest
+addition. **But `CLAUDE.md` kept naming the dead test**, so the table claimed a rule that nothing
+held, against its own line that a rule with no test does not belong there.
+
+`test_the_published_scope_counts_are_the_real_ones` reads every markdown file in the repo, takes any
+line naming a scope in backticks and carrying a bare integer, and compares it against `tools_for`.
+It asserts it checked at least four such lines, so deleting the tables is not a way to pass.
+
+### Smaller
+
+- **The `sql` extra is gone.** It held `sqlalchemy` for the SQL connector that 0.12.0 deleted, and
+  nothing in the package has imported it since. `pip install qanat-fdtl[sql]` no longer resolves.
+- `CONTRIBUTING.md` listed a `migrate` verb the CLI does not have -- a 0.10.x project is refused at
+  load with the keys it got wrong named -- and listed `metrics.yaml` as a live job file. It now
+  names `filters.yaml` and `universes/<id>.csv` instead.
+- `docs/words.md` listed a `universes.yaml` that does not exist. A universe is a csv under
+  `./universes/`, and `filters.yaml` was missing from the table.
+
 ## 0.12.1 — 2026-11-09
 
 **Six issues, closed the day 0.12.0 shipped.** Four were found on 2026-11-03 and survived the

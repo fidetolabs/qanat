@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "qanat-fdtl"
-version = "0.12.1"
+version = "0.12.2"
 description = "A data platform for processing metrics from filings. It reads company filings, computes the metrics you define, and answers as of any past date. Delivered as an MCP server."
 readme = "README.md"
 license = { file = "LICENSE" }
@@ -43,7 +43,8 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-sql = ["sqlalchemy>=2.0"]
+# `sql` held sqlalchemy for the SQL connector, which 0.12.0 deleted. Nothing in
+# the package has imported it since, so the extra went with the connector.
 dev = ["pytest>=8.0", "pytest-xdist>=3.5", "ruff>=0.4"]
 prices = [
     "yfinance>=0.2",

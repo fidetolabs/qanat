@@ -232,10 +232,10 @@ argument, because it meant both lists at once.
 
 | Scope | Tools | Adds |
 | --- | --- | --- |
-| `data` | 14 | reads the tables as they stood on a past date, lists the companies and reads one, reads the filings |
-| `research` | 20 | `list_pipeline`, `read_script`, `screen`, `coverage`, `find_filings`, `list_subscriptions` |
-| **`full`** *(default)* | 28 | `check`, `plan`, `run`, `list_history`, `ingest_filings`, `subscribe_filings`, `unsubscribe_filings`, `define_universe` |
-| `authoring` | 33 | `define_metric`, `remove_metric`, `define_transform`, `remove_transform`, `define_ingestion` |
+| `data` | 17 | reads the tables as they stood on a past date, lists the companies and reads one, reads the filings, picks the project |
+| `research` | 24 | `list_definitions`, `read_script`, `screen_companies`, `check_coverage`, `find_filings`, `list_subscriptions`, `list_filters` |
+| **`full`** *(default)* | 33 | `check_project`, `preview_changes`, `run_project`, `list_executions`, `ingest_filings`, `subscribe_filings`, `unsubscribe_filings`, `define_universe`, `create_project` |
+| `authoring` | 41 | `define_metric`, `remove_metric`, `define_transform`, `remove_transform`, `define_ingestion`, `save_filter`, `remove_filter`, `delete_project` |
 
 **The nesting is the information.** A server started at `research` offers the `data` tools too, and
 nothing in a request can widen the scope the flag set at startup. The list is short because every
@@ -249,8 +249,8 @@ Defining a metric sits up there for a different reason: a formula is the same nu
 reader of a given deployment, so there is no private definition and the owner of one is whoever runs
 it.
 
-`lineage` and `stale_tables` stay in `data` and look like they should not: both only mean something
-to a caller who may change the pipeline. But each scope is a published contract, and taking a tool
+`trace_table` and `stale_tables` stay in `data` and look like they should not: both only mean
+something to a caller who may change the pipeline. But each scope is a published contract, and taking a tool
 out of `data` breaks what somebody built against it worse than adding one would. Moving them is a
 separate decision, not a cleanup.
 

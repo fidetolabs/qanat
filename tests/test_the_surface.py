@@ -275,3 +275,55 @@ def test_applied_echoes_what_the_caller_could_not_have_known():
 
     ran = Clause(metric="pe", op="lt", value=10).as_applied({"pe": 3})
     assert ran["metric_version_used"] == 3
+
+
+#: Every markdown file that is published with the package or read from GitHub.
+#: The scope counts are printed in three of them and have disagreed with the
+#: code in all three at once.
+PUBLISHED = ("README.md", "CONTRIBUTING.md", "CLAUDE.md",
+             "docs/agents.md", "docs/contract.md", "docs/dataflow.md",
+             "docs/flows.md", "docs/words.md")
+
+#: A bare integer: not part of a version string, a decimal or a thousands
+#: group. `0.12.0` and `43,104` contribute nothing.
+_BARE_INT = re.compile(r"(?<![\d.,])(\d{1,3})(?![\d.,])")
+
+
+def test_the_published_scope_counts_are_the_real_ones():
+    """The counts in the docs, against `tools_for`.
+
+    **This is what the tool-count ceiling should have been.** The ceiling
+    asserted a number the code had to stay under, which only ever blocked the
+    next honest addition. This asserts the number the *documents* print, which
+    is the thing a reader acts on and the thing nothing was holding: on 0.12.1
+    the README, `docs/agents.md` and `docs/dataflow.md` all still published
+    14/20/28/33 for a surface that had grown to 17/24/33/41, and the three of
+    them agreeing with each other is what made it invisible.
+
+    A line counts when it names a scope in backticks and carries a bare
+    integer. That is where a count is written and nowhere else, so prose about
+    a scope is not swept in.
+    """
+    truth = {s: len(mcp.tools_for(s)) for s in mcp.SCOPES}
+    root = Path(__file__).parent.parent
+    wrong, checked = [], 0
+    for rel in PUBLISHED:
+        path = root / rel
+        if not path.exists():
+            continue
+        for n, line in enumerate(path.read_text().splitlines(), 1):
+            named = [s for s in mcp.SCOPES if f"`{s}`" in line or f"`--scope {s}`" in line
+                     or f"--scope {s}" in line]
+            if len(named) != 1:
+                continue
+            found = [int(x) for x in _BARE_INT.findall(line)]
+            if not found:
+                continue
+            checked += 1
+            scope = named[0]
+            if truth[scope] not in found:
+                wrong.append(f"{rel}:{n} says {found} for `{scope}`, which has "
+                             f"{truth[scope]}")
+    assert checked >= len(mcp.SCOPES), (
+        f"only {checked} lines publish a scope count; the docs stopped saying it")
+    assert not wrong, "published counts disagree with the surface:\n  " + "\n  ".join(wrong)

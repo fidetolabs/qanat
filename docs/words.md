@@ -88,7 +88,13 @@ in [contract.md](contract.md). `normalized` in the starter project is a name, no
 | --- | --- | --- |
 | `qanat.yaml` | `project`, `store`, `stages`, `time_columns`, `corpus`, `returns`, `retention`, `job_timeout` | **you** |
 | `jobs.yaml` | `ingestion_job_definitions`, `transform_job_definitions`, `job_schedules` | a tool |
-| `universes.yaml` | `universes` | a tool |
+| `filters.yaml` | `filters` | a tool |
+| `universes/<id>.csv` | one basket of symbols, one per file | a tool |
+
+**A universe is a csv and not a key.** It was `universes.yaml` holding a
+`universes:` list; an ingestion job's `from_universe` names a file under
+`./universes/` now, nothing in the project refers to one, and a screen takes
+its list with the call.
 
 **There is no `metrics.yaml`.** A metric was a list of formula objects in one,
 each with its own `version:` integer; a metric is a `transform_job_definition`
