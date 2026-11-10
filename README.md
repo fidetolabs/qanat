@@ -24,19 +24,17 @@ wrote it.
 
 Any of that now takes a minute to make and costs nothing.
 
-The filing has not moved. It is still on EDGAR, it still says what the company
-told its regulator, and reading it takes just as long as it always did.
+The filing is still on EDGAR. It still says what the company told its
+regulator, and reading it takes as long as it always did.
 
 **This hurts the careful person most.** Somebody who buys on a tip and loses
-money was always going to. The new victim is the one who does the homework,
-because homework means going out and reading, and reading is where the cheap
-material is. One post is enough to fool the careless. The careful one reads
-twenty, and the cheap side wrote most of them.
+money was always going to. The new victim is the one who does the homework.
+One post is enough to fool the careless. The careful one reads twenty, and the
+cheap side wrote most of them.
 
 **FidetoLabs cannot make lying expensive again. It can make checking cheap.**
-That is the company. Qanat is the first tool of it: whatever number it gives
-you, it can show you the filing that number came out of and the day that filing
-was published.
+Qanat is the first tool for that: whatever number it gives you, it can show
+you the filing the number came out of and the day that filing was published.
 
 **You write the logic and Qanat runs the calculator.** The formula, the
 threshold and the list of companies are yours. It tells you what came out and
@@ -48,8 +46,8 @@ Qanat reads company filings, computes the metrics you define, and answers **as
 of any past date.**
 
 A company publishes its results weeks or months after the period they cover, so
-every number here carries two dates: the period it covers, and the day it
-became public. Ask about March 2022 and you get what was public in March 2022,
+every number here carries two dates: that period, and the day it became
+public. Ask about March 2022 and you get what was public in March 2022,
 not what we know now. Every other stock screener screens today.
 
 Your agent is the interface. There is no dashboard to learn and no query
@@ -115,8 +113,8 @@ or say so on [Discord](https://discord.gg/JUmwATScS8).
 **Nothing is added up.** No average across years, no equity curve. That needs a
 decision about how much of each company to hold, and the decision is yours.
 
-**The dates protect a transform, not you.** A transform cannot see past its
-date. You and your agent still can, while you are deciding what to try.
+**The dates protect a transform, not you.** It cannot see past its date; you
+and your agent can, while you are deciding what to try.
 
 **Two sources:** SEC EDGAR for filings and Yahoo Finance for prices. Only the
 10-K and the 10-Q are parsed; other forms are found and labelled, not read.
